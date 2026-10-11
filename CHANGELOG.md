@@ -15,6 +15,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=<env>`; it is not derived
   from the CORS/HSTS `environment` mode field, which cannot tell staging from prod.
 
+- **BREAKING: `pkg/observe` honours the standard OTLP environment.**
+  `OTEL_EXPORTER_OTLP_{ENDPOINT,PROTOCOL,HEADERS}` and the per-signal variants
+  now configure the exporters: `http/protobuf` is the default, `grpc` is
+  supported, and headers reach the wire (previously gRPC only, no headers).
+  The default protocol flips from gRPC to `http/protobuf`: an existing
+  `:4317` endpoint with no `OTEL_EXPORTER_OTLP_PROTOCOL` must now set
+  `OTEL_EXPORTER_OTLP_PROTOCOL=grpc`.
+  `OTEL_SERVICE_NAME` now overrides the compiled-in service name, and
+  `OTEL_SDK_DISABLED=true` turns export off. `Config.OTLPEndpoint` still
+  overrides the endpoint; with no endpoint nothing is exported.
+- **The W3C TraceContext+Baggage propagator is always installed**, not only when
+  an OTLP endpoint is set, so `traceparent` is honoured with export off.
+- **Server logs carry `trace_id` and `span_id`** when the logging context holds a
+  span (`observe.NewLogHandler`, used by `serverkit`).
+- **Opt-in OTLP logs exporter** (`OTEL_LOGS_EXPORTER=otlp` / `Config.OTLPLogs`),
+  off by default and mutually exclusive with stdout/file collection.
+- **Go runtime metrics** are recorded when metrics export is on.
+
 ### Fixed
 
 - **Generated frontend mocks no longer read the clock.** control-plane's
