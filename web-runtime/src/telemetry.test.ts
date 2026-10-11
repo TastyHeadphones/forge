@@ -16,7 +16,9 @@ const recordException = vi.fn();
 const client = {
   init(this: unknown, ...args: unknown[]) {
     if (this !== client) {
-      throw new TypeError("init called on the module namespace, not the client");
+      throw new TypeError(
+        "init called on the module namespace, not the client",
+      );
     }
     return init(...args);
   },
@@ -31,7 +33,10 @@ const client = {
 vi.mock("@hyperdx/browser", () => {
   const ns = { default: client } as Record<string, unknown>;
   for (const key of ["init", "recordException"] as const) {
-    Object.defineProperty(ns, key, { get: () => client[key], enumerable: true });
+    Object.defineProperty(ns, key, {
+      get: () => client[key],
+      enumerable: true,
+    });
   }
   return ns;
 });
