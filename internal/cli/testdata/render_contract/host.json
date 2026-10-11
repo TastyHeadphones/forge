@@ -112,6 +112,10 @@
             {
               "name": "WEB_URL",
               "value": "http://localhost:3000"
+            },
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "api"
             }
           ],
           "image": "",
@@ -177,6 +181,10 @@
             {
               "name": "DATABASE_URL",
               "value": "postgres://postgres:postgres@localhost:5433/acme"
+            },
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "migrate"
             }
           ],
           "image": "",
