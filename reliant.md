@@ -26,7 +26,9 @@ you mean every stack on the machine, and prefer `forge env down <env>` from
 inside the project you started.
 
 **To clean up, be surgical.** Remove only containers you created, by explicit
-name (`docker rm -f <name>`). Stop only a PID you started yourself and recorded.
+name (`docker rm -fv <name>` — `-v` also removes the container's anonymous
+volumes; without it every image that declares a `VOLUME`, postgres included,
+leaves one behind). Stop only a PID you started yourself and recorded.
 Leave every pre-existing container, process and stack alone — a shared dev box
 runs many of them, and another agent almost certainly depends on one.
 
