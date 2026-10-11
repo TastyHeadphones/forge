@@ -23,8 +23,6 @@ func agentSpec() ObservabilityAgentSpec {
 		Protocol:       "http/protobuf",
 		HeadersSecret:  &ObservabilitySecretKey{Name: "otlp-auth", Key: "headers"},
 		Signals:        ObservabilitySignals{Traces: true, Metrics: true, Logs: true},
-		SamplingRatio:  1,
-		ErrorsAlways:   true,
 		Image:          "otel/opentelemetry-collector-contrib:0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6",
 		MemoryLimitMiB: 256,
 	}
@@ -37,10 +35,9 @@ var agentCtx = ObservabilityContext{Namespace: "forge-observability", PartOf: "d
 func TestRenderObservabilityAgentGolden(t *testing.T) {
 	cases := map[string]ObservabilityAgentSpec{
 		"observability_agent": agentSpec(),
-		"observability_agent_grpc_sampled": func() ObservabilityAgentSpec {
+		"observability_agent_grpc": func() ObservabilityAgentSpec {
 			s := agentSpec()
 			s.Protocol, s.Endpoint = "grpc", "https://otlp.example.com:443"
-			s.SamplingRatio = 0.1
 			s.Signals.Profiles = true
 			s.HeadersSecret = nil
 			return s
@@ -276,15 +273,14 @@ func TestAgentConfigCollectsByPushAndEnrichesOnly(t *testing.T) {
 	}
 }
 
-func TestAgentConfigSignalsAndSampling(t *testing.T) {
+func TestAgentConfigSignals(t *testing.T) {
 	s := agentSpec()
 	s.Signals = ObservabilitySignals{Traces: true, Profiles: true}
-	s.SamplingRatio = 0.25
 	cfg, err := s.AgentConfig("forge-observability")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"traces:", "profiles:", "tail_sampling", "status_code", "sampling_percentage: 25"} {
+	for _, want := range []string{"traces:", "profiles:"} {
 		if !strings.Contains(cfg, want) {
 			t.Errorf("config missing %q:\n%s", want, cfg)
 		}
@@ -297,10 +293,27 @@ func TestAgentConfigSignalsAndSampling(t *testing.T) {
 	if args := s.CollectorArgs("/x"); len(args) != 2 || args[1] != "--feature-gates=service.profilesSupport" {
 		t.Errorf("profiles need the feature gate: %v", args)
 	}
-	s.ErrorsAlways = false
-	cfg, _ = s.AgentConfig("forge-observability")
-	if strings.Contains(cfg, "status_code") {
-		t.Error("errors_always = false still renders an error policy")
+}
+
+// A collector that samples traces decides per node, so a trace that crosses
+// nodes is kept in fragments. The ratio is head-sampled in the SDK instead
+// (OTEL_TRACES_SAMPLER*, rendered by KCL); neither the agent nor the local
+// forwarder samples.
+func TestCollectorsNeverSampleTraces(t *testing.T) {
+	a, err := agentSpec().AgentConfig("forge-observability")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := agentSpec().ForwarderConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, cfg := range map[string]string{"agent": a, "forwarder": f} {
+		for _, banned := range []string{"tail_sampling", "probabilistic_sampler", "sampling_percentage", "status_code"} {
+			if strings.Contains(cfg, banned) {
+				t.Errorf("%s config samples traces (%q): a per-collector decision splits a trace across nodes", name, banned)
+			}
+		}
 	}
 }
 
@@ -325,7 +338,6 @@ func TestObservabilityAgentSpecValidation(t *testing.T) {
 	for name, mut := range map[string]func(*ObservabilityAgentSpec){
 		"bad endpoint": func(s *ObservabilityAgentSpec) { s.Endpoint = "otlp.example.com" },
 		"bad protocol": func(s *ObservabilityAgentSpec) { s.Protocol = "thrift" },
-		"bad ratio":    func(s *ObservabilityAgentSpec) { s.SamplingRatio = 1.5 },
 		"empty secret": func(s *ObservabilityAgentSpec) { s.HeadersSecret = &ObservabilitySecretKey{Name: "x"} },
 	} {
 		t.Run(name, func(t *testing.T) {

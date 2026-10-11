@@ -246,7 +246,6 @@ func TestForwarderIsRenderedFromTheDeclaration(t *testing.T) {
 			Key  string `json:"key"`
 		}{Name: "otlp", Key: "OTLP_HEADERS"}},
 		Signals: ObservabilitySignalsEntity{Traces: true, Metrics: true, Logs: true}}
-	o.Sampling.TracesRatio = 1
 	e := &KCLEntities{Observability: o, Workloads: []WorkloadEntity{
 		{Name: "otel-forwarder", Runtime: RuntimeEntity{Type: RuntimeCompose, Compose: &ComposeRuntime{Service: "otel-forwarder"}}},
 	}}
@@ -270,5 +269,26 @@ func TestForwarderIsRenderedFromTheDeclaration(t *testing.T) {
 	}
 	if refs := secretRefsForLaunch(e); len(refs) != 1 || refs[0].EnvName != "OTLP_HEADERS" {
 		t.Errorf("forge env up must require the declared headers key before starting: %v", refs)
+	}
+}
+
+// A destination on the developer's machine must be reachable FROM the
+// forwarder's container, where "localhost" is the container itself. (Found by
+// booting the forwarder against a receiver on 127.0.0.1: every export was
+// "connection refused" while the declaration looked right.)
+func TestHostReachableEndpoint(t *testing.T) {
+	for in, want := range map[string]string{
+		"http://127.0.0.1:14318":          "http://host.docker.internal:14318",
+		"http://localhost:4318/v1/x":      "http://host.docker.internal:4318/v1/x",
+		"https://localhost":               "https://host.docker.internal",
+		"http://0.0.0.0:9":                "http://host.docker.internal:9",
+		"https://otlp.example.com":        "https://otlp.example.com",
+		"https://otlp.example.com:443":    "https://otlp.example.com:443",
+		"http://10.1.2.3:4318":            "http://10.1.2.3:4318",
+		"http://localhost.example.com:80": "http://localhost.example.com:80",
+	} {
+		if got := hostReachableEndpoint(in); got != want {
+			t.Errorf("hostReachableEndpoint(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

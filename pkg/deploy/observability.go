@@ -93,10 +93,6 @@ type ObservabilityAgentSpec struct {
 	// of header name to value. Nil sends none.
 	HeadersSecret *ObservabilitySecretKey `json:"headersSecret,omitempty"`
 	Signals       ObservabilitySignals    `json:"signals"`
-	// SamplingRatio is the fraction of traces kept (1 keeps all);
-	// ErrorsAlways keeps a trace holding an error span whatever the ratio.
-	SamplingRatio float64 `json:"samplingRatio"`
-	ErrorsAlways  bool    `json:"errorsAlways"`
 	// Image is the collector image; MemoryLimitMiB bounds the agent.
 	Image          string `json:"image,omitempty"`
 	MemoryLimitMiB int    `json:"memoryLimitMiB,omitempty"`
@@ -115,16 +111,11 @@ func (s ObservabilityAgentSpec) validate() error {
 	if s.Protocol != "http/protobuf" && s.Protocol != "grpc" {
 		errs = append(errs, fmt.Errorf("protocol %q must be http/protobuf or grpc", s.Protocol))
 	}
-	if s.SamplingRatio < 0 || s.SamplingRatio > 1 {
-		errs = append(errs, fmt.Errorf("samplingRatio %v must be between 0 and 1", s.SamplingRatio))
-	}
 	if s.HeadersSecret != nil && (s.HeadersSecret.Name == "" || s.HeadersSecret.Key == "") {
 		errs = append(errs, errors.New("headersSecret needs both name and key"))
 	}
 	return errors.Join(errs...)
 }
-
-func (s ObservabilityAgentSpec) sampled() bool { return s.SamplingRatio < 1 }
 
 // exporterName is the destination exporter's component id.
 func (s ObservabilityAgentSpec) exporterName() string {
@@ -184,23 +175,6 @@ func logLines() []any {
 	}
 }
 
-func (s ObservabilityAgentSpec) tailSampling() map[string]any {
-	var policies []any
-	if s.ErrorsAlways {
-		policies = append(policies, map[string]any{
-			"name": "errors", "type": "status_code",
-			"status_code": map[string]any{"status_codes": []any{"ERROR"}},
-		})
-	}
-	if s.SamplingRatio > 0 {
-		policies = append(policies, map[string]any{
-			"name": "ratio", "type": "probabilistic",
-			"probabilistic": map[string]any{"sampling_percentage": s.SamplingRatio * 100},
-		})
-	}
-	return map[string]any{"decision_wait": "10s", "num_traces": 50000, "policies": policies}
-}
-
 func strs(v ...string) []any {
 	out := make([]any, len(v))
 	for i, s := range v {
@@ -222,11 +196,10 @@ func (s ObservabilityAgentSpec) pipelines(traceRecv, metricRecv, logRecv, profil
 	exp := strs(s.exporterName())
 	out := map[string]any{}
 	if s.Signals.Traces {
-		p := append([]string{}, pre...)
-		if s.sampled() {
-			p = append(p, "tail_sampling")
-		}
-		out["traces"] = map[string]any{"receivers": strs(traceRecv...), "processors": strs(withBatch(p)...), "exporters": exp}
+		// No sampling here, on purpose: the ratio is head-sampled in the SDK, so
+		// a trace reaches the collector whole or not at all. A per-collector
+		// decision would split a trace that spans nodes.
+		out["traces"] = map[string]any{"receivers": strs(traceRecv...), "processors": strs(withBatch(pre)...), "exporters": exp}
 	}
 	if s.Signals.Metrics {
 		out["metrics"] = map[string]any{"receivers": strs(metricRecv...), "processors": strs(withBatch(pre)...), "exporters": exp}
@@ -247,9 +220,6 @@ func (s ObservabilityAgentSpec) common(receivers, processors map[string]any) {
 		"http": map[string]any{"endpoint": "0.0.0.0:4318"},
 	}}
 	processors["batch"] = map[string]any{"send_batch_size": 8192, "timeout": "5s"}
-	if s.sampled() {
-		processors["tail_sampling"] = s.tailSampling()
-	}
 }
 
 // AgentConfig is the node agent's collector configuration, as YAML.

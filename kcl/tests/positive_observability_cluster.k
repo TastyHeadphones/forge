@@ -43,7 +43,11 @@ assert_cluster_exports_to_node_agent = _env("api").OTEL_EXPORTER_OTLP_ENDPOINT =
 assert_off_signal_switched_off_at_the_app = _env("api").OTEL_METRICS_EXPORTER == "none" and "OTEL_TRACES_EXPORTER" not in _env("api")
 assert_hosted_gets_no_endpoint = "OTEL_EXPORTER_OTLP_ENDPOINT" not in _env("web") and _env("web").OTEL_EXPORTER_OTLP_PROTOCOL == "http/protobuf"
 assert_one_agent_record = len(_agents) == 1
-assert_agent_record_carries_the_declaration = _agents[0].spec.endpoint == "https://otlp.example.com" and _agents[0].spec.headersSecret.name == "otlp-auth" and _agents[0].spec.samplingRatio == 0.1 and _agents[0].spec.signals.metrics == False
+assert_agent_record_carries_the_declaration = _agents[0].spec.endpoint == "https://otlp.example.com" and _agents[0].spec.headersSecret.name == "otlp-auth" and _agents[0].spec.signals.metrics == False
 assert_agent_record_routed_to_its_cluster = _agents[0].metadata.labels["forge.dev/cluster"] == "k3d-demo" and _agents[0].metadata.namespace == "forge-observability"
 assert_telemetry_netpol_follows_the_agent = output.network_policy.telemetry_namespace == "forge-observability"
 assert_declaration_projected = output.observability.destination.endpoint == "https://otlp.example.com" and output.observability.sampling.traces_ratio == 0.1
+# The ratio is HEAD sampling in the SDK, for every runtime that runs a process:
+# the sampler is a pair, a trace is whole or absent, and the agent samples nothing.
+assert_ratio_is_head_sampled_on_cluster = _env("api").OTEL_TRACES_SAMPLER == "parentbased_traceidratio" and _env("api").OTEL_TRACES_SAMPLER_ARG == "0.1"
+assert_agent_record_carries_no_sampling = "samplingRatio" not in _agents[0].spec and "errorsAlways" not in _agents[0].spec

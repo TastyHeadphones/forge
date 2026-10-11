@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -185,16 +186,40 @@ func forwarderConfig(o *ObservabilityEntity) (string, error) {
 		return "", fmt.Errorf("the local forwarder needs Bundle.observability.destination")
 	}
 	spec := deploy.ObservabilityAgentSpec{
-		Endpoint:      o.Destination.Endpoint,
-		Protocol:      o.Destination.Protocol,
-		SamplingRatio: o.Sampling.TracesRatio,
-		ErrorsAlways:  o.Sampling.ErrorsAlways,
-		Signals:       deploy.ObservabilitySignals(o.Signals),
+		Endpoint: hostReachableEndpoint(o.Destination.Endpoint),
+		Protocol: o.Destination.Protocol,
+		Signals:  deploy.ObservabilitySignals(o.Signals),
 	}
 	if h := o.Destination.HeadersSecret; h != nil {
 		spec.HeadersSecret = &deploy.ObservabilitySecretKey{Name: h.Name, Key: h.Key}
 	}
 	return spec.ForwarderConfig()
+}
+
+// forwarderHostAlias is the name the forwarder container reaches the host by
+// (compose maps it to the host gateway, see docker-compose.yml's extra_hosts).
+const forwarderHostAlias = "host.docker.internal"
+
+// hostReachableEndpoint rewrites a destination on the developer's own machine.
+// "localhost" and 127.0.0.1 name the HOST to whoever wrote the endpoint, but
+// inside the forwarder's container they name the container itself, where
+// nothing listens: every export would fail with "connection refused" while the
+// declaration looked right. Any other host is returned untouched.
+func hostReachableEndpoint(endpoint string) string {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return endpoint
+	}
+	switch u.Hostname() {
+	case "localhost", "127.0.0.1", "::1", "0.0.0.0":
+		if p := u.Port(); p != "" {
+			u.Host = forwarderHostAlias + ":" + p
+		} else {
+			u.Host = forwarderHostAlias
+		}
+		return u.String()
+	}
+	return endpoint
 }
 
 // forwarderHeadersEnv is the compose-process env that hands the forwarder its

@@ -134,19 +134,6 @@ data:
         check_interval: 1s
         limit_mib: 204
         spike_limit_mib: 51
-      tail_sampling:
-        decision_wait: 10s
-        num_traces: 50000
-        policies:
-        - name: errors
-          status_code:
-            status_codes:
-            - ERROR
-          type: status_code
-        - name: ratio
-          probabilistic:
-            sampling_percentage: 10
-          type: probabilistic
       transform/strip_client_identity:
         error_mode: ignore
         log_statements:
@@ -269,7 +256,6 @@ data:
           - memory_limiter
           - transform/strip_client_identity
           - k8sattributes
-          - tail_sampling
           - batch
           receivers:
           - otlp

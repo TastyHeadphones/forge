@@ -1118,8 +1118,9 @@ type ObservabilityEntity struct {
 	Destination   *ObservabilityDestEntity   `json:"destination,omitempty"`
 	Signals       ObservabilitySignalsEntity `json:"signals"`
 	Sampling      struct {
-		TracesRatio  float64 `json:"traces_ratio"`
-		ErrorsAlways bool    `json:"errors_always"`
+		TracesRatio            float64 `json:"traces_ratio"`
+		ErrorsAlways           bool    `json:"errors_always"`
+		DestinationTailSamples bool    `json:"destination_tail_samples"`
 	} `json:"sampling"`
 	Retention struct {
 		TracesDays  int `json:"traces_days"`

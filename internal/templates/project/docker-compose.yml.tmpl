@@ -508,6 +508,10 @@ services:
     ports:
       - "127.0.0.1:${OTEL_FORWARDER_HTTP_PORT:-4318}:4318"
       - "127.0.0.1:${OTEL_FORWARDER_GRPC_PORT:-4317}:4317"
+    # A destination on this machine (localhost, 127.0.0.1) is rendered as
+    # host.docker.internal: inside this container "localhost" is the container.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       FORGE_OTLP_HEADERS: ${FORGE_OTLP_HEADERS:-}
     volumes:

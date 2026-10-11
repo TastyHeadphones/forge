@@ -459,7 +459,20 @@ _obs_env = lambda rt: any, b: Bundle, env: {str:} -> {str:str} {
         | ({OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf"} if _obs_on(b) and rt.type == "hosted" and _transport else {}) \
         | ({OTEL_TRACES_EXPORTER = "none"} if _sig and not _sig.traces and not _env_set(env, "OTEL_TRACES_EXPORTER") else {}) \
         | ({OTEL_METRICS_EXPORTER = "none"} if _sig and not _sig.metrics and not _env_set(env, "OTEL_METRICS_EXPORTER") else {}) \
-        | ({OTEL_LOGS_EXPORTER = "none"} if _sig and not _sig.logs and not _env_set(env, "OTEL_LOGS_EXPORTER") else {})
+        | ({OTEL_LOGS_EXPORTER = "none"} if _sig and not _sig.logs and not _env_set(env, "OTEL_LOGS_EXPORTER") else {}) \
+        | _obs_sampler_env(b, env)
+}
+
+# HEAD sampling, in the SDK, so every service follows the root span's decision
+# and a trace is whole or absent. Only a ratio below 1 is rendered (1 is the
+# SDK's own default, parentbased_always_on) and an author's sampler wins whole:
+# the sampler and its argument are a pair.
+_obs_sampler_env = lambda b: Bundle, env: {str:} -> {str:str} {
+    _r = b.observability.sampling.traces_ratio if _obs_on(b) else 1.0
+    {
+        OTEL_TRACES_SAMPLER = "parentbased_traceidratio"
+        OTEL_TRACES_SAMPLER_ARG = str(_r)
+    } if _r < 1.0 and b.observability.signals.traces and not _env_set(env, "OTEL_TRACES_SAMPLER") and not _env_set(env, "OTEL_TRACES_SAMPLER_ARG") else {}
 }
 
 # Workloads that ship their own OTLP logs while the env's collector already
@@ -964,8 +977,6 @@ _obs_agent_records = lambda b: Bundle, part_of: str -> [any] {
                 "logs": _o.signals.logs
                 "profiles": _o.signals.profiles
             }
-            "samplingRatio": _o.sampling.traces_ratio
-            "errorsAlways": _o.sampling.errors_always
             "image": _o.agent.image
             "memoryLimitMiB": _o.agent.memory_limit_mib
         }
@@ -996,6 +1007,7 @@ _render_observability = lambda b: Bundle -> any {
         "sampling": {
             "traces_ratio": _o.sampling.traces_ratio
             "errors_always": _o.sampling.errors_always
+            "destination_tail_samples": _o.sampling.destination_tail_samples
         }
         "retention": {
             "traces_days": _o.retention.traces_days

@@ -3459,20 +3459,34 @@ schema ObservabilitySignals:
     profiles: bool = False
 
 schema ObservabilitySampling:
-    """Trace sampling, applied by the collector that forwards to the
-    destination (not by the app), so errors can be kept.
+    """Trace sampling. The ratio is HEAD sampling in the SDK: every workload
+    gets `OTEL_TRACES_SAMPLER=parentbased_traceidratio` and
+    `OTEL_TRACES_SAMPLER_ARG=<traces_ratio>`, so each service follows the root
+    span's decision and a trace is whole or absent, whatever nodes it crosses.
+    Collectors never sample traces (a per-node decision splits a trace).
 
-    `traces_ratio` below 1.0 keeps that fraction of traces. With
-    `errors_always`, a trace with an error span is kept regardless. The
-    decision is made per node agent, so a trace that crosses nodes can keep
-    its error fragment and lose the rest; gateway-side tail sampling is the
-    complete answer. Needs a destination: local ClickStack stores everything.
+    Keeping every ERROR trace is a TAIL decision: it needs the whole trace in
+    one place. Forge renders no gateway, so `errors_always` is a statement
+    about the destination, not something forge can do, and forge refuses to
+    accept it silently:
+
+      * `traces_ratio < 1` with `errors_always = True` is refused unless
+        `destination_tail_samples = True` ("the destination keeps error
+        traces itself", e.g. the hosted platform's gateway).
+      * Otherwise `errors_always` is False and a ratio below 1 drops errors
+        like everything else, which is stated rather than hidden.
+
+    A ratio below 1 needs a destination: local ClickStack stores everything.
     """
     traces_ratio: float = 1.0
-    errors_always: bool = True
+    errors_always: bool = False
+    destination_tail_samples: bool = False
 
     check:
         traces_ratio >= 0.0 and traces_ratio <= 1.0, "ObservabilitySampling.traces_ratio must be between 0.0 and 1.0"
+        traces_ratio >= 1.0 or not errors_always or destination_tail_samples, \
+            "ObservabilitySampling: traces_ratio < 1 with errors_always = True needs tail sampling, which forge does not render (head sampling in the SDK cannot know a trace will fail). Either set errors_always = False (errors are sampled like everything else), or, if the destination's gateway keeps error traces itself, say so with destination_tail_samples = True"
+        not destination_tail_samples or errors_always, "ObservabilitySampling.destination_tail_samples only qualifies errors_always = True"
 
 schema ObservabilityRetention:
     """Retention hints in days; 0 = the backend's default. Passed through
