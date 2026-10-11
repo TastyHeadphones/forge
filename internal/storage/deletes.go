@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -40,8 +41,9 @@ import (
 
 // Policy defaults for the governor.
 const (
-	defaultMaxDeletesPerPass = 50_000
-	defaultDeleteRatePerSec  = 1_000
+	defaultMaxDeletesPerPass        = 50_000
+	defaultDeleteRatePerSec         = 1_000
+	defaultMaxDockerRemovalsPerPass = 100
 )
 
 // deleteBatch is how many unlinks are granted between pacing pauses.
@@ -67,6 +69,9 @@ func (e *BackedOffError) Unwrap() error { return e.Err }
 // spent its delete budget.
 var errDeleteCap = errors.New("per-pass delete cap reached")
 
+// errDockerCap is the same for the pass's Docker removal budget.
+var errDockerCap = errors.New("per-pass Docker removal cap reached")
+
 // fsDistress reports whether err means the filesystem, or the process serving
 // it, is failing, as opposed to one entry being unremovable. Out of
 // descriptors (EMFILE, ENFILE), a disconnected FUSE/virtiofs transport
@@ -74,6 +79,31 @@ var errDeleteCap = errors.New("per-pass delete cap reached")
 func fsDistress(err error) bool {
 	return errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) ||
 		errors.Is(err, syscall.ENOTCONN) || errors.Is(err, syscall.EIO)
+}
+
+// dockerDistress gives a Docker error that reports filesystem distress the
+// errno fsDistress recognises. The daemon returns its errors as text, so the
+// errno survives only in the message. Forge failing to start docker at all
+// (fork/exec: EMFILE) already wraps the errno and is returned unchanged.
+func dockerDistress(err error) error {
+	if err == nil || fsDistress(err) {
+		return err
+	}
+	msg := strings.ToLower(err.Error())
+	for _, m := range []struct {
+		text  string
+		errno syscall.Errno
+	}{
+		{"too many open files in system", syscall.ENFILE},
+		{"too many open files", syscall.EMFILE},
+		{"transport endpoint is not connected", syscall.ENOTCONN},
+		{"input/output error", syscall.EIO},
+	} {
+		if strings.Contains(msg, m.text) {
+			return fmt.Errorf("%w: %v", m.errno, err)
+		}
+	}
+	return err
 }
 
 // deletePass is the governor's state, shared by every layer of one pass.
@@ -87,6 +117,10 @@ type deletePass struct {
 	backoff   *BackedOffError
 	remove    func(string) error
 	sleep     func(context.Context, time.Duration) error
+	// objects counts the Docker images and volumes granted this pass,
+	// against objectLimit (max_docker_removals_per_pass).
+	objects     int
+	objectLimit int
 }
 
 // deleter grants unlinks from a pass. ceiling is the pass count at which this
@@ -111,7 +145,11 @@ func newDeleter(p Policy, remove func(string) error, sleep func(context.Context,
 	if sleep == nil {
 		sleep = sleepCtx
 	}
-	return deleter{pass: &deletePass{limit: limit, rate: rate, remove: remove, sleep: sleep}, ceiling: limit}
+	objects := p.MaxDockerRemovalsPerPass
+	if objects <= 0 {
+		objects = defaultMaxDockerRemovalsPerPass
+	}
+	return deleter{pass: &deletePass{limit: limit, rate: rate, remove: remove, sleep: sleep, objectLimit: objects}, ceiling: limit}
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {
@@ -204,6 +242,29 @@ func (d deleter) reserve(n int) error {
 		return &CutOffError{Err: fmt.Errorf("%w: needs %d unlinks, %d left this pass (max_deletes_per_pass %d)", errDeleteCap, n, max(d.ceiling-p.count, 0), p.limit)}
 	}
 	p.count += n
+	return nil
+}
+
+// grantObject admits the removal of one Docker image or volume. The daemon
+// makes that removal's unlinks, and one object can be thousands of files, so
+// forge cannot pace them one by one. It grants the object as one paced unlink,
+// so the pass's back-off, delete cap and deadline all apply, and counts it
+// against max_docker_removals_per_pass, which is the bound on how much one pass
+// asks the daemon to delete.
+func (d deleter) grantObject(ctx context.Context) error {
+	p := d.pass
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.backoff != nil {
+		return p.backoff
+	}
+	if p.objects >= p.objectLimit {
+		return &CutOffError{Err: fmt.Errorf("%w (%d this pass; max_docker_removals_per_pass %d): the rest is retained and the next pass continues", errDockerCap, p.objects, p.objectLimit)}
+	}
+	if err := d.grantLocked(ctx); err != nil {
+		return err
+	}
+	p.objects++
 	return nil
 }
 

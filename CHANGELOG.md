@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`forge storage gc` reclaims dangling images and anonymous Docker volumes.**
+  Dangling images (untagged, used by no container, built over an hour ago) are
+  removed by every pass, the automatic ones included. Anonymous volumes (the
+  daemon's `com.docker.volume.anonymous` label AND a 64-hex name, plain `local`
+  driver, mounted by no container, seen unused for `anonymous_volume_unused`,
+  default 14 days) are removed only by an explicit `forge storage gc --apply`;
+  automatic passes only record when each was first seen unused. Named volumes
+  are never removed. Every removal goes through the pass's delete governor and
+  the new `max_docker_removals_per_pass` cap (default 100), and a daemon error
+  reporting EMFILE/EIO/ENOTCONN backs the pass off. `storage.Runner.ReapWorktrees`
+  is renamed `Explicit`. See `docs/runbooks/storage-lifecycle.md`.
 - **`pkg/observe` merges the standard `OTEL_RESOURCE_ATTRIBUTES` and
   `OTEL_SERVICE_NAME` into the OpenTelemetry resource** (`resource.WithFromEnv`).
   The deployment environment is the forge env name, delivered by the platform as

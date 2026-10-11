@@ -78,7 +78,7 @@ func TestGCContinuesHealthyBuilderAfterIndependentFailure(t *testing.T) {
 		switch {
 		case joined == "context inspect":
 			return []byte(`[{"Endpoints":{"docker":{"Host":"unix:///var/run/docker.sock"}}}]`), nil
-		case strings.HasPrefix(joined, "ps ") || strings.HasPrefix(joined, "image ls"):
+		case strings.HasPrefix(joined, "ps ") || strings.HasPrefix(joined, "image ls") || strings.HasPrefix(joined, "volume ls"):
 			return nil, nil
 		case joined == "buildx inspect gone":
 			return nil, fmt.Errorf("builder no longer exists")
@@ -179,7 +179,7 @@ func (f *realBuildx) command(_ context.Context, name string, args ...string) ([]
 		return []byte(`[{"Endpoints":{"docker":{"Host":"unix:///var/run/docker.sock"}}}]`), nil
 	case joined == "context show":
 		return []byte(f.current + "\n"), nil
-	case strings.HasPrefix(joined, "ps ") || strings.HasPrefix(joined, "image ls"):
+	case strings.HasPrefix(joined, "ps ") || strings.HasPrefix(joined, "image ls") || strings.HasPrefix(joined, "volume ls"):
 		return nil, nil
 	case joined == "system df":
 		return []byte("TYPE TOTAL\n"), nil

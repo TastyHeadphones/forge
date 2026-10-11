@@ -3,7 +3,9 @@
 `forge storage` bounds rebuildable development state. Persistent volumes and
 workspaces have separate lifecycles: registry layers, containerd images, BuildKit
 cache and application data can all live in Docker volumes, so volume age is not
-an indication that a volume is safe to remove.
+an indication that a volume is safe to remove. Named volumes are never removed;
+anonymous ones only under the rules in
+[Dangling images and anonymous volumes](#dangling-images-and-anonymous-volumes).
 
 ## Defaults
 
@@ -24,7 +26,9 @@ an indication that a volume is safe to remove.
 | Orphaned private Go caches (`.gocache-*`, `*-gocache`, `$WORKTREE/.gocache`, `/tmp/scratchpad/gocache*`) | Remove a recognised build/module cache idle 24h that no live process environment names and no process holds open; never the shared cache                                                             |
 | Worktrees                                                                                                | Idle ≥ 24h, unlocked, unused, clean, ignored files all rebuildable, HEAD pushed; removed only by an explicit `forge storage gc --apply` under `worktree_reap` (see Worktrees)                        |
 | Every unlink a pass makes                                                                                | At most 50,000 per pass (`max_deletes_per_pass`), paced to 1,000/s (`delete_rate_per_sec`); the pass backs off at the first EMFILE/ENFILE/ENOTCONN/EIO (see Bounded deletion)                        |
-| Database/PVC/workspace volumes                                                                           | Never removed by storage GC                                                                                                                                                                          |
+| Dangling images (untagged)                                                                               | Remove an image untagged, used by no container (running or stopped) and built over 1h ago; full and automatic passes; at most 100 Docker removals per pass (`max_docker_removals_per_pass`)          |
+| Anonymous Docker volumes                                                                                 | Remove a labelled, 64-hex-named, plain `local` volume no container uses, seen unused for 14 days (`anonymous_volume_unused`, `off` disables); only by an explicit `forge storage gc --apply`         |
+| Named Docker volumes, database/PVC/workspace volumes                                                     | Never removed by storage GC                                                                                                                                                                          |
 
 The cache and log budgets are targets: recent/in-use cache and the diagnostic
 floor can exceed them. No budget overrides release or workload protection. The
@@ -89,7 +93,13 @@ it. A source-cache clone is renamed to `.forge-evicting-<name>-<ts>` before its
 tree is deleted, so a build never resolves a half-deleted pin, and the next
 pass finishes the leftover. Inside a pass, removing a worktree is charged
 against the same budget (git makes those unlinks, so they are not paced); a
-worktree that does not fit is held as `deferred`.
+worktree that does not fit is held as `deferred`. Removing a dangling image or
+an anonymous volume is granted as one paced unlink too, and is also counted
+against `max_docker_removals_per_pass` (default 100), because the daemon makes
+that object's unlinks and one object can be thousands of files. A daemon error
+reporting `too many open files`, `input/output error` or `transport endpoint is
+not connected` backs the pass off like the errno itself, and the builder and
+registry layers do not start.
 
 Direct Go, frontend, shell and Docker build lanes recheck capacity before starting.
 `forge env up` checks before startup and host launches. `forge storage check
@@ -235,6 +245,57 @@ artifacts. Any unreadable manifest aborts the whole plan. Registries forge
 creates are created with `--delete-enabled`. Arbitrary remote registries,
 customized registry containers, and application volumes are outside this local
 implementation.
+
+### Dangling images and anonymous volumes
+
+Every rebuild of a tag leaves the image it replaced behind, untagged, and every
+container removed without `-v` (including `docker compose down`) leaves its
+anonymous volumes behind. On a cloud workspace on 2026-10-09 that was 8.9 GB of
+10.35 GB of images, and 4.2 GB of 4.5 GB in 44 volumes. `forge storage gc`
+prints each target; `--apply` removes them. Removal is never forced, so the
+daemon's own in-use check is the last guard after forge's.
+
+**Dangling images run in every pass, automatic ones included.** A target is an
+image with no tag (`docker image ls --filter dangling=true`; an image that kept
+only a digest reference counts), that no container, running or stopped, was
+created from, built more than an hour ago (a `docker build` with no `-t` leaves
+its result dangling until somebody tags or runs it). Its tags are read again
+right before `docker rmi <id>`, because `rmi` of an image with one tag deletes
+it. An untagged image cannot be selected by name, so nothing but a container or
+a child image can be relying on it, and being wrong costs a rebuild of an image
+whose tag already points at something newer. Oldest go first.
+
+**Anonymous volumes are removed only by an explicit `forge storage gc
+--apply`.** The automatic passes — `forge env up`'s background pass, the hourly
+and daily schedule, `forge storage daemon` — only observe. A target must be:
+
+- **Anonymous by both signals:** the `com.docker.volume.anonymous` label the
+  daemon sets on every volume it creates without a name (Docker 23+; the
+  workspace image installs current `docker-ce`), and the 64-hex name it
+  generates. A compose volume, a k3d volume, anything a person named, and an
+  anonymous volume from a daemon too old to label it are never candidates.
+- **Plain `local`:** no driver options and no plugin driver. Options make even an
+  anonymous volume a mount of something outside Docker's data root (`o=bind`,
+  NFS), and a plugin driver's volume may be a cloud disk.
+- **Unused:** mounted by no container, running or stopped.
+- **Unused for `anonymous_volume_unused`** (default `336h`, 14 days; minimum
+  `24h`; `off` disables the layer), counted from when forge first saw it unused.
+  Docker records no last-use time, so every pass that applies records each
+  unused anonymous volume's first sighting in `anonymous-volumes.json` beside the
+  policy. One seen in use again, or gone, leaves the record and its clock
+  restarts. A preview records nothing. On a machine forge has never observed,
+  the first applying pass starts the clocks and the first removal comes one
+  window later.
+
+Why explicit only: an orphaned anonymous volume is exactly where a compose
+service with no named volume keeps its data after `docker compose down` — the
+`postgres` image declares `VOLUME /var/lib/postgresql/data` — and it is
+recoverable only by mounting it by hash. Nothing a pass can observe tells that
+from scratch. A pass nobody invoked does not make decisions about data, which is
+the rule that keeps worktrees out of the automatic passes too. The window is the
+recovery period; the explicit run is the consent. To recover one, list
+candidates with `forge storage gc` and mount the volume by name:
+`docker run --rm -v <hash>:/data alpine ls /data`.
 
 ## Existing clusters
 

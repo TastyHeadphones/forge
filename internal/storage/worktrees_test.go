@@ -339,9 +339,9 @@ func TestWorktreePushedToRemoteBranchIsRemovable(t *testing.T) {
 }
 
 // The GC layer removes only when BOTH hold: the policy opts in (worktree_reap)
-// and the pass is an explicit `forge storage gc --apply` (ReapWorktrees). The
+// and the pass is an explicit `forge storage gc --apply` (Explicit). The
 // installed schedule and `storage daemon` run the same layer with
-// ReapWorktrees false.
+// Explicit false.
 func TestWorktreeLayerRemovesOnlyInAnExplicitOptedInPass(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds real git repositories and worktrees; runs in task test")
@@ -357,7 +357,7 @@ func TestWorktreeLayerRemovesOnlyInAnExplicitOptedInPass(t *testing.T) {
 		ageDir(t, worktree)
 		fakeLsof(t, unrelatedOpenFile, "exit 0")
 		var out strings.Builder
-		r := Runner{Policy: Policy{Repos: []string{repo}, WorktreeReap: tc.policy}, ReapWorktrees: tc.explicit, Out: &out}
+		r := Runner{Policy: Policy{Repos: []string{repo}, WorktreeReap: tc.policy}, Explicit: tc.explicit, Out: &out}
 		r.Ctx = context.Background()
 		if err := r.worktreeLayer(true); err != nil {
 			t.Fatal(err)

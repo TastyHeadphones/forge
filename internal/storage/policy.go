@@ -68,7 +68,7 @@ type Policy struct {
 	WorktreeRebuildable []string `json:"worktree_rebuildable,omitempty"`
 	// WorktreeReap lets an explicit `forge storage gc --apply` remove
 	// worktrees. Off, the layer only reports. No automatic pass ever removes
-	// one, whatever this says (Runner.ReapWorktrees).
+	// one, whatever this says (Runner.Explicit).
 	WorktreeReap bool `json:"worktree_reap,omitempty"`
 	// WorktreeReapReliantManaged extends worktree_reap to worktrees under
 	// Reliant's worktree root (~/.reliant/worktrees). Reliant owns those: it
@@ -83,7 +83,26 @@ type Policy struct {
 	MaxDeletesPerPass int `json:"max_deletes_per_pass"`
 	// DeleteRatePerSec paces those unlinks. Zero means the default.
 	DeleteRatePerSec int `json:"delete_rate_per_sec"`
+
+	// AnonymousVolumeUnused is how long forge must have seen an anonymous
+	// Docker volume referenced by no container, running or stopped, before
+	// an explicit `forge storage gc --apply` may remove it (anonvolumes.go).
+	// Minimum 24h; "off" disables the layer. Named volumes are never removed,
+	// whatever this says.
+	AnonymousVolumeUnused string `json:"anonymous_volume_unused"`
+	// MaxDockerRemovalsPerPass bounds how many Docker images and volumes one
+	// pass asks the daemon to remove. Zero means the default.
+	MaxDockerRemovalsPerPass int `json:"max_docker_removals_per_pass"`
 }
+
+// anonymousVolumesOff is the AnonymousVolumeUnused value that turns the
+// anonymous-volume layer off entirely: no observation, no removal.
+const anonymousVolumesOff = "off"
+
+// minAnonymousVolumeUnused is the shortest unused window a policy may set. A
+// volume holds data a container wrote, not a rebuildable artifact, so the
+// window is a recovery period after the last container using it went away.
+const minAnonymousVolumeUnused = 24 * time.Hour
 
 // Registry explicitly identifies a local registry and all of its consumers.
 type Registry struct {
@@ -96,7 +115,8 @@ type Registry struct {
 // DefaultPolicy returns conservative local development budgets.
 func DefaultPolicy() Policy {
 	return Policy{LogBudgetGiB: 1, HostReserveGiB: 20, BuildCacheGiB: 20, BuildCacheUnused: "168h", GoCacheUnused: "48h", GoCacheGiB: 60, ImageUnused: "168h", SourceCacheUnused: "336h", SourceCacheKeep: 2, RegistryDays: 14, RegistryKeep: 5, Builders: []string{"default"},
-		MaxDeletesPerPass: defaultMaxDeletesPerPass, DeleteRatePerSec: defaultDeleteRatePerSec}
+		MaxDeletesPerPass: defaultMaxDeletesPerPass, DeleteRatePerSec: defaultDeleteRatePerSec,
+		AnonymousVolumeUnused: "336h", MaxDockerRemovalsPerPass: defaultMaxDockerRemovalsPerPass}
 }
 
 // DefaultPath resolves the machine policy location.
@@ -171,8 +191,11 @@ func (p Policy) Validate() error {
 	if p.SourceCacheKeep < 1 {
 		return fmt.Errorf("storage: source_cache_keep must retain at least one clone per repository, got %d", p.SourceCacheKeep)
 	}
-	if p.MaxDeletesPerPass < 0 || p.DeleteRatePerSec < 0 {
-		return fmt.Errorf("storage: max_deletes_per_pass and delete_rate_per_sec must be positive (0 means the default), got %d and %d", p.MaxDeletesPerPass, p.DeleteRatePerSec)
+	if p.MaxDeletesPerPass < 0 || p.DeleteRatePerSec < 0 || p.MaxDockerRemovalsPerPass < 0 {
+		return fmt.Errorf("storage: max_deletes_per_pass, delete_rate_per_sec and max_docker_removals_per_pass must be positive (0 means the default), got %d, %d and %d", p.MaxDeletesPerPass, p.DeleteRatePerSec, p.MaxDockerRemovalsPerPass)
+	}
+	if _, err := p.anonymousVolumeUnused(); err != nil {
+		return err
 	}
 	for _, v := range []string{p.ImageUnused, p.BuildCacheUnused, p.SourceCacheUnused, p.GoCacheUnused} {
 		d, err := time.ParseDuration(v)

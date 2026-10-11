@@ -10,12 +10,12 @@ import (
 	"github.com/reliant-labs/forge/internal/storage"
 )
 
-// TestOnlyAnExplicitStorageGCMayReapWorktrees: worktree removal is decided by
-// a person or agent running `forge storage gc --apply`, never by a pass that
-// runs on its own. The installed daily job runs the same command, so it is
-// marked --scheduled; `storage daemon` is periodic by definition. (The hourly
-// job and `forge env up`'s background pass run NonDisruptiveGC, which has no
-// worktree layer at all.)
+// TestOnlyAnExplicitStorageGCMayReapWorktrees: worktree and anonymous-volume
+// removal is decided by a person or agent running `forge storage gc --apply`,
+// never by a pass that runs on its own. The installed daily job runs the same
+// command, so it is marked --scheduled; `storage daemon` is periodic by
+// definition. (The hourly job and `forge env up`'s background pass run
+// NonDisruptiveGC, which has no worktree layer and only observes volumes.)
 func TestOnlyAnExplicitStorageGCMayReapWorktrees(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "storage.json")
 	if err := storage.Save(path, storage.DefaultPolicy()); err != nil {
@@ -25,7 +25,7 @@ func TestOnlyAnExplicitStorageGCMayReapWorktrees(t *testing.T) {
 	t.Cleanup(func() { fullGCFn = orig })
 	var reap []bool
 	fullGCFn = func(_ context.Context, r storage.Runner, _ bool) error {
-		reap = append(reap, r.ReapWorktrees)
+		reap = append(reap, r.Explicit)
 		return nil
 	}
 	run := func(args ...string) {
@@ -49,7 +49,7 @@ func TestOnlyAnExplicitStorageGCMayReapWorktrees(t *testing.T) {
 	run("gc", "--apply", "--scheduled")
 	run("daemon")
 	if want := []bool{true, false, false}; !slices.Equal(reap, want) {
-		t.Fatalf("ReapWorktrees for gc / scheduled gc / daemon = %v, want %v", reap, want)
+		t.Fatalf("Explicit for gc / scheduled gc / daemon = %v, want %v", reap, want)
 	}
 }
 
