@@ -142,6 +142,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`forge lint` no longer reports a golangci-lint that cannot read the
+  toolchain's export data as a typecheck failure.** On control-plane the
+  gating lane failed with one `typecheck` error, `could not import time (…
+  export data version 5 is greater than maximum supported version 4)`, in a
+  file nobody had touched. The golangci-lint on PATH (v2.13.1, built with
+  go1.27.0) passed the language check, but the module builds with go1.27.2,
+  whose compiler writes export data version 5. golangci-lint decodes export
+  data with the golang.org/x/tools it was built against, not with the Go it
+  was built with: v2.13.1 (x/tools v0.49.0) reads up to 4 even when built with
+  go1.27.2, and v2.14.0 (x/tools v0.50.0) reads 5 even when built with
+  go1.27.0. Comparing build Go versions therefore cannot decide it, so forge
+  reads golangci-lint's own report. Every lane that runs golangci-lint now
+  captures the output. When the output says the binary cannot decode the
+  export data, forge discards that run, prints one line naming the binary,
+  its build, the toolchain and both format versions, and runs again with its
+  pinned golangci-lint built with the module's toolchain. That build is the
+  same cached one per (pin, toolchain) as the language-version fallback, and
+  the rest of the lint run uses it directly. If forge cannot build it, or the
+  pin cannot read the export data either, the lane fails with one runbook
+  finding naming both binaries and the toolchain, plus the install command.
+  It never reports the bogus typecheck error. Plain `forge lint` now prints
+  golangci-lint's output when the run finishes, not as it streams.
+
 - **Boot-time migration gives its database connection back.**
   `migratekit.AutoMigrate` built golang-migrate's driver with `WithInstance`.
   That driver checks out a dedicated `*sql.Conn` and releases it only in

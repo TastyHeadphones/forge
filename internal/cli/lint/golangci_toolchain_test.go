@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -16,18 +18,24 @@ import (
 // golangci-lint is lower than the targeted Go version (1.27)" — no lint ran,
 // on any project, and nothing said which binary or how to fix it.
 
-// fakeToolchain is a golangciToolchain whose Go-version answers come from
-// maps and whose install writes a placeholder binary, so the decision logic
-// runs without real toolchains, network or a minute-long build.
+// fakeToolchain is a golangciToolchain whose build-info answers come from
+// maps, whose install writes a placeholder binary and whose runs replay
+// canned output, so the decision logic runs without real toolchains,
+// network, a minute-long build or a golangci-lint.
 type fakeToolchain struct {
 	t          *testing.T
 	onPath     string            // "" = not on PATH
 	builtWith  map[string]string // binary path → Go release it was built with
+	versions   map[string]string // binary path → golangci-lint version
 	toolchain  string            // what `go env GOVERSION` reports for the module
 	installErr error
-	installs   []string // "<gobin> <goVersion> <version>" per install call
+	installs   []string // "<goVersion> <version>" per install call
 	notices    []string
 	cache      string
+	// outputs is what each binary prints when run; one not listed
+	// reports a clean "0 issues.".
+	outputs map[string]golangciOutput
+	runs    []string // the binary of every run, in order
 }
 
 func newFakeToolchain(t *testing.T) *fakeToolchain {
@@ -40,8 +48,10 @@ func newFakeToolchain(t *testing.T) *fakeToolchain {
 		t:         t,
 		onPath:    bin,
 		builtWith: map[string]string{bin: "go1.26.2"},
+		versions:  map[string]string{},
 		toolchain: "go1.27.0",
 		cache:     t.TempDir(),
+		outputs:   map[string]golangciOutput{},
 	}
 }
 
@@ -53,11 +63,12 @@ func (f *fakeToolchain) toolchainFor() golangciToolchain {
 			}
 			return f.onPath, nil
 		},
-		binaryGoVersion: func(path string) (string, error) {
-			if v, ok := f.builtWith[path]; ok {
-				return v, nil
+		readBuild: func(path string) (golangciBuild, error) {
+			v, ok := f.builtWith[path]
+			if !ok {
+				return golangciBuild{}, errors.New("not a Go binary")
 			}
-			return "", errors.New("not a Go binary")
+			return golangciBuild{goVersion: v, version: f.versions[path]}, nil
 		},
 		moduleGoVersion: func(context.Context, string) (string, error) { return f.toolchain, nil },
 		install: func(_ context.Context, gobin, goVersion, version string) error {
@@ -73,13 +84,35 @@ func (f *fakeToolchain) toolchainFor() golangciToolchain {
 			if err := os.WriteFile(filepath.Join(gobin, golangciExeName()), []byte("built"), 0o755); err != nil {
 				return err
 			}
-			f.builtWith[filepath.Join(f.cache, version+"-"+goVersion, golangciExeName())] = goVersion
+			final := filepath.Join(f.cache, version+"-"+goVersion, golangciExeName())
+			f.builtWith[final] = goVersion
+			f.versions[final] = version
 			return nil
+		},
+		run: func(_ context.Context, bin string, args []string) golangciOutput {
+			f.runs = append(f.runs, bin)
+			out, ok := f.outputs[bin]
+			if !ok {
+				return golangciOutput{stdout: "0 issues.\n"}
+			}
+			// Under --issues-exit-code=0 every reported issue, typecheck
+			// included, exits 0.
+			if slices.Contains(args, "--issues-exit-code=0") {
+				out.err = nil
+			}
+			return out
 		},
 		cacheDir: func() (string, error) { return f.cache, nil },
 		pin:      "v2.14.0",
 		notify:   func(msg string) { f.notices = append(f.notices, msg) },
 	}
+}
+
+// runCtx is a lint run over the module at dir whose golangci-lint lanes see
+// only this fake.
+func (f *fakeToolchain) runCtx(dir string) *lintRunCtx {
+	tc := f.toolchainFor()
+	return &lintRunCtx{ctx: context.Background(), cwd: dir, paths: []string{"./..."}, golangciMemo: &golangciMemo{tc: &tc}}
 }
 
 // moduleDir writes a go.mod with the given go directive.
@@ -214,8 +247,8 @@ func TestResolveGolangciLint_NothingToCompare(t *testing.T) {
 // the advisory guardrail reports it could not run.
 func TestGolangciLanesReportUnresolvedToolchain(t *testing.T) {
 	unresolved := errors.New("golangci-lint at /usr/local/bin/golangci-lint was built with go1.26.2, but this module targets go 1.27")
-	rc := &lintRunCtx{ctx: context.Background(), paths: []string{"./..."}, golangciMemo: &golangciMemo{}}
-	rc.golangciMemo.once.Do(func() { rc.golangciMemo.res = golangciResolution{err: unresolved} })
+	rc := &lintRunCtx{ctx: context.Background(), paths: []string{"./..."},
+		golangciMemo: &golangciMemo{resolved: true, res: golangciResolution{err: unresolved}}}
 
 	gate := findStep(t, "golangci-lint")
 	if err := gate.runText(rc); err == nil || !strings.Contains(err.Error(), "go1.26.2") {
@@ -230,5 +263,232 @@ func TestGolangciLanesReportUnresolvedToolchain(t *testing.T) {
 	var unavail *laneUnavailableError
 	if err := guard.runText(rc); !errors.As(err, &unavail) {
 		t.Fatalf("advisory guardrail: want a could-not-run error, got %v", err)
+	}
+}
+
+// ── export data ─────────────────────────────────────────────────────────────
+//
+// The bug these pin: control-plane's `forge lint` failed its gating lane with
+// a typecheck error in a file nobody had touched. The golangci-lint on PATH
+// (v2.13.1, built with go1.27.0, golang.org/x/tools v0.49.0) passed the
+// language check, since go1.27 speaks control-plane's `go 1.27.0`. But the
+// module builds with go1.27.2, whose compiler writes export data version 5,
+// and that x/tools decodes up to 4. Every package failed to import the
+// standard library, and forge reported the result as a lint finding.
+
+// exportSkewReport is that golangci-lint's whole report on control-plane,
+// verbatim except for the toolchain directory: one typecheck error standing
+// in for every package.
+const exportSkewReport = `internal/billing/provideradapters/types.go:17:8: could not import time (/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.2.darwin-arm64/src/time/format.go:8:2: could not import errors (/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.2.darwin-arm64/src/errors/wrap.go:8:2: could not import internal/reflectlite (/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.2.darwin-arm64/src/internal/reflectlite/swapper.go:8:2: could not import internal/goarch (-: could not load export data: internal error in importing "internal/goarch" (cannot decode "internal/goarch", export data version 5 is greater than maximum supported version 4); please report an issue)))) (typecheck)
+import "time"
+       ^
+1 issues:
+* typecheck: 1
+`
+
+// newExportSkewFake is the control-plane case: PATH's golangci-lint speaks
+// the module's language but cannot read the export data its toolchain
+// writes. It returns the fake, the module and the path forge's own build
+// lands at.
+func newExportSkewFake(t *testing.T) (f *fakeToolchain, dir, pinned string) {
+	t.Helper()
+	f = newFakeToolchain(t)
+	f.builtWith[f.onPath] = "go1.27.0"
+	f.versions[f.onPath] = "v2.13.1"
+	f.toolchain = "go1.27.2"
+	f.outputs[f.onPath] = golangciOutput{stdout: exportSkewReport, err: errors.New("exit status 1")}
+	return f, moduleDir(t, "1.27.0"), filepath.Join(f.cache, "v2.14.0-go1.27.2", golangciExeName())
+}
+
+// mentionsBogusReport reports whether any finding carries the unreadable
+// binary's typecheck output.
+func mentionsBogusReport(fs []lintJSONFinding) bool {
+	for _, f := range fs {
+		if strings.Contains(f.Message, "could not import") {
+			return true
+		}
+	}
+	return false
+}
+
+// TestGolangciExportDataSkew_LintsWithAToolchainBuild: the lane must not
+// report what an unreadable run printed. It re-runs with forge's pinned
+// golangci-lint built with the module's toolchain, says why in one line, and
+// the rest of the lint run uses that build directly.
+func TestGolangciExportDataSkew_LintsWithAToolchainBuild(t *testing.T) {
+	f, dir, pinned := newExportSkewFake(t)
+	rc := f.runCtx(dir)
+
+	fs, gated, err := findStep(t, "golangci-lint").collect(rc)
+	if err != nil || gated || len(fs) != 0 {
+		t.Fatalf("golangci-lint at %s cannot read go1.27.2's export data, so its report is not a lint result; "+
+			"the lane must re-run with one that can and report that run (clean). Got gated=%v err=%v findings=%+v",
+			f.onPath, gated, err, fs)
+	}
+	if want := []string{f.onPath, pinned}; !slices.Equal(f.runs, want) {
+		t.Fatalf("runs = %q, want the PATH binary, then forge's build %q", f.runs, want)
+	}
+	if want := []string{"go1.27.2 v2.14.0"}; !slices.Equal(f.installs, want) {
+		t.Fatalf("installs = %q, want one build of the pin with the module's toolchain", f.installs)
+	}
+	if len(f.notices) != 1 {
+		t.Fatalf("the switch must be explained in exactly one line; notices = %q", f.notices)
+	}
+	for _, want := range []string{f.onPath, "v2.13.1", "go1.27.0", "go1.27.2", "export data version 5; it reads up to 4", "v2.14.0"} {
+		if !strings.Contains(f.notices[0], want) {
+			t.Errorf("notice does not name %q:\n%s", want, f.notices[0])
+		}
+	}
+
+	// The advisory guardrail in the same run goes straight to the build.
+	gfs, _, gerr := collectTypedAccessGuardJSON(rc)
+	if gerr != nil || mentionsBogusReport(gfs) {
+		t.Fatalf("guardrail after the switch: err=%v findings=%+v", gerr, gfs)
+	}
+	if want := []string{f.onPath, pinned, pinned}; !slices.Equal(f.runs, want) {
+		t.Fatalf("runs = %q, want the guardrail to reuse forge's build, not retry the PATH binary", f.runs)
+	}
+}
+
+// TestGolangciExportDataSkew_TextModeAndExitZero covers the other three
+// lanes. The guardrail runs with --issues-exit-code=0, so there the bogus
+// report EXITS 0 and would pass as a warning-level finding: detection must
+// not depend on the exit status.
+func TestGolangciExportDataSkew_TextModeAndExitZero(t *testing.T) {
+	f, dir, pinned := newExportSkewFake(t)
+	if err := findStep(t, "golangci-lint").runText(f.runCtx(dir)); err != nil {
+		t.Fatalf("text gate: want the re-run's clean verdict, got %v", err)
+	}
+	if want := []string{f.onPath, pinned}; !slices.Equal(f.runs, want) {
+		t.Fatalf("text gate runs = %q, want %q", f.runs, want)
+	}
+
+	f, dir, pinned = newExportSkewFake(t)
+	gfs, gated, err := collectTypedAccessGuardJSON(f.runCtx(dir))
+	if err != nil || gated || mentionsBogusReport(gfs) {
+		t.Fatalf("json guardrail reported the unreadable run (it exits 0 under --issues-exit-code=0): gated=%v err=%v findings=%+v", gated, err, gfs)
+	}
+	if want := []string{f.onPath, pinned}; !slices.Equal(f.runs, want) {
+		t.Fatalf("json guardrail runs = %q, want %q", f.runs, want)
+	}
+
+	f, dir, pinned = newExportSkewFake(t)
+	if err := findStep(t, "typed-config guardrail").runText(f.runCtx(dir)); err != nil {
+		t.Fatalf("text guardrail: want the re-run, got %v", err)
+	}
+	if want := []string{f.onPath, pinned}; !slices.Equal(f.runs, want) {
+		t.Fatalf("text guardrail runs = %q, want %q", f.runs, want)
+	}
+}
+
+// TestGolangciExportDataSkew_PinCannotReadEitherFailsWithRunbook is the
+// future-toolchain case: forge's own build is too old as well. The lane fails
+// with one finding that names both binaries and the toolchain, never with
+// either run's typecheck report, and the guardrail does not try again.
+func TestGolangciExportDataSkew_PinCannotReadEitherFailsWithRunbook(t *testing.T) {
+	f, dir, pinned := newExportSkewFake(t)
+	f.outputs[pinned] = f.outputs[f.onPath]
+	rc := f.runCtx(dir)
+
+	fs, gated, err := findStep(t, "golangci-lint").collect(rc)
+	if err != nil || !gated || len(fs) != 1 || mentionsBogusReport(fs) {
+		t.Fatalf("want exactly one gating finding, the runbook; got gated=%v err=%v findings=%+v", gated, err, fs)
+	}
+	msg := fs[0].Message
+	for _, want := range []string{
+		f.onPath, "go1.27.0", // the binary on PATH and its build
+		"go1.27.2", // the toolchain whose export data neither reads
+		"export data version 5; it reads up to 4", // what is wrong
+		pinned, "v2.14.0", // forge's build, which reads it no better
+		"golangci-lint@latest", "forge's pin needs a bump", // the fix
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("runbook does not name %q:\n%s", want, msg)
+		}
+	}
+
+	runs := len(f.runs)
+	gfs, _, _ := collectTypedAccessGuardJSON(rc)
+	if len(f.runs) != runs || len(gfs) != 1 || !strings.Contains(gfs[0].Message, "export data") {
+		t.Fatalf("guardrail must reuse the verdict without running anything: runs %d→%d findings=%+v", runs, len(f.runs), gfs)
+	}
+}
+
+// TestGolangciExportDataSkew_UnbuildablePinNamesTheFix: offline, the build
+// cannot happen; the runbook says what to install and where.
+func TestGolangciExportDataSkew_UnbuildablePinNamesTheFix(t *testing.T) {
+	f, dir, _ := newExportSkewFake(t)
+	f.installErr = errors.New("dial tcp: lookup proxy.golang.org: no such host")
+
+	fs, gated, _ := findStep(t, "golangci-lint").collect(f.runCtx(dir))
+	if !gated || len(fs) != 1 || mentionsBogusReport(fs) {
+		t.Fatalf("want one gating runbook finding, got gated=%v %+v", gated, fs)
+	}
+	for _, want := range []string{
+		f.onPath, "go1.27.0", "go1.27.2", "proxy.golang.org",
+		"GOTOOLCHAIN=go1.27.2 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0",
+		"ahead of " + filepath.Dir(f.onPath) + " on PATH",
+	} {
+		if !strings.Contains(fs[0].Message, want) {
+			t.Errorf("runbook does not name %q:\n%s", want, fs[0].Message)
+		}
+	}
+	if want := []string{f.onPath}; !slices.Equal(f.runs, want) {
+		t.Errorf("runs = %q, want only the failed PATH run", f.runs)
+	}
+}
+
+// TestGolangciExportDataSkew_ThePinIsNotRebuilt: every build of one
+// golangci-lint version carries the same x/tools, so when the binary that
+// cannot read the export data IS the pin, built with an older Go, rebuilding
+// it with the module's toolchain would cost a minute and change nothing.
+func TestGolangciExportDataSkew_ThePinIsNotRebuilt(t *testing.T) {
+	f, dir, _ := newExportSkewFake(t)
+	f.versions[f.onPath] = "v2.14.0"
+
+	fs, gated, _ := findStep(t, "golangci-lint").collect(f.runCtx(dir))
+	if !gated || len(fs) != 1 || !strings.Contains(fs[0].Message, "golangci-lint@latest") {
+		t.Fatalf("want the runbook for a pin that is too old, got gated=%v %+v", gated, fs)
+	}
+	if len(f.installs) != 0 {
+		t.Errorf("rebuilt the pin, which cannot help: installs = %q", f.installs)
+	}
+}
+
+func TestDetectExportDataSkew(t *testing.T) {
+	for _, tc := range []struct {
+		name, output string
+		want         string // exportDataSkew.String(); "" = no skew
+	}{
+		{"unified format, control-plane's report", exportSkewReport, "export data version 5; it reads up to 4"},
+		{"indexed format", `x.go:3:2: could not import fmt (cannot import "fmt" (unknown iexport format version 3), export data is newer version - update tool)`, "unknown iexport format version 3"},
+		// A dependency that failed to compile has no export data either.
+		// That is a real error, and must reach the user.
+		{"broken dependency", `x.go:3:2: could not import example.com/broken (-: could not load export data: no export data for "example.com/broken")`, ""},
+		{"clean", "0 issues.\n", ""},
+	} {
+		got, found := detectExportDataSkew(tc.output)
+		if found != (tc.want != "") || (found && got.String() != tc.want) {
+			t.Errorf("%s: got %q found=%v, want %q", tc.name, got.String(), found, tc.want)
+		}
+	}
+}
+
+// TestReadGolangciBuild reads this test binary's own build info: the export
+// data reader is golang.org/x/tools, which the lint package links.
+func TestReadGolangciBuild(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Skip(err)
+	}
+	b, err := readGolangciBuild(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.goVersion != goRelease(runtime.Version()) || b.xtools == "" {
+		t.Errorf("read %+v, want built with %s and a golang.org/x/tools version", b, runtime.Version())
+	}
+	if got := goRelease("go1.27.2 X:nodwarf5"); got != "go1.27.2" {
+		t.Errorf("goRelease kept the experiment suffix: %q", got)
 	}
 }
