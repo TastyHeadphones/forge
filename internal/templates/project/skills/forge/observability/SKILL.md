@@ -64,7 +64,7 @@ Run it after `forge env up dev` to verify the pipeline before investigating.
 
 ### Dashboards
 
-HyperDX dashboard JSON dropped into `deploy/observability/dashboards/` is loaded automatically, within about 15 seconds and without a restart (HyperDX's file provisioner, `DASHBOARD_PROVISIONER_DIR`). A provisioned dashboard is read-only in the UI and replaced by name on the next load: edit the file, not the browser copy. A dashboard you build by hand in the UI is separate and never overwritten. The directory is yours; forge scaffolds it empty.
+HyperDX dashboard JSON dropped into `deploy/observability/dashboards/` is loaded automatically, within about 15 seconds and without a restart (HyperDX's file provisioner, `DASHBOARD_PROVISIONER_DIR`). A provisioned dashboard is read-only in the UI and replaced by name on the next load: edit the file, not the browser copy. A dashboard you build by hand in the UI is separate and never overwritten. `forge generate` writes an overview, a dashboard per service and a frontend dashboard into it as `*_gen.json`; every other file there is yours. Depth, and how to override a generated one: `observability/dashboards`.
 
 ## Querying Logs
 
@@ -271,6 +271,6 @@ app-specific read-side (the table + the RPC) is code you own.
 
 - Run `forge env status dev` after `forge env up dev` to verify observability before investigating issues.
 - The HyperDX port is declared in `deploy/kcl/dev/main.k` and listed by `forge env up dev` / `forge env status dev`.
-- `deploy/observability/otel-collector.yaml` and `deploy/observability/dashboards/` are yours: forge scaffolds them once and never rewrites them.
+- `deploy/observability/otel-collector.yaml` is yours: forge scaffolds it once and never rewrites it. In `deploy/observability/dashboards/` only `*_gen.json` (and `saved-searches_gen.ndjson`) are forge's; everything else there is yours.
 - Use the `logevents.go` helpers for structured log events — do not create ad-hoc attribute keys.
 - Trace IDs propagate automatically via OpenTelemetry context — no manual instrumentation needed.

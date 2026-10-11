@@ -179,6 +179,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longest matching command config) and routes each `config_secrets` name to
   the config that declares it. New projects' `config.k` scaffolds the bundle as
   `<bin>_process`. See the `binaries` skill, "One binary, several processes".
+- **Generated HyperDX dashboards.** `forge generate` now derives dashboards
+  from the project's services and writes them to
+  `deploy/observability/dashboards/*_gen.json`, where the local ClickStack
+  already loads them: an overview (request rate, error rate, p50/p95/p99 per
+  service, top errors, error logs), one dashboard per service (a
+  requests/error-rate/latency row for every rpc, DB calls, Go runtime, logs), a
+  frontend dashboard (JS errors, sessions, web vitals, page load, browser API
+  calls) and a saved error-log search per service. Everything filters on
+  `service.name` and `deployment.environment.name`. A hand-written
+  `<name>.json` beside a `<name>_gen.json` takes it over; forge never writes a
+  file there that does not end in `_gen.json`. The model is a renderer-neutral
+  `Spec` (`internal/obsdash`, also written to
+  `deploy/observability/dashboard-spec_gen.json`) that HyperDX JSON is rendered
+  from, so another renderer can draw the same dashboards. Tiles name their
+  source (`Logs`/`Traces`/`Metrics`); the compose entrypoint binds the names to
+  this database's source ids. Alert definitions (error rate, p99, no data) go to
+  `alerts-pending_gen.json` as `pending`, because HyperDX 2.40 never evaluates an
+  alert declared in a provisioned file (hyperdx PR #3233). See skill
+  `observability/dashboards`.
 - **Frontend builds are told what they were built from.** Every frontend build
   forge runs gets `FORGE_SOURCE_REPO`, `FORGE_SOURCE_REF`, `FORGE_SOURCE_COMMIT`
   (the GitSource pin and the sha it resolved to) and `FORGE_RELEASE` (the

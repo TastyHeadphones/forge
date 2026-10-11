@@ -3,10 +3,29 @@
 Every `*.json` file in this directory is loaded into the local HyperDX as a
 provisioned dashboard, within about 15 seconds of the file appearing or
 changing, with no restart. The files are HyperDX v2 dashboard JSON
-(`name`, `tiles`, `tags`, `filters`).
+(`name`, `tiles`, `tags`, `filters`), pinned to ClickStack 2.40.0.
 
 A provisioned dashboard is read-only in the UI and is replaced by name on the
 next load, so edit the file here, not the copy in the browser. A dashboard you
 build by hand in the UI is separate and is never overwritten.
 
-This directory is yours. forge scaffolds it empty and does not rewrite it.
+## Generated dashboards
+
+`forge generate` writes `<project>-<id>_gen.json` here from your services:
+an overview, one dashboard per service (RED per rpc, database, Go runtime,
+logs) and, when you have a frontend, a browser dashboard. Do not edit a
+`_gen.json`: forge rewrites it, and a hand-edit is refused as drift.
+
+To change one, copy it to the same name without `_gen`
+(`shop-service-orders_gen.json` -> `shop-service-orders.json`), give it a NEW
+`name`, and edit that. Its presence tells forge to stop writing the generated
+twin. Any other `*.json` you add is yours too. forge never writes or deletes a
+file here that does not end in `_gen.json`.
+
+Tiles name their source (`Logs`, `Traces`, `Metrics`); the local stack binds
+the names to this database's source ids for you.
+
+`saved-searches_gen.ndjson` is the generated saved searches. The renderer-neutral
+model they and the dashboards come from is `../dashboard-spec_gen.json`;
+`../alerts-pending_gen.json` holds alert definitions that HyperDX 2.40 cannot
+load from a file yet.

@@ -168,6 +168,14 @@ var tier1OwnerRegistry = []tier1OwnerEntry{
 	// Deeper nesting falls through to "no registered owner" which is
 	// fail-closed (stays in scope) — same posture as every other
 	// unregistered path.
+	// Generated observability files are emitted by stepObservabilityDashboards;
+	// when it is gated off (observability off, no services) absence from
+	// WrittenThisRun says nothing about staleness.
+	{glob: "deploy/observability/dashboards/*_gen.json", gate: gateObservabilityDashboardsEnabled},
+	{exact: "deploy/observability/dashboards/saved-searches_gen.ndjson", gate: gateObservabilityDashboardsEnabled},
+	{exact: "deploy/observability/dashboard-spec_gen.json", gate: gateObservabilityDashboardsEnabled},
+	{exact: "deploy/observability/alerts-pending_gen.json", gate: gateObservabilityDashboardsEnabled},
+
 	{glob: "internal/*/mock_gen.go", gate: gateContractsEnabled},
 	{glob: "internal/*/*/mock_gen.go", gate: gateContractsEnabled},
 }

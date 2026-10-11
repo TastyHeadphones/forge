@@ -46,6 +46,7 @@ import (
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/kclmigrate"
 	"github.com/reliant-labs/forge/internal/naming"
+	"github.com/reliant-labs/forge/internal/obsdash"
 	"github.com/reliant-labs/forge/internal/projectstore"
 	"github.com/reliant-labs/forge/internal/shellbuildtokens"
 )
@@ -423,6 +424,10 @@ func generateSteps() []GenStep {
 		// it, or a project whose deploy/ was scaffolded before the first
 		// component existed). Drift is reported by `forge lint`, not repaired.
 		{Name: "workloads.k (scaffold once)", Gate: gateDeployEnabled, GateReason: "features.deploy=false", Run: stepWorkloadsKCL, Tag: "deploy"},
+		// Dashboards are a projection of the services the descriptor and the
+		// parsed protos describe, so they follow "parse services + module
+		// path". Owned overrides live beside the _gen files; see obsdash.
+		{Name: "observability dashboards", Gate: gateObservabilityDashboards, GateReason: "features.observability=false, not a service project, or no services", Run: stepObservabilityDashboards, Tag: "deploy"},
 		// Gated on envs EXISTING, not on features.deploy. A service scaffold
 		// always gets deploy/kcl/<env>/main.k (generator.project: "so the user
 		// has a complete starting point"), and every main.k opens with
@@ -2310,6 +2315,48 @@ func stepCRDKCL(ctx *pipelineContext) error {
 	}
 	return ctx.warnOrFail("CRD KCL manifest generation",
 		generateCRDKCL(ctx.AbsPath, filepath.Join(ctx.AbsPath, kclDir), ctx.Checksums))
+}
+
+// gateObservabilityDashboardsEnabled is the config half of the gate: the local
+// ClickStack (and so its dashboard directory) exists for service projects with
+// observability on. It reads nothing the pipeline derives, so the Tier-1 stomp
+// guard (which runs before services are parsed) can use it too.
+func gateObservabilityDashboardsEnabled(ctx *pipelineContext) bool {
+	return ctx.Cfg != nil && ctx.Cfg.EffectiveKind() == config.ProjectKindService &&
+		ctx.Cfg.Features.ObservabilityEnabled() && ctx.Cfg.Features.CodegenEnabled()
+}
+
+// gateObservabilityDashboards adds the other half: there is nothing to draw
+// without a Connect service.
+func gateObservabilityDashboards(ctx *pipelineContext) bool {
+	return gateObservabilityDashboardsEnabled(ctx) && len(ctx.Services) > 0
+}
+
+// stepObservabilityDashboards writes deploy/observability/dashboards/*_gen.json
+// (HyperDX v2 dashboards), the renderer-neutral dashboard-spec_gen.json beside
+// it, the saved searches and the pending alert definitions.
+func stepObservabilityDashboards(ctx *pipelineContext) error {
+	in := obsdash.Input{Project: ctx.Cfg.Name, HasDatabase: ctx.Cfg.Database.Driver != ""}
+	for _, s := range ctx.Services {
+		svc := obsdash.Service{Name: naming.ServicePackage(s.Name), Package: s.Package, ProtoService: s.Name}
+		for _, m := range s.Methods {
+			svc.Methods = append(svc.Methods, obsdash.Method{Name: m.Name})
+		}
+		in.Services = append(in.Services, svc)
+	}
+	for _, fe := range ctx.Cfg.Frontends {
+		if fe.Type != "react-native" {
+			in.Frontends = append(in.Frontends, fe.Name)
+		}
+	}
+	return ctx.warnOrFail("observability dashboards", func() error {
+		written, err := obsdash.Write(ctx.AbsPath, in, ctx.Checksums)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("  ✅ Generated %d observability file(s) under deploy/observability/\n", len(written))
+		return nil
+	}())
 }
 
 func stepWorkloadsKCL(ctx *pipelineContext) error {

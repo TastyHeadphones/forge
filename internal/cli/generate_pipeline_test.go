@@ -84,6 +84,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"cmd command groups (services/workers/operators)",
 		"discover components",
 		"workloads.k (scaffold once)",
+		"observability dashboards",
 		"per-env deploy config",
 		// AFTER per-env deploy config: the frontend's runtime document is
 		// rendered from the dev env's KCL, so the generated
