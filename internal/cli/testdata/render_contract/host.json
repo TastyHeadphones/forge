@@ -116,6 +116,10 @@
             {
               "name": "OTEL_SERVICE_NAME",
               "value": "api"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
             }
           ],
           "image": "",
@@ -185,6 +189,10 @@
             {
               "name": "OTEL_SERVICE_NAME",
               "value": "migrate"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
             }
           ],
           "image": "",

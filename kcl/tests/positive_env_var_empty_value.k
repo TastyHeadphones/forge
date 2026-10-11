@@ -31,8 +31,9 @@ output = forge.render(forge.Bundle {
 _spec_env = output.workloads[0].spec.env
 _rec_env = [m for m in output.manifests if m.kind == "Workload"][0].spec.env
 
-# The three declared entries, then the OTEL_SERVICE_NAME forge derives.
-assert_env_count = len(_spec_env) == 4 and _spec_env[3].name == "OTEL_SERVICE_NAME"
+# The three declared entries, then the OTEL_SERVICE_NAME and
+# OTEL_RESOURCE_ATTRIBUTES forge derives.
+assert_env_count = len(_spec_env) == 5 and _spec_env[3].name == "OTEL_SERVICE_NAME" and _spec_env[4].name == "OTEL_RESOURCE_ATTRIBUTES"
 assert_empty_name = _spec_env[0].name == "RUNTIME_CLASS_NAME"
 assert_empty_value_present = "value" in _spec_env[0]
 assert_empty_value_is_empty_string = _spec_env[0].value == ""

@@ -93,6 +93,10 @@
               "value": "api"
             },
             {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
+            },
+            {
               "name": "GOMEMLIMIT",
               "value": "921MiB"
             }
@@ -152,6 +156,10 @@
               "value": "migrate"
             },
             {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
+            },
+            {
               "name": "GOMEMLIMIT",
               "value": "921MiB"
             }
@@ -187,6 +195,10 @@
             {
               "name": "OTEL_SERVICE_NAME",
               "value": "nightly"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
             },
             {
               "name": "GOMEMLIMIT",
@@ -236,6 +248,10 @@
             {
               "name": "OTEL_SERVICE_NAME",
               "value": "nats"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
             }
           ],
           "image": "docker.io/library/nats:2.10",
@@ -294,6 +310,10 @@
             {
               "name": "OTEL_SERVICE_NAME",
               "value": "workspace"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
             },
             {
               "name": "GOMEMLIMIT",
@@ -404,6 +424,10 @@
               "value": "api"
             },
             {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
+            },
+            {
               "name": "GOMEMLIMIT",
               "value": "921MiB"
             }
@@ -474,6 +498,10 @@
               "value": "migrate"
             },
             {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
+            },
+            {
               "name": "GOMEMLIMIT",
               "value": "921MiB"
             }
@@ -520,6 +548,10 @@
             {
               "name": "OTEL_SERVICE_NAME",
               "value": "nightly"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
             },
             {
               "name": "GOMEMLIMIT",
@@ -570,6 +602,10 @@
             {
               "name": "OTEL_SERVICE_NAME",
               "value": "nats"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
             }
           ],
           "image": "docker.io/library/nats:2.10",
@@ -639,6 +675,10 @@
             {
               "name": "OTEL_SERVICE_NAME",
               "value": "workspace"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
             },
             {
               "name": "GOMEMLIMIT",

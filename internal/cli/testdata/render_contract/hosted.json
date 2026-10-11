@@ -127,6 +127,10 @@
               "value": "api"
             },
             {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=prod,service.namespace=acme"
+            },
+            {
               "name": "GOMEMLIMIT",
               "value": "921MiB"
             }
@@ -196,6 +200,10 @@
             {
               "name": "OTEL_SERVICE_NAME",
               "value": "migrate"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=prod,service.namespace=acme"
             },
             {
               "name": "GOMEMLIMIT",

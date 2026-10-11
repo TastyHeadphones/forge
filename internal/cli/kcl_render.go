@@ -1339,6 +1339,7 @@ func renderKCLRaw(ctx context.Context, projectDir, env string, extra ...string) 
 	if fo := frontendOutputsDArg(projectDir); fo != "" {
 		dArgs = append(dArgs, fo)
 	}
+	dArgs = append(dArgs, kclrender.ReleaseDArgs(ctx)...)
 	dArgs = append(dArgs, extra...)
 	return kclrender.Run(projectDir, kclDir, dArgs)
 }

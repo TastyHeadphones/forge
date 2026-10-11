@@ -267,6 +267,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged. The scaffolded `dev` and `cloud` envs drop the per-env lambda
   that did this.
 
+- **Every workload gets `OTEL_RESOURCE_ATTRIBUTES`: its environment, project
+  and release.** `pkg/observe` takes the deployment environment from
+  `OTEL_RESOURCE_ATTRIBUTES`, but nothing rendered it, so every service lost
+  its environment attribute. `forge.render` now sets
+  `deployment.environment.name=<env>,service.namespace=<project>,service.version=<release>`
+  on the same runtimes as `OTEL_SERVICE_NAME`, omitting a key whose source is
+  empty and percent-encoding each value. An author's own value is kept whole
+  (an empty literal counts as unset). The release comes from the new
+  `Bundle.release`, which defaults to the reserved `-D release_version=` option
+  that `forge env deploy` and `forge env build` bind to the release they name.
+
+- **`forge.OTEL_ENV` pairs its `:4317` endpoint with
+  `OTEL_EXPORTER_OTLP_PROTOCOL=grpc`.** The runtime's default protocol is
+  `http/protobuf`, so a gRPC-port endpoint with no protocol exported nothing.
+
 - **Go workloads get `GOMEMLIMIT` from their container memory limit.** The Go
   runtime does not read its cgroup limit, so a heap growing toward GOGC's
   target was OOM-killed before the collector felt any pressure. On a cluster
