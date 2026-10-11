@@ -194,13 +194,30 @@ func seedShadowServer(projectDir string) string {
 	return shadowdb.Resolve(projectDir)
 }
 
-// seedConfigFromProject is the seedplan.Config the applier consumes: the
-// library defaults (20 rows per table, salt 0), anchored at today (seedNow) so
-// relative and synthesized timestamps read as current. There is no forge.yaml
-// seed block — the defaults are the contract, and `forge env up --no-seed`
-// skips auto-seed for one run.
+// seedConfigFromProject is the project's dev dataset configuration: the
+// library defaults (20 rows per table, salt 0) — the salt and row counts every
+// consumer of the dataset shares. There is no forge.yaml seed block — the
+// defaults are the contract, and `forge env up --no-seed` skips auto-seed for
+// one run.
+//
+// It is CLOCK-FREE: Now is unset, which seedplan resolves to its fixed
+// reference instant. `forge generate` renders committed files from this config
+// (the frontend mock fixtures), and generated output must be a pure function
+// of its inputs — anchored at today, every committed src/mocks/*_gen.ts went
+// stale at 00:00Z and a project's generated-code CI check turned red daily
+// with no source change. A command that WRITES a dev database, where dates
+// should read as current, uses liveSeedConfig instead.
 func seedConfigFromProject() seedplan.Config {
-	c := seedplan.DefaultConfig()
+	return seedplan.DefaultConfig()
+}
+
+// liveSeedConfig is seedConfigFromProject anchored at today (seedNow), for the
+// commands that seed a running dev database — `forge db seed apply|status|reset`,
+// `forge db reset` and `forge env up`'s auto-seed — so relative and synthesized
+// timestamps read as current rather than as January 2024. Its output moves
+// with the calendar: never render a committed file from it.
+func liveSeedConfig() seedplan.Config {
+	c := seedConfigFromProject()
 	c.Now = seedNow()
 	return c
 }
@@ -211,8 +228,12 @@ func seedConfigFromProject() seedplan.Config {
 // an hour earlier, which is what makes a seeded row a stable thing to debug
 // against.
 func seedNow() time.Time {
-	return time.Now().UTC().Truncate(24 * time.Hour)
+	return seedClock().UTC().Truncate(24 * time.Hour)
 }
+
+// seedClock is the wall clock seedNow reads — a var so a test can run forge
+// on two different calendar days.
+var seedClock = time.Now
 
 // errNonDevSeedTarget is the structural CLI gate: apply/reset refuse any
 // environment forge cannot confirm is dev, and there is deliberately no
@@ -398,7 +419,7 @@ func runDBSeedApply(ctx context.Context, o seedOptions) error {
 	}
 	defer func() { _ = db.Close() }()
 
-	cfg := seedConfigFromProject()
+	cfg := liveSeedConfig()
 	plan, err := seedplan.BuildLivePlan(ctx, db, migDir, seedShadowServer(dbProjectRoot()), cfg)
 	if err != nil {
 		return err
@@ -582,7 +603,7 @@ func runDBSeedStatus(ctx context.Context, dsn, flagDir string) error {
 	}
 	defer func() { _ = db.Close() }()
 
-	plan, err := seedplan.BuildLivePlan(ctx, db, migDir, seedShadowServer(dbProjectRoot()), seedConfigFromProject())
+	plan, err := seedplan.BuildLivePlan(ctx, db, migDir, seedShadowServer(dbProjectRoot()), liveSeedConfig())
 	if err != nil {
 		return err
 	}
@@ -616,7 +637,7 @@ func runDBSeedReset(ctx context.Context, o seedOptions) error {
 	}
 	defer func() { _ = db.Close() }()
 
-	cfg := seedConfigFromProject()
+	cfg := liveSeedConfig()
 	plan, err := seedplan.BuildLivePlan(ctx, db, migDir, seedShadowServer(dbProjectRoot()), cfg)
 	if err != nil {
 		return err

@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Generated frontend mocks no longer read the clock.** control-plane's
+  "Verify Generated Code" check went red every day at 00:00Z with no source
+  change. `forge generate` built the `src/mocks/*_gen.ts` fixtures from the
+  runtime seed config, which `forge db seed` anchors at the current UTC day so
+  a seeded dev database reads as current. Every seeded timestamp in the
+  committed fixtures therefore moved with the calendar. The fixtures now anchor
+  at seedplan's fixed reference instant (the four weeks before 2024-01-29), the
+  same anchor entity factories and CRUD test fixtures already used, so they are
+  a pure function of the migrations, `vocab.yaml`, salt and row counts. Ids,
+  strings, enums and foreign keys still agree with the seeded database; only
+  timestamps differ. The guarantee is enforced twice. In the CLI,
+  `seedConfigFromProject` is clock-free and only `liveSeedConfig` (used by
+  `forge db seed apply|status|reset`, `forge db reset` and `forge env up`'s
+  auto-seed) reads the day. In codegen, the mock seed projection ignores
+  `Config.Now` whatever its caller passes. A project's next `forge generate`
+  rewrites the fixtures' timestamps once, to 2024-01 dates, and then leaves
+  them alone. An audit of every other `time.Now()` reachable from generate
+  turned up nothing else that lands in committed output: the remaining calls
+  are generated code calling `time.Now()` at runtime, or one-time event records
+  (disown, scaffold and migration-applied times) written when the event
+  happens.
+
 - **A contract mock imports every package its foreign interfaces use.**
   `forge generate` rewrote control-plane's `internal/svcdaemon/mock_gen.go`
   without `github.com/nats-io/nats.go`, so the package stopped building on every

@@ -25,11 +25,13 @@ import (
 // project disown` and the drift lint both read.
 func generateFrontendMocks(cfg *config.ProjectConfig, services []codegen.ServiceDef, entities []codegen.EntityDef, projectDir string, cs *checksums.FileChecksums) error {
 	// The dev dataset every fixture value is read from, resolved once for
-	// all frontends. It is built from the same seedplan.Config `forge db seed
-	// apply` uses — so the mocks and the database cannot be looking at
-	// different plans. nil (no migrations,
-	// no reachable shadow server) degrades every value to the synthetic
-	// placeholder, which is what the seeder would write too.
+	// all frontends. It is built from the same salt and row counts `forge db
+	// seed apply` uses — so the mocks and the database cannot be looking at
+	// different plans — but NOT from its clock: these files are committed,
+	// so their timestamps anchor at seedplan's fixed reference instant
+	// rather than today (see seedConfigFromProject vs liveSeedConfig).
+	// nil (no migrations, no reachable shadow server) degrades every value
+	// to the synthetic placeholder, which is what the seeder would write too.
 	seedCfg := seedConfigFromProject()
 	seed, err := codegen.BuildSeedProjection(projectDir, seedCfg)
 	if err != nil {

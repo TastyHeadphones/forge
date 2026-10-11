@@ -113,6 +113,12 @@ start of today (UTC): `{from: -90d, to: +30d}` spreads across a range (optional
 instants. Units: `m` `h` `d` `w`. Undescribed, one lands in the last four
 weeks; describe any whose dates *mean* something.
 
+That "now" is today only when seeding a live database. `forge generate` renders
+the same plan into committed files (the frontend `src/mocks/*_gen.ts` fixtures,
+entity factories), and those anchor "now" at a fixed 2024-01-29. Committed
+output must not change with the calendar, so the mocks' dates differ from the
+seeded rows' even though every other value agrees.
+
 `BOOLEAN` takes `true`/`false` (undescribed: a coin flip). `null` is a list value
 for a **nullable** column; on a NOT NULL column it refuses the seed.
 
