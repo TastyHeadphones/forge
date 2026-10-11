@@ -28,6 +28,20 @@ func scaffoldAdvisoryProject(t *testing.T) string {
 	if err := g.Generate(); err != nil {
 		t.Fatalf("scaffold project: %v", err)
 	}
+	// `forge project new` finishes with a generate run, which writes the
+	// per-env config projection every env's KCL imports. Without it no env
+	// renders, so the GitHub workflow rows — which need every env's render —
+	// would be left out of the report instead of compared.
+	cs, err := generator.LoadChecksums(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := loadAdvisoryConfig(t, dir)
+	captureStdout(t, func() {
+		if err := generatePerEnvDeployConfig(dir, cfg, cs); err != nil {
+			t.Fatalf("generatePerEnvDeployConfig: %v", err)
+		}
+	})
 	return dir
 }
 
@@ -65,43 +79,163 @@ func TestAdvisoryReport_FreshScaffoldIsSilent(t *testing.T) {
 	}
 }
 
-// TestAdvisoryReport_GithubStartersAreInTheSet: the PR template and
-// CODEOWNERS are scaffold-once with a single renderer, and were previously
-// exempt from every gate — drift-exempt because they are the user's, and
-// unmanaged by upgrade because they are not in the frozen-file table. That
-// left them with no feedback path at all.
+// TestAdvisoryReport_GithubStartersAreInTheSet: every .github file forge
+// scaffolds is a row. The PR template, CODEOWNERS and pre-commit.yml have a
+// single renderer each; the GitHub Actions workflows share
+// generator.CIWorkflows with `forge generate` (see
+// TestCIWorkflows_NewAndGenerateRenderIdentically). All of them are the
+// user's from birth, and without a row a fix to their template never reached
+// a project that already had the file — which is how ci.yml's cancel-on-main
+// concurrency outlived its fix.
 //
-// The GitHub Actions workflows are NOT here yet. They used to be excluded
-// because forge rendered them from two disagreeing mappings; they now share
-// generator.CIWorkflows (see TestCIWorkflows_NewAndGenerateRenderIdentically),
-// and adding their rows is a separate change. This test pins the current
-// boundary in both directions.
+// The fresh-scaffold silence test above is what makes these rows safe: it
+// fails if a row's render does not reproduce the bytes the scaffold wrote.
 func TestAdvisoryReport_GithubStartersAreInTheSet(t *testing.T) {
 	dir := scaffoldAdvisoryProject(t)
 	cfg := loadAdvisoryConfig(t, dir)
+	// A workflow the user deleted stays deleted; reporting it as "absent"
+	// on every upgrade would be forge asking for it back.
+	deleted := filepath.Join(".github", "workflows", "e2e.yml")
+	if err := os.Remove(filepath.Join(dir, deleted)); err != nil {
+		t.Fatalf("precondition: the service scaffold writes %s: %v", deleted, err)
+	}
 
-	rows, err := generator.AdvisoryFilesFor(dir, cfg)
+	rows, ciNote, err := upgradeAdvisoryFiles(dir, cfg)
 	if err != nil {
-		t.Fatalf("AdvisoryFilesFor: %v", err)
+		t.Fatalf("upgradeAdvisoryFiles: %v", err)
+	}
+	if ciNote != "" {
+		t.Fatalf("every env of a fresh scaffold renders, so the workflows must be compared; got %q", ciNote)
 	}
 	got := map[string]bool{}
 	for _, r := range rows {
 		got[filepath.ToSlash(r.Path)] = true
 	}
-	for _, want := range []string{".github/pull_request_template.md", ".github/CODEOWNERS"} {
-		if !got[want] {
-			t.Errorf("%s should be an advisory row", want)
+	want := []string{".github/pull_request_template.md", ".github/CODEOWNERS", ".github/dependabot.yml"}
+	workflows, _ := filepath.Glob(filepath.Join(dir, ".github", "workflows", "*.yml"))
+	if len(workflows) < 3 {
+		t.Fatalf("precondition: expected the scaffold's workflows on disk, found %v", workflows)
+	}
+	for _, p := range workflows {
+		rel, _ := filepath.Rel(dir, p)
+		want = append(want, filepath.ToSlash(rel))
+	}
+	for _, w := range want {
+		if !got[w] {
+			t.Errorf("%s should be an advisory row", w)
 		}
 	}
-	for _, unwanted := range []string{
-		".github/workflows/ci.yml",
-		".github/workflows/deploy.yml",
-		".github/workflows/build-images.yml",
-		".github/dependabot.yml",
-	} {
-		if got[unwanted] {
-			t.Errorf("%s has two disagreeing renderers and must not be reported until forge has one", unwanted)
+	if got[filepath.ToSlash(deleted)] {
+		t.Errorf("%s was deleted by the user and must not be a row", deleted)
+	}
+}
+
+// TestAdvisoryReport_PreFixCIConcurrencySurfaces is the defect this lane was
+// extended for. A project scaffolded before the fix carries ci.yml's old
+// `cancel-in-progress: true`, which on a busy runner pool lets each merge
+// cancel the main run before it. `forge generate` never rewrites ci.yml — it
+// is the user's — so the upgrade report is the only way that project learns
+// of the fix: it must name ci.yml, `--check <path>` must show the corrected
+// line, and `--force <path>` must adopt it without touching anything else.
+func TestAdvisoryReport_PreFixCIConcurrencySurfaces(t *testing.T) {
+	dir := scaffoldAdvisoryProject(t)
+	cfg := loadAdvisoryConfig(t, dir)
+	rel := filepath.Join(".github", "workflows", "ci.yml")
+	const fixed = "cancel-in-progress: ${{ github.event_name == 'pull_request' }}"
+	full := filepath.Join(dir, rel)
+	born := mustRead(t, full)
+	if !strings.Contains(born, fixed) {
+		t.Fatalf("precondition: the scaffold's ci.yml carries %q:\n%s", fixed, born)
+	}
+	if err := os.WriteFile(full, []byte(strings.Replace(born, fixed, "cancel-in-progress: true", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spared := filepath.Join(dir, ".github", "workflows", "pre-commit.yml")
+	preCommit := strings.Replace(mustRead(t, spared),
+		"cancel-in-progress: ${{ github.event_name == 'pull_request' }}", "cancel-in-progress: true", 1)
+	if err := os.WriteFile(spared, []byte(preCommit), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var report string
+	withCwd(t, dir, func() {
+		report = captureStdout(t, func() {
+			if _, err := runAdvisoryPass(dir, cfg, generator.ForceNone(), true, false); err != nil {
+				t.Fatalf("runAdvisoryPass: %v", err)
+			}
+		})
+	})
+	for _, want := range []string{filepath.ToSlash(rel), ".github/workflows/pre-commit.yml"} {
+		if !strings.Contains(filepath.ToSlash(report), want) {
+			t.Errorf("a pre-fix %s must be reported:\n%s", want, report)
 		}
+	}
+
+	var detail string
+	withCwd(t, dir, func() {
+		detail = captureStdout(t, func() {
+			if err := runUpgradeDetail(dir, cfg, []string{rel}); err != nil {
+				t.Fatalf("runUpgradeDetail: %v", err)
+			}
+		})
+	})
+	if !strings.Contains(detail, "+  "+fixed) || !strings.Contains(detail, "-  cancel-in-progress: true") {
+		t.Errorf("`upgrade --check %s` must show the concurrency fix as the diff:\n%s", rel, detail)
+	}
+
+	withCwd(t, dir, func() {
+		_ = captureStdout(t, func() {
+			if err := runUpgrade(false, true, []string{rel}, ""); err != nil {
+				t.Fatalf("runUpgrade --force %s: %v", rel, err)
+			}
+		})
+	})
+	if got := mustRead(t, full); got != born {
+		t.Errorf("--force %s must adopt the current template:\n%s", rel, got)
+	}
+	if mustRead(t, spared) != preCommit {
+		t.Errorf("pre-commit.yml was not named after --force but was rewritten")
+	}
+}
+
+// TestAdvisoryReport_UnrenderedEnvSaysWhyWorkflowsAreSkipped: which
+// workflows a project has, and what they hold, come off a render of every
+// env. With one env broken, comparing would report drift forge invented, so
+// the workflows are left out — and the report says so, naming the env and
+// the command that shows why, rather than going quietly silent.
+func TestAdvisoryReport_UnrenderedEnvSaysWhyWorkflowsAreSkipped(t *testing.T) {
+	dir := scaffoldAdvisoryProject(t)
+	cfg := loadAdvisoryConfig(t, dir)
+	broken := filepath.Join(dir, "deploy", "kcl", "staging", "main.k")
+	if err := os.WriteFile(broken, []byte("this is not KCL (\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Stale ci.yml: it would be reported if the workflows were compared.
+	staleFrontendFile(t, filepath.Join(dir, ".github", "workflows", "ci.yml"), 4)
+
+	rows, ciNote, err := upgradeAdvisoryFiles(dir, cfg)
+	if err != nil {
+		t.Fatalf("upgradeAdvisoryFiles: %v", err)
+	}
+	for _, r := range rows {
+		if strings.HasPrefix(filepath.ToSlash(r.Path), ".github/workflows/ci.yml") {
+			t.Errorf("%s compared against a workflow set forge could not render", r.Path)
+		}
+	}
+	if !strings.Contains(ciNote, "staging") || !strings.Contains(ciNote, "env render staging") {
+		t.Errorf("the note must name the env that did not render and how to see why; got %q", ciNote)
+	}
+
+	var out string
+	withCwd(t, dir, func() {
+		out = captureStdout(t, func() {
+			if _, err := runAdvisoryPass(dir, cfg, generator.ForceNone(), true, false); err != nil {
+				t.Fatalf("runAdvisoryPass: %v", err)
+			}
+		})
+	})
+	if !strings.Contains(out, ciNote) {
+		t.Errorf("the report must carry the note:\n%s", out)
 	}
 }
 

@@ -375,6 +375,19 @@ or add a Tier-2 workflow that runs `actionlint` and friends against
   env; when one does not render yet, rescaffold first writes the config
   modules envs import (`forge generate --steps env-config`), and an env that
   still fails is named — run `forge env render <env>` to see why.
+- `forge generate` never rewrites a workflow that exists, so a fix to a
+  workflow template reaches your project through `forge project upgrade`:
+  `--check` names every workflow whose template has moved on, `--check
+  <path>` prints that file's diff, and `--force <path>` adopts the template
+  for that one file. Workflows are compared only when every env renders;
+  otherwise the report names the env that did not.
+- Every forge workflow cancels a superseded run on a pull request ONLY:
+  `cancel-in-progress: ${{ github.event_name == 'pull_request' }}`. Keep
+  that in the workflows you add. A literal `true` on a workflow that runs on
+  push to main lets each merge cancel the main run before it — often while it
+  is still queued — and on a busy runner pool main goes hours without a
+  verdict. A project scaffolded before this rule shows ci.yml (and its
+  siblings) in `forge project upgrade --check`.
 - Tier-2 workflows live alongside Tier-1 in `.github/workflows/`. Use
   any name forge doesn't own; open with `# yours: scaffolded once,
   never touched again — forge will not overwrite this file` so the

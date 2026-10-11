@@ -15,9 +15,11 @@ on:
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
 
+# Cancel a superseded run on a pull request only; a run on main always finishes
+# (ci.yml says why).
 concurrency:
   group: e2e-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Go version is read from go.mod via setup-go's `go-version-file` input
 # so CI and the project stay in sync without a separate env var that drifts.

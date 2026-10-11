@@ -45,10 +45,19 @@
 // command) that disagreed on a project seconds old — a whole docker-build
 // job in ci.yml, the env order in deploy.yml. They now share one,
 // CIWorkflows (ci_workflows.go), pinned byte-identical by
-// TestCIWorkflows_NewAndGenerateRenderIdentically, so the prerequisite is
-// met; adding their rows is a separate change and they are still absent.
+// TestCIWorkflows_NewAndGenerateRenderIdentically, and are rows too
+// (CIWorkflowAdvisoryFiles) — supplied by internal/cli, because their
+// render needs a KCL render of every env.
 //
-// The two non-workflow .github starters have a single renderer and are in.
+// They had to be. With no row, a defect fixed in a workflow template never
+// reached a single existing project: ci.yml shipped `cancel-in-progress:
+// true` for every ref, so on a busy runner pool each merge cancelled the
+// main run before it, and control-plane's main went 2.5 hours without one
+// completed run (control-plane#831). The fix to the template changed
+// nothing for the projects that already had the file.
+//
+// The non-workflow .github starters and pre-commit.yml have a single
+// renderer each and are in AdvisoryFilesFor directly.
 package generator
 
 import (
@@ -164,20 +173,60 @@ func AdvisoryFilesFor(projectDir string, cfg *config.ProjectConfig) ([]AdvisoryF
 	if err != nil {
 		return nil, err
 	}
-	return append(rows, githubStarterAdvisoryFiles(cfg)...), nil
+	return append(rows, githubStarterAdvisoryFiles(projectDir, cfg)...), nil
+}
+
+// CIWorkflowAdvisoryFiles returns a scaffold-once row for every GitHub
+// Actions file the CI mapper gives this project (CIWorkflowsFor) that is on
+// disk, rendered exactly as `forge generate` would write it today.
+//
+// It is separate from AdvisoryFilesFor because two of the mapper's inputs —
+// which frontends exist and which envs are hosted — come from a KCL render
+// of every env, which only internal/cli can perform. The caller supplies
+// them, and must not call this when an env failed to render: the rows would
+// compare against a workflow set forge only guessed at.
+//
+// A workflow that is not on disk is not a row. One never written is
+// `forge generate`'s to write (writeCIScaffold); one the user deleted
+// stays deleted, and `forge project rescaffold <path>` is how to get it
+// back. Reporting either as "absent" would be noise on every upgrade.
+func CIWorkflowAdvisoryFiles(projectDir string, cfg *config.ProjectConfig, in CIInputs) []AdvisoryFile {
+	if cfg == nil || (cfg.CI.Provider != "" && cfg.CI.Provider != "github") {
+		return nil
+	}
+	var rows []AdvisoryFile
+	for _, f := range CIWorkflowsFor(projectDir, cfg, in) {
+		rel := filepath.FromSlash(f.Dest)
+		if !onDisk(projectDir, rel) {
+			continue
+		}
+		rows = append(rows, AdvisoryFile{
+			Path: rel,
+			Render: func() ([]byte, error) {
+				return templates.CITemplates("github").Render(f.Template, f.Data)
+			},
+		})
+	}
+	return rows
+}
+
+// onDisk reports whether rel exists under projectDir.
+func onDisk(projectDir, rel string) bool {
+	_, err := os.Stat(filepath.Join(projectDir, rel))
+	return err == nil
 }
 
 // githubStarterAdvisoryFiles returns the .github starters forge writes
 // once and never re-emits: the PR template (a static file — no render data
-// at all) and CODEOWNERS (one field, derived from the module path exactly
-// as the scaffold derives it).
+// at all), CODEOWNERS (one field, derived from the module path exactly
+// as the scaffold derives it), and the pre-commit workflow (static).
 //
-// Both are already exempt from the drift probe as user-owned, which left
-// them with no feedback path whatsoever: a project whose PR template
+// All three are already exempt from the drift probe as user-owned, which
+// left them with no feedback path whatsoever: a project whose PR template
 // predates a whole new checklist section had no way to learn that. Forge
 // renders each from one place, so what this lane compares against is what
 // the scaffold would write today — no second mapping to disagree with.
-func githubStarterAdvisoryFiles(cfg *config.ProjectConfig) []AdvisoryFile {
+func githubStarterAdvisoryFiles(projectDir string, cfg *config.ProjectConfig) []AdvisoryFile {
 	if cfg.CI.Provider != "" && cfg.CI.Provider != "github" {
 		return nil
 	}
@@ -197,6 +246,18 @@ func githubStarterAdvisoryFiles(cfg *config.ProjectConfig) []AdvisoryFile {
 			Render: func() ([]byte, error) {
 				return templates.CITemplates(provider).Render("CODEOWNERS.tmpl",
 					struct{ GitHubOwner string }{owner})
+			},
+		})
+	}
+	// Only `forge project new` writes pre-commit.yml, with a plain write
+	// that leaves no birth record, so an absent copy cannot be told apart
+	// from one the user deleted on purpose. Report it only while it is
+	// there — the same rule CIWorkflowAdvisoryFiles applies.
+	if cfg.Features.CIEnabled() && onDisk(projectDir, filepath.FromSlash(preCommitWorkflowPath)) {
+		rows = append(rows, AdvisoryFile{
+			Path: filepath.FromSlash(preCommitWorkflowPath),
+			Render: func() ([]byte, error) {
+				return []byte(preCommitWorkflow), nil
 			},
 		})
 	}

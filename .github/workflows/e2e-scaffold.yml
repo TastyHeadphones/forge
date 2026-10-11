@@ -13,9 +13,11 @@ on:
 permissions:
   contents: read
 
+# Cancel a superseded run on a pull request only; a run on main always
+# finishes (ci.yml says why).
 concurrency:
   group: e2e-scaffold-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   scaffold:

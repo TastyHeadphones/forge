@@ -358,7 +358,7 @@ func resolveForceSelection(projectDir string, cfg *config.ProjectConfig, force b
 	}
 
 	managed := generator.ManagedPathsFor(cfg)
-	advisory, err := generator.AdvisoryFilesFor(projectDir, cfg)
+	advisory, ciNote, err := upgradeAdvisoryFiles(projectDir, cfg)
 	if err != nil {
 		return generator.ForceNone(), err
 	}
@@ -379,11 +379,15 @@ func resolveForceSelection(projectDir string, cfg *config.ProjectConfig, force b
 	}
 	if len(unknown) > 0 {
 		sort.Strings(managed)
+		fix := fmt.Sprintf("upgrade only owns these paths in this project:\n    %s", strings.Join(managed, "\n    "))
+		if ciNote != "" {
+			fix += "\n" + ciNote
+		}
 		return generator.ForceNone(), cliutil.UserErr(
 			fmt.Sprintf("%s project upgrade --force %s", Name(), strings.Join(paths, " ")),
 			fmt.Sprintf("not upgrade-managed: %s", strings.Join(unknown, ", ")),
 			"",
-			fmt.Sprintf("upgrade only owns these paths in this project:\n    %s", strings.Join(managed, "\n    ")),
+			fix,
 		)
 	}
 	return generator.ForcePaths(selected...), nil

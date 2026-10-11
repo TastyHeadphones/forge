@@ -17,9 +17,12 @@ on:
 permissions:
   contents: {{.PermContents | default "read"}}
 
+# Cancel a superseded run on a pull request only — the same rule as every
+# forge workflow, so it stays right if this one ever runs on main (ci.yml says
+# why).
 concurrency:
   group: proto-breaking-${{"{{"}} github.ref {{"}}"}}
-  cancel-in-progress: true
+  cancel-in-progress: ${{"{{"}} github.event_name == 'pull_request' {{"}}"}}
 
 jobs:
   buf-breaking:
