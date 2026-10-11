@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -59,12 +61,20 @@ func TestComposeChecks_AskTheInjectedRunner(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte("services: {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	var asked []string
+	// The doctor runs its checks concurrently, and the compose check is not
+	// the only one asking: the telemetry checks query ClickHouse through the
+	// same runner. So the record is locked and its order is not asserted.
+	var (
+		mu    sync.Mutex
+		asked []string
+	)
 	runner := func(_ context.Context, projectDir string, args ...string) ([]byte, error) {
 		if projectDir != dir {
 			t.Errorf("runner got project dir %q, want %q", projectDir, dir)
 		}
+		mu.Lock()
 		asked = append(asked, strings.Join(args, " "))
+		mu.Unlock()
 		if args[0] == "ps" {
 			return []byte(`{"Service":"postgres","State":"running","Health":"healthy"}` + "\n"), nil
 		}
@@ -86,8 +96,10 @@ func TestComposeChecks_AskTheInjectedRunner(t *testing.T) {
 	if compose == nil || compose.Status != StatusPass {
 		t.Fatalf("compose check through the injected runner: %+v, want pass", compose)
 	}
-	if len(asked) == 0 || asked[0] != "ps --format json" {
-		t.Errorf("runner calls: %q, want the first to be `ps --format json`", asked)
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Contains(asked, "ps --format json") {
+		t.Errorf("runner calls: %q, want one to be `ps --format json`", asked)
 	}
 	if got := calls(); got != "" {
 		t.Errorf("an injected runner must be the only way to docker; the host's was asked:\n%s", got)
