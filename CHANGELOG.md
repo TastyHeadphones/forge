@@ -91,6 +91,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A fresh checkout no longer regenerates a committed, current `gen/` before
+  every build.** The build's staleness check compared modification times.
+  git writes `gen/` before `proto/` (index order), so on every clone the
+  protos were the newer files, and every CI job and new worktree ran the
+  whole generate pipeline first. That pipeline needs the codegen toolchain,
+  refuses an unpinned forge, and downloads embedded postgres; control-plane's
+  k3d smoke test died on a Maven Central 429 during it. When
+  `gen/forge_descriptor.json` carries a `source_hash`, staleness is now
+  decided by content: the same digest `loadDescriptor` already uses to refuse
+  a stale descriptor. Only an unstamped tree still falls back to mtimes.
+
 - **`forgeconv-deps-are-interfaces` judges a generic dep by its
   declaration.** A Deps field typed with an instantiated generic interface
   (`streaming.UpdateHub[db.UserUpdate]`) was refused as "concrete type
@@ -100,6 +111,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   interface is silent and a generic struct still fires; a pointer to an
   instantiation still fires as any pointer does. Findings render the type as
   source (`*hub.Broker[Event]`), never as an AST node name.
+
 - **Schema-qualified and quoted table names read as the table, everywhere
   forge reads migration DDL as text.** pg_dump writes every table qualified
   (`CREATE TABLE public.tasks`), and `forge project shapes --kind table`
