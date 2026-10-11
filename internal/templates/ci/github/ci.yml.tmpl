@@ -12,9 +12,15 @@ on:
 permissions:
   contents: {{.PermContents | default "read"}}
 
+# Cancel a superseded run on a pull request only. On main (and tags) the run in
+# progress always finishes: every push to main shares one group, so cancelling
+# there lets each merge kill the run before it — often while its jobs are still
+# queued for a runner — and main can go hours without a single verdict. GitHub
+# keeps at most one PENDING run per group and a newer push replaces it, so a
+# burst of merges costs one extra run, not one per merge.
 concurrency:
   group: ci-${{"{{"}} github.ref {{"}}"}}
-  cancel-in-progress: true
+  cancel-in-progress: ${{"{{"}} github.event_name == 'pull_request' {{"}}"}}
 
 # Go version is read from go.mod's `go` directive via setup-go's
 # `go-version-file` input so CI stays in sync with the project's declared

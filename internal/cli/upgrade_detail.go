@@ -37,9 +37,12 @@ func runUpgradeDetail(projectDir string, cfg *config.ProjectConfig, paths []stri
 	if err != nil {
 		return err
 	}
-	advisoryFiles, err := generator.AdvisoryFilesFor(projectDir, cfg)
+	advisoryFiles, ciNote, err := upgradeAdvisoryFiles(projectDir, cfg)
 	if err != nil {
 		return err
+	}
+	if ciNote != "" {
+		fmt.Printf("%s\n\n", ciNote)
 	}
 	cs, err := generator.LoadChecksums(projectDir)
 	if err != nil {

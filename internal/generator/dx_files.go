@@ -659,7 +659,21 @@ fi
 // cache be tuned independently. Matches the existing workflow style
 // (explicit permissions, pinned action majors, concurrency group).
 func (g *ProjectGenerator) generatePreCommitWorkflow() error {
-	content := `# Runs the same hooks as the local pre-commit config so CI catches
+	dest := filepath.Join(g.Path, filepath.FromSlash(preCommitWorkflowPath))
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(dest, []byte(preCommitWorkflow), 0o644)
+}
+
+// preCommitWorkflowPath is where generatePreCommitWorkflow writes, and the
+// path its scaffold-once advisory row reports on.
+const preCommitWorkflowPath = ".github/workflows/pre-commit.yml"
+
+// preCommitWorkflow is the whole pre-commit workflow. It takes no render
+// data, so this one string is both what `forge project new` writes and what
+// `forge project upgrade` compares an existing copy against.
+const preCommitWorkflow = `# Runs the same hooks as the local pre-commit config so CI catches
 # contributors who haven't installed pre-commit locally. Hook versions
 # are pinned in .pre-commit-config.yaml.
 name: pre-commit
@@ -673,9 +687,11 @@ on:
 permissions:
   contents: read
 
+# Cancel a superseded run on a pull request only; a run on main always
+# finishes (ci.yml says why).
 concurrency:
   group: pre-commit-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   pre-commit:
@@ -698,12 +714,6 @@ jobs:
         run: go install golang.org/x/tools/cmd/goimports@latest
       - uses: pre-commit/action@v3.0.1
 `
-	dir := filepath.Join(g.Path, ".github", "workflows")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(dir, "pre-commit.yml"), []byte(content), 0o644)
-}
 
 // generateExampleMigration writes db/README.md (the migrations-as-truth
 // workflow doc) and ensures db/migrations/ exists. It deliberately does

@@ -13,18 +13,48 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 )
 
+// upgradeAdvisoryFiles is every scaffold-once row `forge project upgrade`
+// reports on: generator.AdvisoryFilesFor's, plus the GitHub Actions
+// workflows, whose render needs the KCL topology only this package reads
+// (ciInputs) — the same inputs `forge generate` writes them from.
+//
+// When an env fails to render, forge cannot know which workflows the
+// project has or what they should hold (release.yml exists only for hosted
+// envs, deploy.yml lists the rest, ci.yml drives the frontends the render
+// declares). Comparing against a guess would report drift forge invented,
+// so the workflow rows are left out and ciNote says why and what to run.
+func upgradeAdvisoryFiles(projectDir string, cfg *config.ProjectConfig) (rows []generator.AdvisoryFile, ciNote string, err error) {
+	rows, err = generator.AdvisoryFilesFor(projectDir, cfg)
+	if err != nil {
+		return nil, "", err
+	}
+	if cfg == nil || (cfg.CI.Provider != "" && cfg.CI.Provider != "github") {
+		return rows, "", nil
+	}
+	if topo := discoverCIHostedEnvs(projectDir); len(topo.Unrendered) > 0 {
+		ciNote = fmt.Sprintf("GitHub workflows not compared: what they should hold depends on every env's render, and %s did not render — run '%s env render %s' to see why",
+			strings.Join(topo.Unrendered, ", "), Name(), topo.Unrendered[0])
+		return rows, ciNote, nil
+	}
+	return append(rows, generator.CIWorkflowAdvisoryFiles(projectDir, cfg, ciInputs(projectDir, cfg))...), "", nil
+}
+
 // runAdvisoryPass inspects every scaffold-once row and prints the report.
 // Returns the results so callers can act on them; the printing is the
 // product.
 func runAdvisoryPass(projectDir string, cfg *config.ProjectConfig, selection generator.ForceSelection, check, showAll bool) ([]generator.AdvisoryResult, error) {
-	files, err := generator.AdvisoryFilesFor(projectDir, cfg)
+	files, ciNote, err := upgradeAdvisoryFiles(projectDir, cfg)
 	if err != nil {
 		return nil, err
+	}
+	if ciNote != "" {
+		defer fmt.Printf("\n%s\n", ciNote)
 	}
 	cs, err := generator.LoadChecksums(projectDir)
 	if err != nil {

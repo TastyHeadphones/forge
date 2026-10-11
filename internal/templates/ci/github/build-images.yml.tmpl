@@ -13,9 +13,12 @@ on:
         required: false
         type: string
 
+# Never cancel a build on main: a newer push waits as the one pending run, so
+# every image push and its signing finish instead of dying half-done (ci.yml
+# says why). Only a pull_request run would ever be cancelled.
 concurrency:
   group: build-images-${{"{{"}} github.ref {{"}}"}}
-  cancel-in-progress: true
+  cancel-in-progress: ${{"{{"}} github.event_name == 'pull_request' {{"}}"}}
 
 # Supply chain hardening (M-12):
 #   * id-token is required for sigstore/cosign's OIDC keyless signing
