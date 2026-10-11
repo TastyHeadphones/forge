@@ -9,16 +9,22 @@ const (
 	// Service is the compose service (and the workload name in dev/main.k).
 	Service = "clickstack"
 
-	// Port variables are declared once in deploy/kcl/<env>/main.k, handed to
+	// EnvOTLPHTTPPort is the collector's published OTLP/HTTP port. The port
+	// variables are declared once in deploy/kcl/<env>/main.k, handed to
 	// compose through OnCompose.env, and read back by `forge env up` to build
 	// the endpoint host processes export to.
 	EnvOTLPHTTPPort = "CLICKSTACK_OTLP_HTTP_PORT"
+	// EnvOTLPGRPCPort is the collector's published OTLP/gRPC port.
 	EnvOTLPGRPCPort = "CLICKSTACK_OTLP_GRPC_PORT"
-	EnvUIPort       = "CLICKSTACK_UI_PORT"
+	// EnvUIPort is the published HyperDX UI port.
+	EnvUIPort = "CLICKSTACK_UI_PORT"
 
-	// The standard OTel variables a process is handed.
-	EnvOTLPPrefix   = "OTEL_EXPORTER_OTLP_"
+	// EnvOTLPPrefix prefixes the standard OTel exporter variables a process
+	// is handed.
+	EnvOTLPPrefix = "OTEL_EXPORTER_OTLP_"
+	// EnvOTLPEndpoint is the standard OTLP base endpoint variable.
 	EnvOTLPEndpoint = EnvOTLPPrefix + "ENDPOINT"
+	// EnvOTLPProtocol is the standard OTLP protocol variable.
 	EnvOTLPProtocol = EnvOTLPPrefix + "PROTOCOL"
 
 	// DashboardsDir is the project-relative directory mounted as HyperDX's
