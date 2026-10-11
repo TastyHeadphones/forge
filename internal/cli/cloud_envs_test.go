@@ -72,6 +72,9 @@ type fakeCPCaller struct {
 	// that ignored the field.
 	ensureErr error
 	ensureID  string
+	// clusters is what ListClusters answers: the org's connected clusters,
+	// which a declaration resolves its bindings' names against.
+	clusters []map[string]any
 }
 
 type fakeCPCall struct {
@@ -110,6 +113,8 @@ func (f *fakeCPCaller) Call(_ context.Context, proc string, req, out any) error 
 		}}
 	case "controlplane.v1.DeployService/ListReleases":
 		reply = map[string]any{"releases": []any{}}
+	case procListClusters:
+		reply = map[string]any{"clusters": f.clusters}
 	case "controlplane.v1.LocalSecretService/PullSecrets":
 		if f.pullErr != nil {
 			return f.pullErr

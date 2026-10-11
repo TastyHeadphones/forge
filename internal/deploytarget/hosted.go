@@ -347,6 +347,22 @@ type HostedEnvRef struct {
 	// reason: an ensure that did not render (a secret set, a promote) must
 	// not erase what a build recorded.
 	ClusterBindings []ClusterBinding
+
+	// HubConverged is WHO APPLIES the env's bound clusters, as decided from
+	// the same render as Shape: true when the control plane's hub converges
+	// the recorded bundle onto them and forge applies nothing, false when
+	// forge applies them from the author's machine (a ledger-only or mixed
+	// env — control-plane prod). It is the declaration of the decision
+	// envLedger.HubConverged makes on this side, sent so the control plane
+	// obeys it instead of inferring it from the bindings: a bound cluster
+	// says WHERE the env lands, not who puts it there.
+	//
+	// A SHAPE FIELD, sent only beside a Shape, because it is a projection of
+	// that render. Nil means "this ensure did not render" and leaves the
+	// stored value untouched, like Shape and ClusterBindings. An env never
+	// declared is treated as forge-applied server-side, so an older forge
+	// can never make the hub a second applier over a cluster it applies.
+	HubConverged *bool
 }
 
 // DeclaresShape reports whether this ref carries a declaration to record.
@@ -435,6 +451,11 @@ func ensureHostedEnvironment(ctx context.Context, c HostedCaller, ref HostedEnvR
 		spec["shape"] = shape
 		if ref.DeclaredBy != nil {
 			spec["declaredBy"] = ProvenanceWireFields(*ref.DeclaredBy)
+		}
+		// Sent explicitly when false: "forge applies this" is a decision
+		// the control plane must record, not the absence of one.
+		if ref.HubConverged != nil {
+			spec["hubConverged"] = *ref.HubConverged
 		}
 	}
 	if len(ref.ClusterBindings) > 0 {
