@@ -120,14 +120,14 @@ func (r Runner) Worktrees(ctx context.Context, repo, base string, idle time.Dura
 }
 
 // worktreeLayer is the GC layer. It removes only in an explicit `forge
-// storage gc --apply` (Runner.ReapWorktrees) under a policy that opts in
+// storage gc --apply` (Runner.Explicit) under a policy that opts in
 // (worktree_reap); otherwise it previews, whatever apply says.
 func (r Runner) worktreeLayer(apply bool) error {
 	repos := r.worktreeRepos()
 	if len(repos) == 0 {
 		return nil
 	}
-	remove := apply && r.ReapWorktrees && r.Policy.WorktreeReap
+	remove := apply && r.Explicit && r.Policy.WorktreeReap
 	switch {
 	case !apply || remove:
 	case !r.Policy.WorktreeReap:

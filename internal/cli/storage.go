@@ -64,11 +64,12 @@ var fullGCFn = func(ctx context.Context, r storage.Runner, apply bool) error { r
 // nothing and records nothing. The caller holds the maintenance lock.
 //
 // explicit is true only for a `forge storage gc` a person or agent ran: it is
-// the one pass that may remove worktrees (under the worktree_reap policy).
-// The installed schedule and `forge storage daemon` pass false.
+// the one pass that may remove worktrees (under the worktree_reap policy) and
+// anonymous volumes. The installed schedule and `forge storage daemon` pass
+// false.
 func runFullGC(ctx context.Context, p storage.Policy, path string, out io.Writer, apply, explicit bool) error {
 	r := maintenanceRunner(p, path, out)
-	r.ReapWorktrees = explicit
+	r.Explicit = explicit
 	err := fullGCFn(ctx, r, apply)
 	if !apply {
 		return storage.RealFailure(err)

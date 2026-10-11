@@ -198,7 +198,7 @@ func maybeOpportunisticGC(_ context.Context, out io.Writer) {
 		fmt.Fprintf(out, "[up] storage: could not start background cleanup (%v); `forge storage gc --apply` runs it by hand.\n", err)
 		return
 	}
-	fmt.Fprintf(out, "[up] storage: pruning build cache, temp scratch and rotated logs in the background (log: %s; %s=0 disables)\n", logPath, storageAutoOptOut)
+	fmt.Fprintf(out, "[up] storage: pruning build cache, dangling images, temp scratch and rotated logs in the background (log: %s; %s=0 disables)\n", logPath, storageAutoOptOut)
 }
 
 // runAutoGC is the body of `forge storage auto-gc`: one bounded,

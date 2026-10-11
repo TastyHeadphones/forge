@@ -252,13 +252,20 @@ func ageText(d time.Duration) string {
 }
 
 func writeRecord(policyPath, path string, r GCResult) error {
+	return writeStateFile(policyPath, path, r)
+}
+
+// writeStateFile atomically replaces path, a maintenance state file kept beside
+// the policy, with v as JSON. Refused under test for the machine policy, like
+// the policy itself.
+func writeStateFile(policyPath, path string, v any) error {
 	if err := guardMachinePolicy(policyPath); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
-	b, err := json.Marshal(r)
+	b, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}

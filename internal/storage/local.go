@@ -41,13 +41,15 @@ type Runner struct {
 	// unbounded.
 	Ctx context.Context
 
-	// ReapWorktrees marks the one pass allowed to remove worktrees: an
-	// explicit `forge storage gc --apply`, and even then only under the
-	// policy's worktree_reap. Every automatic pass leaves it false: the
-	// background auto-gc, the installed schedule and `forge storage daemon`.
-	// An agent between two commands holds no process in its worktree, so to
-	// a pass nobody invoked it looks exactly like an abandoned one.
-	ReapWorktrees bool
+	// Explicit marks the one pass a person or agent invoked: `forge storage
+	// gc` without --scheduled. Only it may remove what no observation can
+	// prove abandoned — worktrees (and then only under the policy's
+	// worktree_reap) and anonymous Docker volumes. Every automatic pass leaves
+	// it false: the background auto-gc, the installed schedule and `forge
+	// storage daemon`. An agent between two commands holds no process in its
+	// worktree, and an orphaned volume may be the only copy of a database, so
+	// to a pass nobody invoked either looks exactly like garbage.
+	Explicit bool
 
 	// afterQuarantine is a test seam run between the quarantine move and the
 	// final classification, where a concurrent writer would land.
@@ -302,6 +304,24 @@ func (r Runner) GC(ctx context.Context, apply bool) error {
 	if err := r.LocalImages(ctx, apply); err != nil {
 		failures = append(failures, layerErr("local-registry images", err))
 	}
+	// These two hand removals to the daemon and can observe its distress.
+	// After a back-off nothing more is asked of it: every later layer forks
+	// docker, and the builder and registry layers make it delete.
+	for _, layer := range []struct {
+		name string
+		run  func() error
+	}{
+		{"dangling images", func() error { return r.DanglingImages(ctx, apply) }},
+		{"anonymous volumes", func() error { return r.AnonymousVolumes(ctx, apply) }},
+	} {
+		if err := layer.run(); err != nil {
+			failures = append(failures, layerErr(layer.name, err))
+		}
+		if err := r.backedOffErr(); err != nil {
+			r.print("remaining docker layers: skipped, the pass backed off\n")
+			return errors.Join(failures...)
+		}
+	}
 	for _, builder := range r.Policy.Builders {
 		if err := ctx.Err(); err != nil {
 			return errors.Join(append(failures, layerErr("builder "+builder, err))...)
@@ -318,7 +338,7 @@ func (r Runner) GC(ctx context.Context, apply bool) error {
 			failures = append(failures, layerErr("registry "+registry.Container, err))
 		}
 	}
-	r.print("persistent volumes, running containers and application data are retained; worktrees are reclaimed only by an explicit `forge storage gc --apply` under the worktree_reap policy\n")
+	r.print("named volumes, volumes any container uses, running containers and application data are retained; anonymous volumes are removed only by an explicit `forge storage gc --apply`, worktrees only by one under the worktree_reap policy\n")
 	return errors.Join(failures...)
 }
 

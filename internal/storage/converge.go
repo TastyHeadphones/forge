@@ -220,7 +220,8 @@ func sorted(xs []string) []string {
 
 // NonDisruptiveGC runs only the layers that cannot interrupt anything a
 // developer is currently using: expiring rotated logs, trimming the Go caches,
-// evicting unused builder cache, the temp sweep and the source cache.
+// removing dangling images, evicting unused builder cache, the temp sweep and
+// the source cache.
 //
 // Registry GC and node reconfiguration are deliberately NOT here. Registry
 // cleanup takes the registry offline for the duration (pushes and pulls fail),
@@ -233,7 +234,9 @@ func sorted(xs []string) []string {
 // installed schedule — and nothing it can observe tells an abandoned worktree
 // from one an agent is between two commands in: no process holds it open, and
 // its files can sit untouched for a day while the agent reads. Removing one is
-// a decision only an explicit `forge storage gc --apply` may take.
+// a decision only an explicit `forge storage gc --apply` may take. Anonymous
+// volumes are the same decision about data: this pass records which ones are
+// unused, so their clocks start, and never removes one (anonvolumes.go).
 //
 // As in GC, each layer's failure is recorded and the rest still run — unless
 // the filesystem reported distress, which stops the pass (deletes.go).
@@ -262,6 +265,14 @@ func (r Runner) NonDisruptiveGC(ctx context.Context, apply bool) error {
 	add(dockerErr)
 	if dockerErr == nil {
 		add(r.runLayer("local-registry images", shareDocker, func(s Runner) error { return s.LocalImages(s.hostCtx(), apply) }))
+		add(r.runLayer("dangling images", shareDocker, func(s Runner) error { return s.DanglingImages(s.hostCtx(), apply) }))
+		// Observe only: this pass starts each anonymous volume's unused
+		// clock but never removes one, whatever the runner was told
+		// (anonvolumes.go).
+		add(r.runLayer("anonymous volumes", shareDocker, func(s Runner) error {
+			s.Explicit = false
+			return s.AnonymousVolumes(s.hostCtx(), apply)
+		}))
 		for _, builder := range r.Policy.Builders {
 			add(r.runLayer("builder "+builder, shareDocker, func(s Runner) error { return s.builderGC(s.hostCtx(), builder, apply) }))
 		}

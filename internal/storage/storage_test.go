@@ -155,7 +155,7 @@ func TestGCRejectsRemoteBuilder(t *testing.T) {
 		if args[0] == "context" {
 			return []byte(`[{"Endpoints":{"docker":{"Host":"unix:///var/run/docker.sock"}}}]`), nil
 		}
-		if args[0] == "ps" || (len(args) > 1 && args[0] == "image" && args[1] == "ls") {
+		if args[0] == "ps" || (len(args) > 1 && (args[0] == "image" || args[0] == "volume") && args[1] == "ls") {
 			return nil, nil
 		}
 		if len(args) > 1 && args[1] == "inspect" {
