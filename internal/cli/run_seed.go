@@ -332,7 +332,7 @@ func maybeAutoSeed(ctx context.Context, store *projectstore.Store, cfg *config.P
 	}
 	defer func() { _ = db.Close() }()
 
-	seedCfg := autoSeedConfig(seedConfigFromProject(), crudEntityTablesForSeed)
+	seedCfg := autoSeedConfig(liveSeedConfig(), crudEntityTablesForSeed)
 	if seedCfg.Tables != nil && len(seedCfg.Tables) == 0 {
 		// quiet-ish: nothing is in scope — no CRUD entity, or `tables: []`.
 		// One line, because "why is my dev DB empty?" deserves an answer.

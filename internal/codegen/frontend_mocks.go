@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jinzhu/inflection"
 
@@ -401,10 +402,15 @@ type SeedProjection struct {
 }
 
 // BuildSeedProjection resolves the project's seed plan from its migrations.
-// cfg is the project's own seed configuration (forge.yaml database.seed) —
-// the salt and row counts the dev dataset is built with — passed in rather
-// than re-derived here so the mocks and `forge db seed apply` cannot be
-// looking at different plans.
+// cfg is the project's own seed configuration — the salt and row counts the
+// dev dataset is built with — passed in rather than re-derived here so the
+// mocks and `forge db seed apply` cannot be looking at different plans.
+//
+// cfg.Now is IGNORED: the projection always anchors relative time at
+// seedplan's fixed reference instant. Everything rendered from it is
+// committed generated code, which must be a pure function of its inputs; a
+// seeded timestamp that followed the caller's clock rewrote every fixture at
+// midnight UTC. See newSeedProjection.
 func BuildSeedProjection(projectDir string, cfg seedplan.Config) (*SeedProjection, error) {
 	migDir := filepath.Join(projectDir, "db", "migrations")
 	tables, err := schemadef.ApplyAndIntrospectAt(migDir, shadowdb.Resolve(projectDir))
@@ -428,6 +434,13 @@ func BuildSeedProjection(projectDir string, cfg seedplan.Config) (*SeedProjectio
 // schema. Split out so the agreement between a mock literal and the seeded
 // cell can be asserted without a database.
 func newSeedProjection(tables []schemadef.Table, cfg seedplan.Config, vocab *seedplan.Vocab) *SeedProjection {
+	// Clock-free by construction, whatever the caller passed: the zero Now
+	// selects seedplan's fixed reference instant (seedplan.Config.Now). The
+	// CLI once handed this the runtime seed config, anchored at today, and
+	// every committed src/mocks/*_gen.ts went stale at 00:00Z. Clearing it
+	// here — not trusting each caller to — is what keeps the fixtures a
+	// pure function of the schema, the vocab and the salt/row counts.
+	cfg.Now = time.Time{}
 	plan, err := seedplan.BuildPlan(tables, seedplan.PoolsFromTables(tables), cfg)
 	if err != nil {
 		return nil

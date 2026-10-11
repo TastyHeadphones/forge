@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/spf13/pflag"
 
@@ -62,6 +63,30 @@ func TestSeedConfigIsTheLibraryDefault(t *testing.T) {
 	}
 	if got.Rows != 20 {
 		t.Errorf("default rows = %d, want 20 (fills a page and exercises pagination)", got.Rows)
+	}
+}
+
+// The project seed config renders committed files (`forge generate`'s frontend
+// mocks), so it must not read the clock; only liveSeedConfig — the one the
+// commands writing a dev database use — anchors at today.
+func TestSeedConfigReadsTheClockOnlyWhenSeedingALiveDatabase(t *testing.T) {
+	prev := seedClock
+	t.Cleanup(func() { seedClock = prev })
+
+	for _, now := range []time.Time{
+		time.Date(2026, 10, 11, 23, 59, 0, 0, time.UTC),
+		time.Date(2026, 10, 12, 0, 1, 0, 0, time.UTC),
+	} {
+		seedClock = func() time.Time { return now }
+		if got := seedConfigFromProject().Now; !got.IsZero() {
+			t.Errorf("at %s seedConfigFromProject().Now = %s, want unset — generated mocks would go stale at midnight UTC",
+				now.Format(time.RFC3339), got.Format(time.RFC3339))
+		}
+		want := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+		if got := liveSeedConfig().Now; !got.Equal(want) {
+			t.Errorf("at %s liveSeedConfig().Now = %s, want the start of that UTC day %s",
+				now.Format(time.RFC3339), got.Format(time.RFC3339), want.Format(time.RFC3339))
+		}
 	}
 }
 
