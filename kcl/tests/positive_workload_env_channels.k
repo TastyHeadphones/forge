@@ -68,8 +68,9 @@ assert_exactly_one_source = all e in _spec_env {
 }
 assert_no_duplicate_names = len(_env) == len(_spec_env)
 # Overriding keeps the base's insertion order; additions go after the
-# declared keys, and the keys forge derives (here OTEL_SERVICE_NAME: no
-# GoBuild, so no GOMEMLIMIT) come after everything the author wrote.
+# declared keys, and the keys forge derives (here OTEL_SERVICE_NAME and
+# OTEL_RESOURCE_ATTRIBUTES: no GoBuild, so no GOMEMLIMIT) come after
+# everything the author wrote.
 assert_order_preserved = [e.name for e in _spec_env][:3] == ["LOG_LEVEL", "DATABASE_URL", "FEATURE_MAP"]
-assert_addition_last = _spec_env[-2].name == "NEW_FLAG"
-assert_derived_after_declared = _spec_env[-1] == {name = "OTEL_SERVICE_NAME", value = "api"}
+assert_addition_last = _spec_env[-3].name == "NEW_FLAG"
+assert_derived_after_declared = _spec_env[-2] == {name = "OTEL_SERVICE_NAME", value = "api"} and _spec_env[-1].name == "OTEL_RESOURCE_ATTRIBUTES"

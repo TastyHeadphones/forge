@@ -84,4 +84,4 @@ assert_one_channel_each = all e in _s.env {
 }
 # Env order is the author's order (k8s $(VAR) expansion depends on it); the
 # keys forge derives (render.k _derived_env) follow everything declared.
-assert_env_order = [e.name for e in _s.env] == ["LOG_LEVEL", "DATABASE_URL", "SENTRY_DSN", "MODE", "POD_IP", "EMPTY", "OTEL_SERVICE_NAME"]
+assert_env_order = [e.name for e in _s.env] == ["LOG_LEVEL", "DATABASE_URL", "SENTRY_DSN", "MODE", "POD_IP", "EMPTY", "OTEL_SERVICE_NAME", "OTEL_RESOURCE_ATTRIBUTES"]

@@ -78,7 +78,7 @@ assert_opt_out = "GOMEMLIMIT" not in _envof("opted-out")
 assert_author_service_name_wins = _envof("opted-out")["OTEL_SERVICE_NAME"] == "custom"
 assert_gogc_owns_gc = "GOMEMLIMIT" not in _envof("own-gc")
 assert_blank_service_name_derived = _envof("own-gc")["OTEL_SERVICE_NAME"] == "own-gc"
-assert_blank_keeps_position = [e.name for e in [w for w in output.workloads if w.name == "own-gc"][0].spec.env] == ["OTEL_SERVICE_NAME", "GOGC"]
+assert_blank_keeps_position = [e.name for e in [w for w in output.workloads if w.name == "own-gc"][0].spec.env] == ["OTEL_SERVICE_NAME", "GOGC", "OTEL_RESOURCE_ATTRIBUTES"]
 assert_own_limit_kept = _envof("own-limit")["GOMEMLIMIT"] == "100MiB"
 assert_hosted_gomemlimit = _envof("hosted")["GOMEMLIMIT"] == "1843MiB"
 assert_host_no_gomemlimit = "GOMEMLIMIT" not in _envof("local")

@@ -52,10 +52,10 @@ WHAT THE LOWERING DECIDES (per workload, `_lower`):
     author's third-party image; host / compose / build-only run no image;
   * ENV: the map becomes the wire's list, with each reference in its
     channel; a forge.WorkloadURL is RESOLVED to a value for a host or
-    cluster referrer and KEPT as a reference for a hosted one. Two keys
-    the author left unset are DERIVED (`_derived_env`): OTEL_SERVICE_NAME
-    (the workload's name) and, for a Go process in a container with a
-    memory limit, GOMEMLIMIT;
+    cluster referrer and KEPT as a reference for a hosted one. Keys the
+    author left unset are DERIVED (`_derived_env`): OTEL_SERVICE_NAME (the
+    workload's name), OTEL_RESOURCE_ATTRIBUTES (env, project, release) and,
+    for a Go process in a container with a memory limit, GOMEMLIMIT;
   * PROBES: `_default_probes`, ADR 0002 §5;
   * the RUNTIME MASK: `_mask_violations` refuses, naming the workload, the
     field and the reason, what the bound runtime cannot honour.
@@ -321,6 +321,17 @@ _env_var = lambda name: str, v: any, where: str, rt: any, bundle: Bundle -> any 
 #     construction. Every runtime that runs a process (host, cluster,
 #     hosted) gets it; a tool and a build-only artifact run none.
 #
+#   OTEL_RESOURCE_ATTRIBUTES — the resource every signal is filed under:
+#     deployment.environment.name=<Bundle.env>, service.namespace=<project>,
+#     service.version=<Bundle.release>, each key omitted when its source is
+#     empty (forge reports only what it knows). The runtime merges it into
+#     its OpenTelemetry resource, and the environment name is how a backend
+#     tells staging's spans from prod's. Same runtimes as OTEL_SERVICE_NAME.
+#     ALL-OR-NOTHING: an author's value is kept whole, never spliced into,
+#     because merging keys into a string they wrote would rewrite it. Values
+#     are percent-encoded (W3C baggage), so a `,` or `=` in a project or env
+#     name cannot split an attribute.
+#
 #   GOMEMLIMIT — for a Go process in a container with a memory limit (a
 #     cluster or hosted runtime), `go_memory_limit_percent` of that limit,
 #     rounded down to whole MiB. The Go runtime does not read its cgroup
@@ -369,19 +380,35 @@ _gomemlimit = lambda w: any, rt: any -> str {
     "${_mib}MiB" if _mib > 0 and not _env_set(_env, "GOMEMLIMIT") and not _env_set(_env, "GOGC") else ""
 }
 
+# A resource-attribute value, percent-encoded so it cannot split the list.
+_otel_encode = lambda v: str -> str {
+    v.replace("%", "%25").replace(",", "%2C").replace("=", "%3D").replace(" ", "%20")
+}
+
+# OTEL_RESOURCE_ATTRIBUTES for the bundle: only the keys whose source is set.
+# service.namespace is the project, which Bundle requires.
+_otel_resource_attributes = lambda bundle: Bundle -> str {
+    ",".join(
+        (["deployment.environment.name=${_otel_encode(bundle.env)}"] if bundle.env else []) \
+        + ["service.namespace=${_otel_encode(bundle.project)}"] \
+        + (["service.version=${_otel_encode(bundle.release)}"] if bundle.release else [])
+    )
+}
+
 # The keys forge derives for w on rt (only those the author left unset).
-_derived_env = lambda w: any, rt: any -> {str:str} {
+_derived_env = lambda w: any, rt: any, bundle: Bundle -> {str:str} {
     _env = w.env if w.env else {}
     _runs = rt.type in _RUNS_A_PROCESS and w.kind != "tool"
     _gml = _gomemlimit(w, rt) if _runs else ""
     ({OTEL_SERVICE_NAME = w.name} if _runs and not _env_set(_env, "OTEL_SERVICE_NAME") else {}) \
+        | ({OTEL_RESOURCE_ATTRIBUTES = _otel_resource_attributes(bundle)} if _runs and not _env_set(_env, "OTEL_RESOURCE_ATTRIBUTES") else {}) \
         | ({GOMEMLIMIT = _gml} if _gml else {})
 }
 
 # The env w runs with on rt: its own, then the derived defaults. A blank
 # author value keeps its position and takes the derived value.
-_effective_env = lambda w: any, rt: any -> {str:} {
-    (w.env if w.env else {}) | _derived_env(w, rt)
+_effective_env = lambda w: any, rt: any, bundle: Bundle -> {str:} {
+    (w.env if w.env else {}) | _derived_env(w, rt, bundle)
 }
 
 # ---------------------------------------------------------------------------
@@ -506,7 +533,7 @@ _spec_image = lambda w: any, rt: any, bundle: Bundle -> str {
 
 # The spec, as the generated tiers.Workload. `rt` is the resolved runtime.
 _spec = lambda w: any, rt: any, bundle: Bundle -> any {
-    _env = _effective_env(w, rt)
+    _env = _effective_env(w, rt, bundle)
     _TWorkload {
         kind = w.kind
         image = _spec_image(w, rt, bundle) or "-"

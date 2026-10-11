@@ -161,6 +161,10 @@
               "value": "search"
             },
             {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
+            },
+            {
               "name": "GOMEMLIMIT",
               "value": "921MiB"
             }
@@ -237,6 +241,10 @@
             {
               "name": "OTEL_SERVICE_NAME",
               "value": "api"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
             }
           ],
           "image": "",
@@ -302,6 +310,10 @@
             {
               "name": "OTEL_SERVICE_NAME",
               "value": "migrate"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
             }
           ],
           "image": "",
@@ -378,6 +390,10 @@
               "value": "search"
             },
             {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
+            },
+            {
               "name": "GOMEMLIMIT",
               "value": "921MiB"
             }
@@ -441,6 +457,10 @@
             {
               "name": "OTEL_SERVICE_NAME",
               "value": "billing"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
             },
             {
               "name": "GOMEMLIMIT",

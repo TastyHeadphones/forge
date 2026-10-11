@@ -155,8 +155,9 @@ value verbatim as a string. Your KCL decides what it means. Declare
 shows the next reader.
 
 - **Options forge derives are refused.** `env`, `namespace`, `image_tag`,
-  `image_digests`, `worktree`, `branch` are computed by forge; a caller-supplied
-  value would disagree with what was actually built and applied.
+  `release_version`, `image_digests`, `worktree`, `branch` are computed by
+  forge; a caller-supplied value would disagree with what was actually built
+  and applied.
 - **`-D` is accepted on `env up` only**, never `env deploy`. A cluster apply
   has to be reproducible from the repo alone.
 
