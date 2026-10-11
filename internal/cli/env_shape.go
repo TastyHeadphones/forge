@@ -609,6 +609,15 @@ func recordEnvDeclaration(ctx context.Context, envName string, entities *KCLEnti
 		return err
 	}
 	ref.ClusterBindings = bindings
+	// WHO APPLIES the bound clusters, by the predicate ledgerForEntities
+	// uses to choose between applying from here and following the hub. The
+	// control plane converges a self-managed env's bundle only when this
+	// says so; without it, a mixed env (control-plane prod: bound clusters
+	// plus a Firebase frontend) got hub Kustomizations over the very objects
+	// this machine applies — two appliers, one of which would revert the
+	// other once it gained the RBAC to try.
+	hubConverged := envConvergedByHub(entities)
+	ref.HubConverged = &hubConverged
 	if err := declareHostedEnv(ctx, client, ref); err != nil {
 		// F-15, stated loudly. A control plane that predates the shape
 		// IGNORES the field (connect's JSON codec discards unknown

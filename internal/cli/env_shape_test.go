@@ -316,6 +316,70 @@ func TestRecordEnvDeclarationSendsTheShapeAndItsProvenance(t *testing.T) {
 	}
 }
 
+// TestRecordEnvDeclarationDeclaresWhoAppliesTheBoundClusters pins the fact the
+// control plane gates hub convergence on.
+//
+// BOTH ENVS BIND THE SAME CLUSTER TO A CONNECTED CLUSTER, so the bindings
+// alone cannot tell them apart — which is exactly how the control plane came
+// to build Flux Kustomizations for control-plane prod. Only the env whose whole
+// local-apply surface is that bound cluster is the hub's to converge. The other
+// also ships a Firebase frontend from here, so forge applies its cluster too
+// (envLedger.Mixed) and the hub must hold no applier for it.
+//
+// THE FALSE IS SENT, NOT OMITTED: an omitted field leaves the stored value
+// untouched, so "forge applies this" has to be said to be recorded.
+func TestRecordEnvDeclarationDeclaresWhoAppliesTheBoundClusters(t *testing.T) {
+	boundAPI := WorkloadEntity{Name: "api", Runtime: RuntimeEntity{Type: RuntimeCluster,
+		Cluster: &ClusterRuntime{Cluster: "gke-prod", ConnectedCluster: "prod-us"}}}
+	cases := []struct {
+		name      string
+		frontends []FrontendEntity
+		want      bool
+	}{
+		{"bound clusters only: the hub converges them", nil, true},
+		{"bound clusters and a frontend forge ships: forge applies them", []FrontendEntity{
+			{Name: "web", Runtime: FrontendRuntime{Type: FrontendRuntimeFirebase}},
+		}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := withDeclarationRecorder(t, declarationFixtureShape())
+			fake.clusters = []map[string]any{{"id": "cl_1", "name": "prod-us"}}
+			withProjectName(t, "acme")
+
+			entities := &KCLEntities{
+				ControlPlane: &ControlPlaneEntity{Type: "control_plane", Endpoint: "https://cp.example.test"},
+				Workloads:    []WorkloadEntity{boundAPI},
+				Frontends:    tc.frontends,
+			}
+			if err := recordEnvDeclaration(context.Background(), "prod", entities); err != nil {
+				t.Fatalf("recordEnvDeclaration: %v", err)
+			}
+			ensures := fake.callsTo(procEnsureEnv)
+			if len(ensures) != 1 {
+				t.Fatalf("EnsureEnvironment calls = %d, want 1", len(ensures))
+			}
+			spec, _ := ensures[0].Body["spec"].(map[string]any)
+			if bindings, _ := spec["clusterBindings"].([]any); len(bindings) != 1 {
+				t.Fatalf("spec.clusterBindings = %v, want the one binding (both envs are bound)", spec["clusterBindings"])
+			}
+			got, present := spec["hubConverged"]
+			if !present {
+				t.Fatalf("the declaration does not say who applies the bound clusters, so the control "+
+					"plane infers the hub from the bindings alone: %v", spec)
+			}
+			if got != tc.want {
+				t.Errorf("spec.hubConverged = %v, want %v", got, tc.want)
+			}
+			// The same predicate the deploy path follows, so the declaration
+			// and what this machine does can never disagree.
+			if want := envConvergedByHub(entities); got != want {
+				t.Errorf("spec.hubConverged = %v but envConvergedByHub = %v", got, want)
+			}
+		})
+	}
+}
+
 // TestRecordEnvDeclarationSkipsAnEnvWithNoControlPlane: an env whose ledger
 // is the project's own files records nothing and fails at nothing. Refusing
 // here would make `forge env build` depend on a control plane that a purely
@@ -484,6 +548,9 @@ func TestEnsureWithoutARenderSendsNoShape(t *testing.T) {
 	}
 	if _, present := spec["declaredBy"]; present {
 		t.Errorf("an ensure with no render sent declaredBy: %v", spec)
+	}
+	if _, present := spec["hubConverged"]; present {
+		t.Errorf("an ensure with no render sent hubConverged, which would overwrite who applies the env: %v", spec)
 	}
 }
 
