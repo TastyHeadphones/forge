@@ -1,0 +1,85 @@
+---
+name: observability/destination
+description: Where an environment's telemetry goes — the typed `forge.Observability` declaration on a Bundle (destination endpoint + headers secret, signals, sampling, retention), what forge renders for it on host/compose, on a cluster (the node-agent DaemonSet) and on forge.OnHosted, and how to send telemetry to your own OTLP backend.
+---
+
+# Observability destination
+
+An environment declares **where its telemetry goes**. Forge renders the plumbing for the runtime. Apps keep exporting OTLP to a local endpoint and never learn the backend.
+
+```
+app ──OTLP──▶ local endpoint (forge-generated) ──▶ destination (declared per env)
+              compose collector │ node agent        local ClickStack │ any OTLP URL │ the platform's
+```
+
+It is one typed field on the Bundle, not a mode:
+
+```python
+observability = forge.Observability {
+    destination = forge.ObservabilityDestination {
+        endpoint = "https://otlp.example.com"        # absolute http(s) URL
+        protocol = "http/protobuf"                   # or "grpc"
+        headers_secret = forge.ObservabilitySecretRef {name = "otlp-auth", key = "headers"}
+    }
+}
+```
+
+## The fields
+
+| Field | Default | Meaning |
+|---|---|---|
+| `Bundle.observability` | unset | **Unset = telemetry off, cleanly.** No endpoint is injected anywhere and nothing is rendered. |
+| `enabled` | `True` | `False` is the same as unset, spelled where it can be flipped |
+| `destination.endpoint` | — | OTLP base URL (required inside a destination) |
+| `destination.protocol` | `http/protobuf` | `grpc` also supported |
+| `destination.headers_secret` | none | `{name, key}`: a reference, **never an inline value**. The value is a JSON object of header → value, e.g. `{"authorization": "<key>"}` |
+| `signals.traces / metrics / logs` | `True` | an off signal is `OTEL_<SIGNAL>_EXPORTER=none` at the app and has no collector pipeline |
+| `signals.profiles` | `False` | on adds a profiles pipeline (and the `service.profilesSupport` gate); the backend must store them |
+| `sampling.traces_ratio` | `1.0` | fraction of traces kept, applied by the collector in front of the destination. Needs a destination |
+| `sampling.errors_always` | `True` | a trace with an error span is kept whatever the ratio |
+| `retention.{traces,metrics,logs}_days` | `0` | hints. The local ClickStack takes one table TTL (the longest); a node agent has no storage and ignores them |
+| `local_port` | `0` | the loopback port the env's collector publishes; host processes export there |
+| `agent.namespace / image / memory_limit_mib` | `forge-observability`, contrib pinned by digest, 256 | the node agent |
+
+Sampling decides per node agent. A trace that crosses nodes can keep its error fragment and lose the rest; gateway-side tail sampling is the complete answer.
+
+## What each runtime gets
+
+| Runtime | Rendered | Workload env |
+|---|---|---|
+| **Host** (`forge env up`) | with no destination: the local ClickStack stores everything (today's default). With one: an `otel-forwarder` compose service replaces it and forwards there; its pipelines are rendered into `.forge/observability/forwarder.yaml` | `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:<local_port>` + `_PROTOCOL=http/protobuf`, **as a pair** |
+| **Cluster** (`OnCluster`: k3d or any `ClusterTarget`) | with a destination: the **node agent** — DaemonSet, ServiceAccount, ClusterRole, ConfigMap and a node-local Service `otel-agent` (`internalTrafficPolicy: Local`) in `agent.namespace`, plus the NetworkPolicy telemetry allow. With no destination: nothing — loopback is unreachable from a cluster, so cluster workloads export nothing | `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-agent.<ns>.svc.cluster.local:4318` + `_PROTOCOL` |
+| **Hosted** (`OnHosted`) | **nothing.** The platform runs its own agent and injects the endpoint | only `OTEL_EXPORTER_OTLP_PROTOCOL` and the `OTEL_<SIGNAL>_EXPORTER=none` switches; the endpoint is the operator's |
+
+An author's own `OTEL_EXPORTER_OTLP_*` (endpoint or protocol, for any signal) wins **whole**: forge never pairs your endpoint with its protocol.
+
+## The node agent
+
+Apps **push** traces, metrics and profiles over OTLP. The agent pulls only what cannot push: container stdout (`filelog`) and kubelet/node metrics (`kubeletstats`). It scrapes nothing in tenant namespaces. `k8sattributes` **enriches** (pod, namespace, node, workload labels); it decides nothing about whose data it is. Authentication is the destination's headers, read from the Secret into `FORGE_OTLP_HEADERS`. Tenant identity is the receiving platform's rule, never forge's.
+
+What `filelog` costs: a **read-only hostPath on `/var/log/pods`** (container logs are root-readable on the node), a hostPath for checkpoints and the exporter's persistent queue, root with every capability dropped and a read-only root filesystem. hostPath is forbidden by pod-security `baseline`, so the agent gets its **own namespace labelled `privileged`**. That is why it is never rendered by the Restricted (hosted) profile: its kinds (DaemonSet, ClusterRole) are outside `RestrictedKinds` on purpose.
+
+## Secrets must resolve
+
+On a cluster the headers Secret lives in `agent.namespace`, and nothing in forge creates it for a real env. The Bundle must say who provides it, or the render is refused:
+
+```python
+required_secrets = [forge.ExternalSecret {
+    name = "otlp-auth", namespace = "forge-observability", keys = ["headers"],
+    reason = "OTLP destination credentials",
+}]
+```
+
+The deploy preflight then checks it exists in the cluster. For a local k3d env use a `rendered_secrets` entry in that namespace. For the local forwarder the value is the secret-store key: `forge secret set --env dev <key>` (value on stdin); `forge env up` refuses to start without it.
+
+## Logs: one path
+
+If the node agent (cluster) or the local collector (host) ships logs, leave `OTEL_LOGS_EXPORTER` unset. Setting it to `otlp` while `signals.logs` is on is refused at render, because every line would be stored twice. Turn `signals.logs` off to ship logs from the app instead.
+
+## Recipes
+
+- **Local only (the scaffold default):** `observability = forge.Observability {local_port = _otlp_http_port}`.
+- **Dev machine → your backend:** set `_destination` in `deploy/kcl/dev/main.k`, `forge secret set --env dev OTLP_HEADERS`.
+- **Staging/prod cluster → your backend:** declare `destination`, the `required_secrets` entry above, and bind workloads to `OnCluster`.
+- **Hosted:** declare `observability = forge.Observability {destination = ...}` only if you want the contract's protocol/signal switches; the endpoint is the platform's.
+- **Off:** leave `observability` unset.

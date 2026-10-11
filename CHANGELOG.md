@@ -23,6 +23,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a prod rollout restarted three services over a PgBouncer that was seconds
   late. `serverkit.AutoMigrate` keeps its signature (no boot probes).
   Existing projects own `serve.go`/`providers.go`: see the PR for the edits.
+- **A typed observability destination: `forge.Observability` on the Bundle.**
+  An environment declares where its telemetry goes (an OTLP endpoint, the
+  protocol, and a `headers_secret` reference, never an inline secret), which
+  signals ship, trace sampling (errors always kept) and retention hints. Forge
+  renders the plumbing per runtime; apps keep exporting OTLP to a local endpoint
+  and never learn the backend. Unset means telemetry off with no dangling
+  endpoint. Host and compose: the local ClickStack stores by default, and a
+  destination swaps it for an `otel-forwarder` service rendered from the
+  declaration. Clusters (k3d or any `ClusterTarget`): a node-agent DaemonSet
+  (OTLP receiver, filelog of container stdout, kubeletstats, k8sattributes for
+  enrichment only, the pinned contrib 0.162 image) with a node-local Service
+  (`internalTrafficPolicy: Local`); client-supplied `k8s.*`/`reliant.*`/`tenant.*`/
+  `org.*` resource attributes are deleted before enrichment. `forge.OnHosted`:
+  forge renders no agent and emits only the `OTEL_*` contract. A headers secret
+  nothing supplies, a workload that also exports OTLP logs, and a host process
+  with no local port are refused at render. `forge.OTEL_ENV` no longer points at
+  `otel-collector.observability:4317`, which nothing deployed. See
+  `observability/destination` and `migrations/v0.1.45`.
+- **Changed:** the OTLP endpoint/protocol pair `forge env up` gave host
+  processes is now derived by that declaration (`ObservabilityEntity`) instead
+  of the removed `clickstackHostOTLPEnv`.
+
 - **Frontend builds are told what they were built from.** Every frontend build
   forge runs gets `FORGE_SOURCE_REPO`, `FORGE_SOURCE_REF`, `FORGE_SOURCE_COMMIT`
   (the GitSource pin and the sha it resolved to) and `FORGE_RELEASE` (the

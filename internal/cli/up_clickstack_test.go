@@ -9,37 +9,40 @@ import (
 	"testing"
 )
 
+// clickstackEntities is a dev env as the typed declaration renders it: the
+// clickstack compose service plus `output.observability` naming the loopback
+// endpoint of the port that service publishes.
 func clickstackEntities(env map[string]string) *KCLEntities {
-	return &KCLEntities{Workloads: []WorkloadEntity{
+	e := &KCLEntities{Workloads: []WorkloadEntity{
 		{Name: "api", Runtime: RuntimeEntity{Type: RuntimeHost}},
 		{Name: "clickstack", Runtime: RuntimeEntity{Type: RuntimeCompose, Compose: &ComposeRuntime{Service: "clickstack", Env: env}}},
 	}}
+	if port := env["CLICKSTACK_OTLP_HTTP_PORT"]; port != "" && port != "0" {
+		e.Observability = &ObservabilityEntity{Enabled: true, LocalEndpoint: "http://127.0.0.1:" + port}
+	}
+	return e
 }
 
-// The endpoint host processes export to is read from the port the env DECLARED
-// for the compose service to publish, so the two cannot drift.
-func TestClickstackHostOTLPEnvFollowsThePublishedPort(t *testing.T) {
-	got := clickstackHostOTLPEnv(clickstackEntities(map[string]string{"CLICKSTACK_OTLP_HTTP_PORT": "4419"}))
-	want := map[string]string{
-		"OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4419",
-		"OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
-	}
+// The endpoint a frontend dev server's /_otel proxy aims at is read from the
+// env's typed declaration, not re-derived from a compose port.
+func TestFrontendOTLPEnvComesFromTheDeclaration(t *testing.T) {
+	got := frontendOTLPEnv(clickstackEntities(map[string]string{"CLICKSTACK_OTLP_HTTP_PORT": "4419"}))
+	want := map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4419"}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("host OTLP env = %v, want %v", got, want)
+		t.Fatalf("frontend OTLP env = %v, want %v", got, want)
 	}
 }
 
-// No clickstack workload (observability off, or a custom backend) means no
+// No declaration, a disabled one, or one with no local collector means no
 // endpoint is invented: processes run exactly as before.
-func TestClickstackHostOTLPEnvIsNilWithoutTheService(t *testing.T) {
+func TestFrontendOTLPEnvIsNilWithoutALocalCollector(t *testing.T) {
 	for name, e := range map[string]*KCLEntities{
-		"nil entities":      nil,
-		"no compose":        {Workloads: []WorkloadEntity{{Name: "api", Runtime: RuntimeEntity{Type: RuntimeHost}}}},
-		"other compose":     {Workloads: []WorkloadEntity{{Name: "pg", Runtime: RuntimeEntity{Type: RuntimeCompose, Compose: &ComposeRuntime{Service: "postgres"}}}}},
-		"port not declared": clickstackEntities(nil),
-		"port zero":         clickstackEntities(map[string]string{"CLICKSTACK_OTLP_HTTP_PORT": "0"}),
+		"nil entities":   nil,
+		"no declaration": {Workloads: []WorkloadEntity{{Name: "api", Runtime: RuntimeEntity{Type: RuntimeHost}}}},
+		"disabled":       {Observability: &ObservabilityEntity{Enabled: false, LocalEndpoint: "http://127.0.0.1:4318"}},
+		"no local port":  {Observability: &ObservabilityEntity{Enabled: true}},
 	} {
-		if got := clickstackHostOTLPEnv(e); got != nil {
+		if got := frontendOTLPEnv(e); got != nil {
 			t.Errorf("%s: got %v, want nil", name, got)
 		}
 	}
@@ -93,7 +96,10 @@ func TestWithDefaultEnvNeverOverridesWhatTheUserSet(t *testing.T) {
 // has made the transport decision; filling in the other half would pair their
 // gRPC :4317 with our http/protobuf and export would fail with nothing on screen.
 func TestWithDefaultEnvIsAllOrNothing(t *testing.T) {
-	defaults := clickstackHostOTLPEnvForTest()
+	defaults := map[string]string{
+		"OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318",
+		"OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+	}
 	for name, user := range map[string][]string{
 		"endpoint only (a gRPC collector)": {"OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4317"},
 		"protocol only":                    {"OTEL_EXPORTER_OTLP_PROTOCOL=grpc"},
@@ -116,27 +122,40 @@ func TestWithDefaultEnvIsAllOrNothing(t *testing.T) {
 	})
 }
 
-// Setting the endpoint or protocol for ONE signal is a transport decision too.
-func TestWithDefaultOTLPEnvRespectsPerSignalSettings(t *testing.T) {
-	defaults := clickstackHostOTLPEnvForTest()
+// A developer's own exported transport beats the pair the declaration
+// derives for host processes, whole: per-signal settings count too, headers
+// alone do not, and an endpoint the AUTHOR declared in KCL is never dropped.
+func TestShellTransportWinsOverTheDerivedPair(t *testing.T) {
+	derived := map[string]string{
+		"OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318",
+		"OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+		"OTEL_SERVICE_NAME":           "api",
+	}
 	for _, kv := range []string{
+		"OTEL_EXPORTER_OTLP_ENDPOINT=http://mine:4317",
+		"OTEL_EXPORTER_OTLP_PROTOCOL=grpc",
 		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://t:4317",
 		"OTEL_EXPORTER_OTLP_METRICS_PROTOCOL=grpc",
 		"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://l:4318",
 	} {
-		in := []string{"PATH=/bin", kv}
-		if got := withDefaultOTLPEnv(in, defaults); !reflect.DeepEqual(got, in) {
-			t.Errorf("%s: defaults injected beside it: %v", kv, got)
+		got := withoutDerivedOTLPIfShellSet(derived, []string{"PATH=/bin", kv})
+		if _, ok := got["OTEL_EXPORTER_OTLP_ENDPOINT"]; ok {
+			t.Errorf("%s: the derived endpoint was kept beside it: %v", kv, got)
+		}
+		if _, ok := got["OTEL_EXPORTER_OTLP_PROTOCOL"]; ok {
+			t.Errorf("%s: the derived protocol was kept beside it: %v", kv, got)
+		}
+		if got["OTEL_SERVICE_NAME"] != "api" {
+			t.Errorf("%s: unrelated derived env was dropped: %v", kv, got)
 		}
 	}
-	got := withDefaultOTLPEnv([]string{"PATH=/bin", "OTEL_EXPORTER_OTLP_HEADERS=authorization=x"}, defaults)
-	if !strings.Contains(strings.Join(got, "\n"), "OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf") {
-		t.Errorf("headers alone must not suppress the defaults: %v", got)
+	if got := withoutDerivedOTLPIfShellSet(derived, []string{"OTEL_EXPORTER_OTLP_HEADERS=authorization=x"}); !reflect.DeepEqual(got, derived) {
+		t.Errorf("headers alone must not suppress the derived pair: %v", got)
 	}
-}
-
-func clickstackHostOTLPEnvForTest() map[string]string {
-	return clickstackHostOTLPEnv(clickstackEntities(map[string]string{"CLICKSTACK_OTLP_HTTP_PORT": "4318"}))
+	authored := map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "https://collector.example:4318", "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf"}
+	if got := withoutDerivedOTLPIfShellSet(authored, []string{"OTEL_EXPORTER_OTLP_ENDPOINT=http://mine:4317"}); !reflect.DeepEqual(got, authored) {
+		t.Errorf("an author-declared endpoint is the declared value: %v", got)
+	}
 }
 
 // A frontend dev server's /_otel proxy must aim at THIS project's collector,
@@ -200,18 +219,56 @@ func TestFrontendDevCmdCarriesTelemetryEnv(t *testing.T) {
 
 // Docker creates a missing bind-mount source as root, which would leave forge
 // unable to write the logs the collector tails.
-func TestEnsureClickstackLogDirOnlyWhenTheServiceRuns(t *testing.T) {
+func TestPrepareLocalCollectorOnlyWhenACollectorRuns(t *testing.T) {
 	dir := t.TempDir()
-	if err := ensureClickstackLogDir(dir, &KCLEntities{}); err != nil {
+	if err := prepareLocalCollector(dir, &KCLEntities{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".forge", "logs")); err == nil {
-		t.Fatal("created .forge/logs although no clickstack workload is declared")
+		t.Fatal("created .forge/logs although no local collector is declared")
 	}
-	if err := ensureClickstackLogDir(dir, clickstackEntities(nil)); err != nil {
+	if err := prepareLocalCollector(dir, clickstackEntities(nil)); err != nil {
 		t.Fatal(err)
 	}
 	if fi, err := os.Stat(filepath.Join(dir, ".forge", "logs")); err != nil || !fi.IsDir() {
 		t.Fatalf(".forge/logs not created: %v", err)
+	}
+}
+
+// With a destination the forwarder replaces ClickStack: its pipeline file is
+// rendered from the declaration, and the destination's headers reach it from
+// the secret store through one fixed variable, never through the file.
+func TestForwarderIsRenderedFromTheDeclaration(t *testing.T) {
+	dir := t.TempDir()
+	o := &ObservabilityEntity{Enabled: true, LocalEndpoint: "http://127.0.0.1:4318",
+		Destination: &ObservabilityDestEntity{Endpoint: "https://otlp.example.com", Protocol: "http/protobuf", HeadersSecret: &struct {
+			Name string `json:"name"`
+			Key  string `json:"key"`
+		}{Name: "otlp", Key: "OTLP_HEADERS"}},
+		Signals: ObservabilitySignalsEntity{Traces: true, Metrics: true, Logs: true}}
+	o.Sampling.TracesRatio = 1
+	e := &KCLEntities{Observability: o, Workloads: []WorkloadEntity{
+		{Name: "otel-forwarder", Runtime: RuntimeEntity{Type: RuntimeCompose, Compose: &ComposeRuntime{Service: "otel-forwarder"}}},
+	}}
+	if err := prepareLocalCollector(dir, e); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, ".forge", "observability", "forwarder.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := string(b)
+	if !strings.Contains(cfg, "https://otlp.example.com") || !strings.Contains(cfg, "${env:FORGE_OTLP_HEADERS}") {
+		t.Errorf("forwarder config does not name the destination and read its headers from the env:\n%s", cfg)
+	}
+	if strings.Contains(cfg, "secret-value") {
+		t.Error("a secret value reached the config file")
+	}
+	got := forwarderHeadersEnv(e, map[string]string{"OTLP_HEADERS": `{"authorization":"secret-value"}`, "UNRELATED": "x"})
+	if !reflect.DeepEqual(got, map[string]string{"FORGE_OTLP_HEADERS": `{"authorization":"secret-value"}`}) {
+		t.Errorf("forwarder env = %v: only the declared key, under the fixed variable", got)
+	}
+	if refs := secretRefsForLaunch(e); len(refs) != 1 || refs[0].EnvName != "OTLP_HEADERS" {
+		t.Errorf("forge env up must require the declared headers key before starting: %v", refs)
 	}
 }

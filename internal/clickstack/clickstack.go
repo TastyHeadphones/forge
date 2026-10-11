@@ -3,8 +3,6 @@
 // have to agree on, so none of them learns a name from another's source.
 package clickstack
 
-import "strings"
-
 const (
 	// Service is the compose service (and the workload name in dev/main.k).
 	Service = "clickstack"
@@ -32,16 +30,16 @@ const (
 	// loaded without a restart.
 	DashboardsDir = "deploy/observability/dashboards"
 
+	// ForwarderService is the compose service that stands in for ClickStack
+	// when the env declares a destination: a plain collector that forwards
+	// OTLP and the host logs there instead of storing them.
+	ForwarderService = "otel-forwarder"
+	// ForwarderConfigDir is the project-relative directory `forge env up`
+	// renders the forwarder's pipeline file into (gitignored under .forge).
+	ForwarderConfigDir = ".forge/observability"
+	// ForwarderConfigFile is that file's name.
+	ForwarderConfigFile = "forwarder.yaml"
+
 	// CollectorConfig is the project-relative collector pipeline file.
 	CollectorConfig = "deploy/observability/otel-collector.yaml"
 )
-
-// HostOTLPEnv is the OTel environment a host process gets so its traces and
-// metrics reach the local collector with no further configuration. Apps never
-// learn the backend: this is the whole contract.
-func HostOTLPEnv(httpPort string) map[string]string {
-	return map[string]string{
-		EnvOTLPEndpoint: "http://127.0.0.1:" + strings.TrimSpace(httpPort),
-		EnvOTLPProtocol: "http/protobuf",
-	}
-}

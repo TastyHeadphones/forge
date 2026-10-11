@@ -1517,7 +1517,13 @@ func expandTierDeclarations(items []any, network *deploy.EnvNetworkPolicy, pullS
 			out = append(out, it)
 			continue
 		}
-		objs, err := expandTierRecord(i, m)
+		var objs []any
+		var err error
+		if m["kind"] == deploy.ObservabilityAgentKind {
+			objs, err = expandObservabilityAgent(i, m)
+		} else {
+			objs, err = expandTierRecord(i, m)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -1563,6 +1569,47 @@ func expandTierRecord(i int, m map[string]any) ([]any, error) {
 		}
 		r.SetLabels(objLabels)
 		out = append(out, r.Object)
+	}
+	return out, nil
+}
+
+// expandObservabilityAgent renders one ObservabilityAgent record (the env's
+// observability declaration, one per cluster) into the node agent's objects,
+// copying the record's labels (cluster route, env stamp) onto every one of
+// them, the cluster-scoped Namespace and ClusterRole included.
+func expandObservabilityAgent(i int, m map[string]any) ([]any, error) {
+	var rec struct {
+		APIVersion string `json:"apiVersion"`
+		Kind       string `json:"kind"`
+		Metadata   struct {
+			Name      string            `json:"name"`
+			Namespace string            `json:"namespace"`
+			Labels    map[string]string `json:"labels"`
+		} `json:"metadata"`
+		Spec deploy.ObservabilityAgentSpec `json:"spec"`
+	}
+	if err := decodeStrict(m, &rec); err != nil {
+		return nil, fmt.Errorf("manifest item %d: %w", i, err)
+	}
+	objs, err := deploy.RenderObservabilityAgent(rec.Spec, deploy.ObservabilityContext{
+		Namespace: rec.Metadata.Namespace,
+		PartOf:    rec.Metadata.Labels[deploy.LabelPartOf],
+		Env:       rec.Metadata.Labels[deploy.LabelEnv],
+	})
+	if err != nil {
+		return nil, fmt.Errorf("render %s: %w", describeManifest(m), err)
+	}
+	out := make([]any, 0, len(objs))
+	for _, o := range objs {
+		labels := o.GetLabels()
+		if labels == nil {
+			labels = map[string]string{}
+		}
+		if c := rec.Metadata.Labels[ClusterRoutingLabel]; c != "" {
+			labels[ClusterRoutingLabel] = c
+		}
+		o.SetLabels(labels)
+		out = append(out, o.Object)
 	}
 	return out, nil
 }

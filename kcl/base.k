@@ -108,27 +108,31 @@ DB_ENV: [EnvVar] = [
     }
 ]
 
-# OTLP exporter env vars for projects that ship a sidecar / cluster
-# OpenTelemetry collector. When unset upstream forge libraries are
-# no-ops.
+# The OpenTelemetry collector forge renders for the node agent and the local
+# forwarder: contrib, pinned by digest. >= 0.162 is the floor that lets the
+# profiles signal flow (service.profilesSupport). The compose forwarder in
+# docker-compose.yml pins the same reference (a test keeps them equal).
+OTEL_COLLECTOR_IMAGE: str = "otel/opentelemetry-collector-contrib:0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6"
+
+# The node-local Service the agent DaemonSet is reached through
+# (internalTrafficPolicy: Local), in `Observability.agent.namespace`.
+OTEL_AGENT_SERVICE: str = "otel-agent"
+
+# OTLP exporter env vars for a workload on a cluster that runs the node agent
+# `Bundle.observability` renders. A project that declares Bundle.observability
+# needs none of this: forge derives the same pair. This is the splice default
+# for one that wires its workloads by hand.
+#
+# 4318 is OTLP/HTTP, the runtime's default protocol. Sampling is declared on
+# Observability.sampling and applied by the agent, so no sampler is set here.
 OTEL_ENV: [EnvVar] = [
     EnvVar {
         name = "OTEL_EXPORTER_OTLP_ENDPOINT"
-        value = "http://otel-collector.observability:4317"
+        value = "http://${OTEL_AGENT_SERVICE}.forge-observability.svc.cluster.local:4318"
     }
-    # 4317 is OTLP/gRPC. The runtime's default protocol is http/protobuf
-    # (:4318), so a gRPC endpoint must say so or export fails silently.
     EnvVar {
         name = "OTEL_EXPORTER_OTLP_PROTOCOL"
-        value = "grpc"
-    }
-    EnvVar {
-        name = "OTEL_TRACES_SAMPLER"
-        value = "parentbased_traceidratio"
-    }
-    EnvVar {
-        name = "OTEL_TRACES_SAMPLER_ARG"
-        value = "0.1"
+        value = "http/protobuf"
     }
 ]
 

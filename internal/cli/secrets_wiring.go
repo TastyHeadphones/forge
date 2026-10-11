@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/clickstack"
 	"github.com/reliant-labs/forge/internal/devstack"
 	"github.com/reliant-labs/forge/internal/secrets"
 )
@@ -180,6 +181,14 @@ func secretRefsForLaunch(e *KCLEntities) []secrets.SecretRef {
 	refs := secretRefsForHostServices(e)
 	if e == nil {
 		return refs
+	}
+	// The local forwarder sends to the destination with the headers in the
+	// store; a missing key would start a collector that is refused by the
+	// backend with nothing on screen saying why.
+	if localCollectorService(e) == clickstack.ForwarderService && e.Observability != nil &&
+		e.Observability.Destination != nil && e.Observability.Destination.HeadersSecret != nil {
+		h := e.Observability.Destination.HeadersSecret
+		refs = append(refs, secrets.SecretRef{EnvName: h.Key, SecretName: h.Name, SecretKey: h.Key})
 	}
 	for _, fe := range e.Frontends {
 		for _, ev := range fe.EffectiveEnvVars() {

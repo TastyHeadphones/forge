@@ -428,6 +428,9 @@ services:
       CLICKHOUSE_PASSWORD: ${CLICKSTACK_CLICKHOUSE_PASSWORD:-forge-dev-only}
       DEFAULT_CONNECTIONS: '[{"name":"Local ClickHouse","host":"http://localhost:8123","username":"forge","password":"${CLICKSTACK_CLICKHOUSE_PASSWORD:-forge-dev-only}"}]'
       USAGE_STATS_ENABLED: "false"
+      # Table TTL from Observability.retention (one TTL covers every table:
+      # the longest hint). Unset keeps ClickStack's own default.
+      HYPERDX_OTEL_EXPORTER_TABLES_TTL: ${CLICKSTACK_TABLES_TTL:-720h}
       # YOUR collector pipelines, merged over ClickStack's: the filelog log path.
       CUSTOM_OTELCOL_CONFIG_FILE: /etc/otelcol-contrib/forge.config.yaml
       # Where the dashboard provisioner reads HyperDX v2 dashboard JSON (below).
@@ -487,6 +490,31 @@ services:
     networks:
       {{.ProjectName}}-net:
         # What compose services (and the `app` service above) export to.
+        aliases:
+          - otel-collector
+
+  # otel-forwarder — stands in for `clickstack` when the env declares an
+  # observability DESTINATION (`destination = forge.ObservabilityDestination
+  # {...}` in deploy/kcl/dev/main.k): a plain collector that forwards OTLP and
+  # the host processes' logs there instead of storing them locally. Its
+  # pipelines are rendered by `forge env up` from that declaration into
+  # .forge/observability/forwarder.yaml; the destination's headers arrive as
+  # FORGE_OTLP_HEADERS from the env's secret store, never from this file.
+  # Apps are unchanged: they keep exporting to the same local port.
+  otel-forwarder:
+    image: otel/opentelemetry-collector-contrib:0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6
+    restart: unless-stopped
+    command: ["--config=/etc/otel/forwarder.yaml"]
+    ports:
+      - "127.0.0.1:${OTEL_FORWARDER_HTTP_PORT:-4318}:4318"
+      - "127.0.0.1:${OTEL_FORWARDER_GRPC_PORT:-4317}:4317"
+    environment:
+      FORGE_OTLP_HEADERS: ${FORGE_OTLP_HEADERS:-}
+    volumes:
+      - ./.forge/observability/forwarder.yaml:/etc/otel/forwarder.yaml:ro
+      - ./.forge/logs:/var/log/forge:ro
+    networks:
+      {{.ProjectName}}-net:
         aliases:
           - otel-collector
 

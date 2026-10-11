@@ -400,6 +400,107 @@ _otel_resource_attributes = lambda bundle: Bundle -> str {
     )
 }
 
+# ---------------------------------------------------------------------------
+# Observability: the typed destination (Bundle.observability).
+#
+# Apps export OTLP to a LOCAL endpoint and never learn the backend. What that
+# endpoint is depends on the runtime the workload is bound to:
+#
+#   host     the local collector's loopback port (Observability.local_port);
+#            the env's compose collector stores locally or forwards to
+#            `destination`
+#   cluster  the node-local Service of the agent DaemonSet forge renders
+#            (an ObservabilityAgent record, expanded in Go)
+#   hosted   NONE. The platform runs its own agent and injects the endpoint;
+#            forge states only the protocol and the signals that are off
+#
+# An env that declares no `observability` (or enabled = False) exports
+# nothing: no endpoint is injected, so the runtime's export stays off.
+# ---------------------------------------------------------------------------
+
+_obs_on = lambda b: Bundle -> bool {
+    bool(b.observability and b.observability.enabled)
+}
+
+# The base URL of the collector on this machine, for host processes and
+# frontend dev servers. "" when the env has none.
+_obs_local_endpoint = lambda b: Bundle -> str {
+    "http://127.0.0.1:${b.observability.local_port}" if _obs_on(b) and b.observability.local_port > 0 else ""
+}
+
+# The node-local agent Service, as a workload in the cluster dials it. Only an
+# env with a destination has an agent: the local ClickStack publishes on
+# loopback, which a cluster cannot reach, so without a destination a cluster
+# workload exports nothing (telemetry off, no dangling endpoint).
+_obs_agent_endpoint = lambda b: Bundle -> str {
+    "http://${OTEL_AGENT_SERVICE}.${b.observability.agent.namespace}.svc.cluster.local:4318" if _obs_on(b) and b.observability.destination else ""
+}
+
+_OTLP_TRANSPORT_KEYS: [str] = [
+    "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_PROTOCOL",
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+    "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
+    "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL",
+]
+
+# An author who set the endpoint or protocol (for any signal) made the
+# transport decision: the pair is derived whole or not at all, so a gRPC
+# endpoint is never paired with our http/protobuf.
+_otlp_transport_set = lambda env: {str:} -> bool {
+    any k in _OTLP_TRANSPORT_KEYS { _env_set(env, k) }
+}
+
+# The OTEL_* keys the declaration derives for a workload on rt.
+_obs_env = lambda rt: any, b: Bundle, env: {str:} -> {str:str} {
+    _ep = _obs_agent_endpoint(b) if rt.type == "cluster" else (_obs_local_endpoint(b) if rt.type == "host" else "")
+    _transport = not _otlp_transport_set(env)
+    _sig = b.observability.signals if _obs_on(b) else Undefined
+    ({OTEL_EXPORTER_OTLP_ENDPOINT = _ep, OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf"} if _obs_on(b) and _ep and _transport else {}) \
+        | ({OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf"} if _obs_on(b) and rt.type == "hosted" and _transport else {}) \
+        | ({OTEL_TRACES_EXPORTER = "none"} if _sig and not _sig.traces and not _env_set(env, "OTEL_TRACES_EXPORTER") else {}) \
+        | ({OTEL_METRICS_EXPORTER = "none"} if _sig and not _sig.metrics and not _env_set(env, "OTEL_METRICS_EXPORTER") else {}) \
+        | ({OTEL_LOGS_EXPORTER = "none"} if _sig and not _sig.logs and not _env_set(env, "OTEL_LOGS_EXPORTER") else {})
+}
+
+# Workloads that ship their own OTLP logs while the env's collector already
+# ships them: every line would be stored twice.
+_logs_double_shipped = lambda workloads: [any], o: any -> [str] {
+    [w.name for w in workloads if o and o.enabled and o.signals.logs and w.env and "OTEL_LOGS_EXPORTER" in w.env \
+        and typeof(w.env["OTEL_LOGS_EXPORTER"]) == "str" and "otlp" in w.env["OTEL_LOGS_EXPORTER"]]
+}
+
+_cluster_targets = lambda workloads: [any] -> [any] {
+    [w.runtime.target for w in workloads if w.runtime and w.runtime.type == "cluster" and w.kind != "tool"]
+}
+
+# The headers Secret must be supplied wherever the agent will read it, or the
+# DaemonSet never starts. Nothing to check without a cluster workload (no
+# agent) or without a headers secret.
+_headers_secret_supplied = lambda workloads: [any], o: any, required: [any], rendered: [any] -> bool {
+    _need = bool(o and o.enabled and o.destination and o.destination.headers_secret and len(_cluster_targets(workloads)) > 0)
+    (not _need) or any s in required { s.name == o.destination.headers_secret.name and s.namespace == o.agent.namespace and o.destination.headers_secret.key in s.keys } \
+        or any s in rendered { s.name == o.destination.headers_secret.name and s.namespace == o.agent.namespace and o.destination.headers_secret.key in s.keys }
+}
+
+# The refusal text, built only when the rule fires: a Bundle message is
+# interpolated even when its condition holds, and an unset observability has
+# no destination to name.
+_headers_secret_msg = lambda o: any -> str {
+    ("Bundle.observability.destination.headers_secret '${o.destination.headers_secret.name}' (key '${o.destination.headers_secret.key}') is not supplied for the node agent in namespace '${o.agent.namespace}'. Declare it so the deploy can check it: `required_secrets = [forge.ExternalSecret {name = \"${o.destination.headers_secret.name}\", namespace = \"${o.agent.namespace}\", keys = [\"${o.destination.headers_secret.key}\"]}]` for a Secret you provision out of band, or a `rendered_secrets` entry in that namespace for a local env") if o and o.destination and o.destination.headers_secret else ""
+}
+
+# Host processes need a loopback port to export to.
+_host_without_local_port = lambda workloads: [any], o: any -> [str] {
+    [w.name for w in workloads if o and o.enabled and o.local_port == 0 and w.runtime and w.runtime.type == "host" and w.kind != "tool"]
+}
+
+# Table TTL for the local ClickStack: the longest retention hint, in hours.
+# "" = the backend's default. ClickStack takes ONE TTL for all its tables.
+observability_ttl = lambda o: Observability -> str {
+    _days = max([o.retention.traces_days, o.retention.metrics_days, o.retention.logs_days])
+    "${_days * 24}h" if _days > 0 else ""
+}
+
 # The keys forge derives for w on rt (only those the author left unset).
 _derived_env = lambda w: any, rt: any, bundle: Bundle -> {str:str} {
     _env = w.env if w.env else {}
@@ -407,6 +508,7 @@ _derived_env = lambda w: any, rt: any, bundle: Bundle -> {str:str} {
     _gml = _gomemlimit(w, rt) if _runs else ""
     ({OTEL_SERVICE_NAME = w.name} if _runs and not _env_set(_env, "OTEL_SERVICE_NAME") else {}) \
         | ({OTEL_RESOURCE_ATTRIBUTES = _otel_resource_attributes(bundle)} if _runs and not _env_set(_env, "OTEL_RESOURCE_ATTRIBUTES") else {}) \
+        | (_obs_env(rt, bundle, _env) if _runs else {}) \
         | ({GOMEMLIMIT = _gml} if _gml else {})
 }
 
@@ -835,6 +937,79 @@ _stamp_cluster = lambda manifest: any, context: str -> any {
     manifest | {metadata = _meta | {labels = {k: v for k, v in _labels if k != "forge.dev/cluster"} | {"forge.dev/cluster" = context}}}
 }
 
+# One ObservabilityAgent record per cluster that runs a forge workload, when
+# the env declares a destination. Go (pkg/deploy.RenderObservabilityAgent)
+# expands it into the DaemonSet and the node-local Service.
+_obs_agent_records = lambda b: Bundle, part_of: str -> [any] {
+    _o = b.observability
+    _targets = {t.cluster: t for t in _cluster_targets(b.workloads)} if _obs_on(b) and b.observability.destination else {}
+    [{
+        apiVersion = "forge.dev/v1alpha1"
+        kind = "ObservabilityAgent"
+        metadata = {
+            name = OTEL_AGENT_SERVICE
+            namespace = _o.agent.namespace
+            labels = labels_lib.managed_labels(OTEL_AGENT_SERVICE, part_of) | {"forge.dev/cluster" = t.cluster}
+        }
+        spec = {
+            "endpoint": _o.destination.endpoint
+            "protocol": _o.destination.protocol
+            "headersSecret": {
+                "name": _o.destination.headers_secret.name
+                "key": _o.destination.headers_secret.key
+            } if _o.destination.headers_secret else None
+            "signals": {
+                "traces": _o.signals.traces
+                "metrics": _o.signals.metrics
+                "logs": _o.signals.logs
+                "profiles": _o.signals.profiles
+            }
+            "samplingRatio": _o.sampling.traces_ratio
+            "errorsAlways": _o.sampling.errors_always
+            "image": _o.agent.image
+            "memoryLimitMiB": _o.agent.memory_limit_mib
+        }
+    } for _, t in _targets]
+}
+
+# The declaration, as the Go side (forge env up, the local forwarder) reads it.
+_render_observability = lambda b: Bundle -> any {
+    _o = b.observability
+    {
+        "enabled": _o.enabled
+        "local_port": _o.local_port
+        "local_endpoint": _obs_local_endpoint(b) or None
+        "destination": {
+            "endpoint": _o.destination.endpoint
+            "protocol": _o.destination.protocol
+            "headers_secret": {
+                "name": _o.destination.headers_secret.name
+                "key": _o.destination.headers_secret.key
+            } if _o.destination.headers_secret else None
+        } if _o.destination else None
+        "signals": {
+            "traces": _o.signals.traces
+            "metrics": _o.signals.metrics
+            "logs": _o.signals.logs
+            "profiles": _o.signals.profiles
+        }
+        "sampling": {
+            "traces_ratio": _o.sampling.traces_ratio
+            "errors_always": _o.sampling.errors_always
+        }
+        "retention": {
+            "traces_days": _o.retention.traces_days
+            "metrics_days": _o.retention.metrics_days
+            "logs_days": _o.retention.logs_days
+        }
+        "agent": {
+            "namespace": _o.agent.namespace
+            "image": _o.agent.image
+            "memory_limit_mib": _o.agent.memory_limit_mib
+        }
+    }
+}
+
 _render_managed_database_record = lambda db: any, part_of: str -> any {
     {
         apiVersion = "forge.dev/v1alpha1"
@@ -909,6 +1084,7 @@ _manifests = lambda b: Bundle, entities: [any] -> [any] {
         + _namespaces(b, entities) \
         + [_place_on_primary(_render_config_map_manifest(cm, _ns, _project), _pt) for cm in b.config_maps] \
         + [_workload_record(e, _project) for e in entities if e.runtime.type == "cluster" and e.kind != "tool"] \
+        + _obs_agent_records(b, _project) \
         + [_render_managed_database_record(db, _project) for db in _dbs if db.runtime == "cluster"] \
         + [_place_on_primary(item, _pt) for item in _ingress(b, _ns)] \
         + [item for g in b.manifests for item in _raw_manifests(g, _pt, _project)],
@@ -940,10 +1116,14 @@ render = lambda bundle: Bundle -> any {
         "connected_clusters": bundle.connected_clusters if bundle.connected_clusters else None
         "network_policy": {
             "egress_ports": bundle.network_policy.egress_ports
-            "telemetry_namespace": bundle.network_policy.telemetry_namespace
+            # The node agent is the env's collector: the telemetry allow
+            # follows it unless the author named another.
+            "telemetry_namespace": bundle.network_policy.telemetry_namespace or (bundle.observability.agent.namespace if _obs_on(bundle) and bundle.observability.destination and len(_cluster_targets(bundle.workloads)) > 0 else "")
             "ingress_namespace": bundle.network_policy.ingress_namespace
         } if bundle.network_policy else None
         "workloads": _entities
+        if bundle.observability:
+            "observability": _render_observability(bundle)
         "infra": [_render_host_infra(i) for i in bundle.infra]
         "frontends": [_render_frontend(f, bundle) for f in bundle.frontends]
         "databases": [_render_database(db, bundle) for db in bundle.databases]

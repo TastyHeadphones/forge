@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/clickstack"
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/devstack"
@@ -116,10 +117,17 @@ func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace 
 				// them is a no-op once it is running.
 				spec.ProjectDirectory = devstack.SharedProjectDir(projectDirForKCL())
 			}
+			svcSecrets := secretEnv
+			if composeServiceName(w) == clickstack.ForwarderService {
+				// The forwarder reads its destination headers from one fixed
+				// variable (the store key is the author's) and gets nothing
+				// else from the store.
+				svcSecrets = forwarderHeadersEnv(entities, secretEnv)
+			}
 			raw = append(raw, deploytarget.RawService{
 				Name:    w.Name,
 				Compose: spec,
-				Secrets: secretEnv,
+				Secrets: svcSecrets,
 			})
 		default:
 			// host, build-only — no deploy group; hosted — below.

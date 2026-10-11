@@ -1,46 +1,25 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/clickstack"
+	"github.com/reliant-labs/forge/pkg/deploy"
 )
 
-// clickstackHostOTLPEnv is the OTel environment every host process gets when
-// the env runs the local ClickStack: the standard variables, aimed at the
-// OTLP/HTTP port compose published on loopback. Nil when the env has no
-// clickstack workload (observability off, or a custom backend).
-//
-// The port is read from the compose workload's own declared env, the one place
-// dev/main.k states it, so the endpoint cannot drift from the published port.
-func clickstackHostOTLPEnv(e *KCLEntities) map[string]string {
-	if e == nil {
+// frontendOTLPEnv is the collector address a frontend dev server gets: the
+// BASE URL only, from the env's typed observability declaration (the loopback
+// port its collector publishes). The dev server's /_otel proxy forwards the
+// browser's OTLP/HTTP to it; the wire protocol is not the proxy's to choose.
+// Nil when the env declares no observability or has no local collector.
+func frontendOTLPEnv(e *KCLEntities) map[string]string {
+	if e == nil || e.Observability == nil || !e.Observability.Enabled || e.Observability.LocalEndpoint == "" {
 		return nil
 	}
-	for _, w := range e.WorkloadsOn(RuntimeCompose) {
-		if w.Runtime.Compose == nil || composeServiceName(w) != clickstack.Service {
-			continue
-		}
-		port := strings.TrimSpace(w.Runtime.Compose.Env[clickstack.EnvOTLPHTTPPort])
-		if port == "" || port == "0" {
-			return nil
-		}
-		return clickstack.HostOTLPEnv(port)
-	}
-	return nil
-}
-
-// clickstackFrontendOTLPEnv is the collector address a frontend dev server gets:
-// the BASE URL only. The dev server's /_otel proxy forwards the browser's
-// OTLP/HTTP to it; the wire protocol is not the proxy's to choose.
-func clickstackFrontendOTLPEnv(e *KCLEntities) map[string]string {
-	host := clickstackHostOTLPEnv(e)
-	if host == nil {
-		return nil
-	}
-	return map[string]string{clickstack.EnvOTLPEndpoint: host[clickstack.EnvOTLPEndpoint]}
+	return map[string]string{clickstack.EnvOTLPEndpoint: e.Observability.LocalEndpoint}
 }
 
 // withFrontendTelemetryEnv gives a frontend dev server what its browser
@@ -57,7 +36,7 @@ func clickstackFrontendOTLPEnv(e *KCLEntities) map[string]string {
 func withFrontendTelemetryEnv(env []string, e *KCLEntities, fe FrontendEntity, envName string) []string {
 	// Only the endpoint is injected, so only the endpoint can be a decision to
 	// respect: a protocol exported for some other process is not one.
-	env = withDefaultEnv(env, clickstackFrontendOTLPEnv(e))
+	env = withDefaultEnv(env, frontendOTLPEnv(e))
 	return withDefaultEnv(env, map[string]string{frontendEnvironmentEnvVar(fe.Type): envName})
 }
 
@@ -96,28 +75,6 @@ func withDefaultEnv(env []string, defaults map[string]string) []string {
 	return env
 }
 
-// otlpSignals are the per-signal infixes of OTEL_EXPORTER_OTLP_<SIGNAL>_*.
-var otlpSignals = []string{"TRACES", "METRICS", "LOGS"}
-
-// withDefaultOTLPEnv is withDefaultEnv for a process that EXPORTS over OTLP:
-// the user having set the endpoint or protocol for any one signal
-// (OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, …) is a decision about the transport as
-// well, so no default is added beside it.
-func withDefaultOTLPEnv(env []string, defaults map[string]string) []string {
-	have := nonEmptyEnvKeys(env)
-	for _, suffix := range []string{"ENDPOINT", "PROTOCOL"} {
-		if have[clickstack.EnvOTLPPrefix+suffix] {
-			return env
-		}
-		for _, s := range otlpSignals {
-			if have[clickstack.EnvOTLPPrefix+s+"_"+suffix] {
-				return env
-			}
-		}
-	}
-	return withDefaultEnv(env, defaults)
-}
-
 func composeServiceName(w WorkloadEntity) string {
 	if w.Runtime.Compose != nil && w.Runtime.Compose.Service != "" {
 		return w.Runtime.Compose.Service
@@ -142,18 +99,114 @@ func clickstackRowLabel(service string, targetPort int) (string, bool) {
 	return "", false
 }
 
-// ensureClickstackLogDir creates .forge/logs before compose starts the
-// clickstack service. The service bind-mounts it read-only to tail the host
-// processes' logs, and docker creates a missing bind source as ROOT, after
-// which forge could not write the very logs the collector is there to read.
-func ensureClickstackLogDir(projectDir string, e *KCLEntities) error {
-	if e == nil {
-		return nil
+// withoutDerivedOTLPIfShellSet lets a developer's own exported transport win
+// over the one the declaration derives. Declared env beats the shell in
+// general, but the endpoint and protocol are a pair the developer may have
+// pointed elsewhere on purpose (their gRPC :4317), and filling in half of it
+// is how export fails with nothing on screen. Only the derived pair is
+// dropped: an endpoint the author wrote in KCL is not this env's local one.
+func withoutDerivedOTLPIfShellSet(declared map[string]string, shell []string) map[string]string {
+	ep := declared[clickstack.EnvOTLPEndpoint]
+	if ep == "" || !strings.HasPrefix(ep, "http://127.0.0.1:") {
+		return declared
 	}
-	for _, w := range e.WorkloadsOn(RuntimeCompose) {
-		if w.Runtime.Compose != nil && composeServiceName(w) == clickstack.Service {
-			return os.MkdirAll(filepath.Join(projectDir, ".forge", "logs"), 0o755)
+	shellSet := nonEmptyEnvKeys(shell)
+	set := false
+	for _, suffix := range []string{"ENDPOINT", "PROTOCOL"} {
+		for _, sig := range []string{"", "TRACES_", "METRICS_", "LOGS_"} {
+			if shellSet[clickstack.EnvOTLPPrefix+sig+suffix] {
+				set = true
+			}
 		}
 	}
-	return nil
+	if !set {
+		return declared
+	}
+	out := make(map[string]string, len(declared))
+	for k, v := range declared {
+		if k != clickstack.EnvOTLPEndpoint && k != clickstack.EnvOTLPProtocol {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// localCollectorService is the compose service that is this env's local
+// collector: the ClickStack that stores telemetry, or the forwarder that sends
+// it to the env's declared destination. "" when the env runs neither.
+func localCollectorService(e *KCLEntities) string {
+	if e == nil {
+		return ""
+	}
+	for _, w := range e.WorkloadsOn(RuntimeCompose) {
+		switch composeServiceName(w) {
+		case clickstack.Service, clickstack.ForwarderService:
+			return composeServiceName(w)
+		}
+	}
+	return ""
+}
+
+// prepareLocalCollector gets the host ready for the local collector before
+// compose starts it:
+//
+//   - .forge/logs exists. The collector bind-mounts it read-only to tail the
+//     host processes' logs, and docker creates a missing bind source as ROOT,
+//     after which forge could not write the very logs the collector is there
+//     to read.
+//   - for the forwarder, its pipeline file is rendered from the typed
+//     declaration into .forge/observability/forwarder.yaml. The destination's
+//     headers never touch it: the collector reads them from its environment.
+func prepareLocalCollector(projectDir string, e *KCLEntities) error {
+	svc := localCollectorService(e)
+	if svc == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Join(projectDir, ".forge", "logs"), 0o755); err != nil {
+		return err
+	}
+	if svc != clickstack.ForwarderService {
+		return nil
+	}
+	cfg, err := forwarderConfig(e.Observability)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(projectDir, clickstack.ForwarderConfigDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, clickstack.ForwarderConfigFile), []byte(cfg), 0o644)
+}
+
+// forwarderConfig renders the local forwarder's pipelines for o.
+func forwarderConfig(o *ObservabilityEntity) (string, error) {
+	if o == nil || o.Destination == nil {
+		return "", fmt.Errorf("the local forwarder needs Bundle.observability.destination")
+	}
+	spec := deploy.ObservabilityAgentSpec{
+		Endpoint:      o.Destination.Endpoint,
+		Protocol:      o.Destination.Protocol,
+		SamplingRatio: o.Sampling.TracesRatio,
+		ErrorsAlways:  o.Sampling.ErrorsAlways,
+		Signals:       deploy.ObservabilitySignals(o.Signals),
+	}
+	if h := o.Destination.HeadersSecret; h != nil {
+		spec.HeadersSecret = &deploy.ObservabilitySecretKey{Name: h.Name, Key: h.Key}
+	}
+	return spec.ForwarderConfig()
+}
+
+// forwarderHeadersEnv is the compose-process env that hands the forwarder its
+// destination headers: the value of the declared key in the env's secret
+// store. nil when the destination declares none.
+func forwarderHeadersEnv(e *KCLEntities, store map[string]string) map[string]string {
+	if e == nil || e.Observability == nil || e.Observability.Destination == nil || e.Observability.Destination.HeadersSecret == nil {
+		return nil
+	}
+	v, ok := store[e.Observability.Destination.HeadersSecret.Key]
+	if !ok || v == "" {
+		return nil
+	}
+	return map[string]string{deploy.ForwarderHeadersEnv: v}
 }
