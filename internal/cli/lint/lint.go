@@ -1471,23 +1471,23 @@ func golangciRunArgs(extra []string, paths []string) []string {
 	return append(args, paths...)
 }
 
-// runGolangciLint runs the gating golangci-lint pass with bin, the binary
-// resolved for this module (golangci_toolchain.go).
-func runGolangciLint(ctx context.Context, bin string, fix bool, paths []string) error {
+// runGolangciLint runs the gating golangci-lint pass with the binary chosen
+// for this module (golangci_toolchain.go). A golangci-lint that cannot
+// analyze the module fails the lane with the runbook, not its own output.
+func runGolangciLint(rc *lintRunCtx) error {
 	fmt.Println("Running golangci-lint...")
 
 	var extra []string
-	if fix {
+	if rc.fix {
 		extra = append(extra, "--fix")
 	}
-	args := golangciRunArgs(extra, paths)
-
-	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Run(); err != nil {
+	out, err := rc.execGolangci(golangciRunArgs(extra, rc.paths))
+	if err != nil {
 		return err
+	}
+	out.print()
+	if out.err != nil {
+		return out.err
 	}
 
 	fmt.Println("✓ golangci-lint passed")
@@ -1506,15 +1506,15 @@ func runGolangciLint(ctx context.Context, bin string, fix bool, paths []string) 
 // failed — --issues-exit-code=0 already neutralizes the findings exit code —
 // so it is reported as a lane that could not run (laneUnavailableError), not
 // swallowed into a ⚠️ and a nil return.
-func runTypedAccessGuardAdvisory(ctx context.Context, bin string, paths []string) error {
+func runTypedAccessGuardAdvisory(rc *lintRunCtx) error {
 	fmt.Println("Checking typed-config guardrail (advisory)...")
 
-	args := golangciRunArgs([]string{"--enable-only=forbidigo", "--issues-exit-code=0"}, paths)
-
-	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	out, err := rc.execGolangci(golangciRunArgs([]string{"--enable-only=forbidigo", "--issues-exit-code=0"}, rc.paths))
+	if err != nil {
+		return laneUnavailable(typedAccessGuardUnavailableHint, "%v", err)
+	}
+	out.print()
+	if err := out.err; err != nil {
 		// --issues-exit-code=0 means findings CANNOT produce a non-zero
 		// exit, so getting one here says golangci-lint never got far enough
 		// to report: this lane has no verdict to give. Returning nil (what

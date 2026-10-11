@@ -44,7 +44,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sync"
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
@@ -76,38 +75,12 @@ type lintRunCtx struct {
 	// lint_structured.go.
 	scope *lintScope
 
-	// golangciMemo memoizes golangci() for this run, so the gating lane
-	// and the advisory guardrail share one resolution — and at most one
-	// provisioning build. A pointer, so the per-step scoped copies the
-	// structured driver makes share it; the run's constructor sets it.
+	// golangciMemo is this run's golangci-lint resolution (see
+	// golangci_toolchain.go), so the gating lane and the advisory guardrail
+	// share one binary — and at most one provisioning build. A pointer, so
+	// the per-step scoped copies the structured driver makes share it; the
+	// run's constructor sets it.
 	golangciMemo *golangciMemo
-}
-
-// golangciMemo is one run's golangci-lint resolution.
-type golangciMemo struct {
-	once sync.Once
-	res  golangciResolution
-}
-
-// golangci resolves the golangci-lint binary for the module this run lints
-// (cwd). See golangci_toolchain.go.
-func (rc *lintRunCtx) golangci() golangciResolution {
-	if rc.golangciMemo == nil {
-		rc.golangciMemo = &golangciMemo{}
-	}
-	m := rc.golangciMemo
-	m.once.Do(func() {
-		dir := rc.cwd
-		if dir == "" {
-			dir, _ = os.Getwd()
-		}
-		ctx := rc.ctx
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		m.res = resolveGolangciLint(ctx, dir, productionGolangciToolchain())
-	})
-	return m.res
 }
 
 // linterStep is one entry in the ordered `forge lint` pipeline. See the
@@ -164,23 +137,14 @@ func lintPipeline() []linterStep {
 				}
 				return true, ""
 			},
-			// The binary is resolved per module (golangci_toolchain.go):
-			// the one on PATH may be built with a Go older than the
-			// module's go directive, which golangci-lint refuses to lint.
-			runText: func(rc *lintRunCtx) error {
-				res := rc.golangci()
-				if res.err != nil {
-					return res.err
-				}
-				return runGolangciLint(rc.ctx, res.path, rc.fix, rc.paths)
-			},
+			// The binary is chosen per module (golangci_toolchain.go): the
+			// one on PATH may be built with a Go older than the module's go
+			// directive, or unable to read the export data the module's
+			// toolchain writes, and either way golangci-lint cannot lint it.
+			runText:   runGolangciLint,
 			errFormat: "❌ golangci-lint failed: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
-				res := rc.golangci()
-				if res.err != nil {
-					return []lintJSONFinding{golangciUnresolvedFinding(res.err, lintSevError)}, true, nil
-				}
-				fs, g := collectGolangciLintJSON(rc.ctx, res.path, rc.paths, rc.fix)
+				fs, g := collectGolangciLintJSON(rc)
 				return fs, g, nil
 			},
 		},
@@ -215,13 +179,7 @@ func lintPipeline() []linterStep {
 				}
 				return true, ""
 			},
-			runText: func(rc *lintRunCtx) error {
-				res := rc.golangci()
-				if res.err != nil {
-					return laneUnavailable(typedAccessGuardUnavailableHint, "%v", res.err)
-				}
-				return runTypedAccessGuardAdvisory(rc.ctx, res.path, rc.paths)
-			},
+			runText:   runTypedAccessGuardAdvisory,
 			errFormat: "⚠️  typed-config guardrail: %v\n",
 			collect:   collectTypedAccessGuardJSON,
 		},

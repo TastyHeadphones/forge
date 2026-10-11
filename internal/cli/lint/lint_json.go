@@ -944,23 +944,23 @@ func parseDigitsLint(s string) int {
 // collectGolangciLintJSON runs golangci-lint with captured output.
 // Non-zero exit gates (same as text mode); the captured diagnostics
 // become findings at error severity. A clean exit contributes nothing.
-// fix applies golangci's safe autofixes first, exactly as text mode does;
-// --json always passes false (it is detect-only), --quiet passes the
-// default run's value so the two reach the same verdict.
-func collectGolangciLintJSON(ctx context.Context, bin string, paths []string, fix bool) ([]lintJSONFinding, bool) {
+// rc.fix applies golangci's safe autofixes first, exactly as text mode
+// does; --json always sets it false (it is detect-only), --quiet sets the
+// default run's value so the two reach the same verdict. A golangci-lint
+// that cannot analyze the module gates as one finding, the runbook.
+func collectGolangciLintJSON(rc *lintRunCtx) ([]lintJSONFinding, bool) {
 	var extra []string
-	if fix {
+	if rc.fix {
 		extra = append(extra, "--fix")
 	}
-	args := golangciRunArgs(extra, paths)
-	cmd := exec.CommandContext(ctx, bin, args...)
-	var buf strings.Builder
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
-	if err := cmd.Run(); err != nil {
-		fs := externalLinesToFindings(buf.String(), "golangci-lint", lintSevError)
+	out, err := rc.execGolangci(golangciRunArgs(extra, rc.paths))
+	if err != nil {
+		return []lintJSONFinding{golangciUnresolvedFinding(err, lintSevError)}, true
+	}
+	if out.err != nil {
+		fs := externalLinesToFindings(out.combined(), "golangci-lint", lintSevError)
 		if len(fs) == 0 {
-			fs = []lintJSONFinding{{Severity: lintSevError, Rule: "external", Message: fmt.Sprintf("golangci-lint failed: %v", err)}}
+			fs = []lintJSONFinding{{Severity: lintSevError, Rule: "external", Message: fmt.Sprintf("golangci-lint failed: %v", out.err)}}
 		}
 		return fs, true
 	}
@@ -996,30 +996,25 @@ const (
 // same rule id at warning severity with gated=false, so `forge lint --json`
 // answered "ok": true over a check that never executed.
 func collectTypedAccessGuardJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
-	res := rc.golangci()
-	if res.err != nil {
-		return []lintJSONFinding{golangciUnresolvedFinding(res.err, unavailableSeverity(rc.strict))}, rc.strict, nil
+	run, err := rc.execGolangci(golangciRunArgs([]string{"--enable-only=forbidigo", "--issues-exit-code=0"}, rc.paths))
+	if err != nil {
+		return []lintJSONFinding{golangciUnresolvedFinding(err, unavailableSeverity(rc.strict))}, rc.strict, nil
 	}
-	args := golangciRunArgs([]string{"--enable-only=forbidigo", "--issues-exit-code=0"}, rc.paths)
-	cmd := exec.CommandContext(rc.ctx, res.path, args...)
-	var buf strings.Builder
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
-	if err := cmd.Run(); err != nil {
+	if run.err != nil {
 		out := []lintJSONFinding{{
 			Severity: unavailableSeverity(rc.strict),
 			Rule:     ruleTypedAccessGuardUnavailable,
-			Message:  fmt.Sprintf("typed-config guardrail did NOT run: golangci-lint exited %v", err),
+			Message:  fmt.Sprintf("typed-config guardrail did NOT run: golangci-lint exited %v", run.err),
 			FixHint:  typedAccessGuardUnavailableHint,
 		}}
 		// Whatever golangci-lint managed to emit is the EVIDENCE for why it
 		// could not run ("parallel golangci-lint is running"). This
-		// collector used to capture it into buf and then drop it on the
-		// floor, leaving the consumer an exit status and no cause.
-		out = append(out, externalLinesToFindings(buf.String(), ruleTypedAccessGuardUnavailable, lintSevInfo)...)
+		// collector used to capture it and then drop it on the floor,
+		// leaving the consumer an exit status and no cause.
+		out = append(out, externalLinesToFindings(run.combined(), ruleTypedAccessGuardUnavailable, lintSevInfo)...)
 		return out, rc.strict, nil
 	}
-	fs := externalLinesToFindings(buf.String(), ruleTypedAccessGuard, lintSevWarning)
+	fs := externalLinesToFindings(run.combined(), ruleTypedAccessGuard, lintSevWarning)
 	return fs, false, nil
 }
 
