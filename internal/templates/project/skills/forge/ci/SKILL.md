@@ -14,45 +14,43 @@ without forge ever touching your additions.
 
 ## What ships out of the box
 
-| File | Tier | What it gates |
-|------|------|---------------|
-| `.github/workflows/ci.yml` | yours (scaffold-once) | A thin wrapper around the local gate. Jobs: `changes` (docs-only skips the rest), `checks` (ONE setup, then `task ci:checks`: verify-generated, golangci-lint, buf lint, migration safety, frontend lint/typecheck/build, `go build`, govulncheck, npm audit, go-licenses, KCL validation, deployability), `test` (`task test`), `integration-test` (`task test:integration`, PRs only, only when the repo has `//go:build integration` files), and where the project has them `docker-build` and `e2e`. Every job has `timeout-minutes`. See "The local gate" below and `ci/gate` |
-| `.github/workflows/proto-breaking.yml` | Tier-1 | `buf breaking` (and nothing else — no lint, format, push or PR comment) against the PR's base branch on PRs that touch `proto/**`, `buf.yaml`, or `buf.gen.yaml`. Passes with a notice when the base has no protos yet (the PR introducing the first ones). See the `proto-breaking` skill for the full deprecation flow. |
-| `.github/workflows/build-images.yml` | Tier-1 | The project image: build + push, cosign signature, SBOM, and SLSA provenance (skipped on private repositories, which GitHub's attestation store refuses outside Enterprise Cloud). Frontend images are per-env and built by `deploy.yml` |
-| `.github/workflows/deploy.yml` | Tier-1 | Per-environment `forge env build <env> --push` + `forge env deploy <env> --yes`, one matrix entry per declared `deploy/kcl/<env>/main.k` (dev excluded) |
-| `.github/workflows/e2e.yml` | Tier-1 | E2E suite, label-gated on PRs (`run-e2e`) — emitted when there is a suite to run: the generated `e2e/` harness exists, or `ci.e2e.enabled: true`. docker-compose or k3d runtime |
-| `.github/workflows/pre-commit.yml` | Tier-2 | Runs the `.pre-commit-config.yaml` hook set so contributors who skipped the local install are still gated (written once at scaffold; yours to edit after) |
-| `.github/dependabot.yml` | Tier-2 | Grouped weekly bumps for `gomod` (root + `/gen`), `npm` (first frontend), `docker`, and `github-actions`. Ignores forge and the code generators that stamp their version into generated files — `@bufbuild/protoc-gen-es` with its exact peer `@bufbuild/protobuf`, and `google.golang.org/protobuf` (protoc-gen-go) — because Dependabot cannot regenerate, so their bumps fail `forge ci verify-generated` every time. Bump those by hand with a `forge generate` (written once at scaffold; yours to edit after) |
-| `.github/CODEOWNERS` | Tier-2 | Starter ownership rules (one-shot scaffold; yours to edit after) |
-| `.github/pull_request_template.md` | Tier-1 | Standard PR template |
+- `.github/workflows/ci.yml` (yours (scaffold-once)): A thin wrapper around the local gate: jobs `changes`, `checks` (`task ci:checks`), `test`, `integration-test`, plus `docker-build` / `e2e` where the project has them; `timeout-minutes` on every job. See `ci/gate`
+- `.github/workflows/proto-breaking.yml` (Tier-1): `buf breaking` (and nothing else — no lint, format, push or PR comment) against the PR's base branch on PRs that touch `proto/**`, `buf.yaml`, or `buf.gen.yaml`. Passes with a notice when the base has no protos yet (the PR introducing the first ones). See the `proto-breaking` skill for the full deprecation flow.
+- `.github/workflows/build-images.yml` (Tier-1): The project image: build + push, cosign signature, SBOM, and SLSA provenance (skipped on private repositories, which GitHub's attestation store refuses outside Enterprise Cloud). Frontend images are per-env and built by `deploy.yml`
+- `.github/workflows/deploy.yml` (Tier-1): Per-environment `forge env build <env> --push` + `forge env deploy <env> --yes`, one matrix entry per declared `deploy/kcl/<env>/main.k` (dev excluded)
+- `.github/workflows/e2e.yml` (Tier-1): E2E suite, label-gated on PRs (`run-e2e`) — emitted when there is a suite to run: the generated `e2e/` harness exists, or `ci.e2e.enabled: true`. docker-compose or k3d runtime
+- `.github/workflows/pre-commit.yml` (Tier-2): Runs the `.pre-commit-config.yaml` hook set so contributors who skipped the local install are still gated (written once at scaffold; yours to edit after)
+- `.github/dependabot.yml` (Tier-2): Grouped weekly bumps for `gomod` (root + `/gen`), `npm` (first frontend), `docker`, and `github-actions`. Ignores forge and the code generators that stamp their version into generated files — `@bufbuild/protoc-gen-es` with its exact peer `@bufbuild/protobuf`, and `google.golang.org/protobuf` (protoc-gen-go) — because Dependabot cannot regenerate, so their bumps fail `forge ci verify-generated` every time. Bump those by hand with a `forge generate` (written once at scaffold; yours to edit after)
+- `.github/CODEOWNERS` (Tier-2): Starter ownership rules (one-shot scaffold; yours to edit after)
+- `.github/pull_request_template.md` (Tier-1): Standard PR template
 
 What's enabled is driven by `forge.yaml`:
 
 ```yaml
 ci:
-  provider: github            # only "github" today
+  provider: github # only "github" today
   # No go_version key: every setup-go step pins `go-version-file: go.mod`,
   # so CI's Go version follows go.mod. Set it there.
-  lint:                       # zero-value = "all enabled"
+  lint: # zero-value = "all enabled"
     golangci: true
     buf: true
-    buf_breaking: true        # generates proto-breaking.yml
+    buf_breaking: true # generates proto-breaking.yml
     frontend: true
     migration_safety: true
   test:
     race: true
     coverage: false
   gate:
-    extra_checks: []          # project-owned checks for `forge ci gate` — see `ci/gate`
-  vuln_scan:                  # zero-value = "all enabled"
+    extra_checks: [] # project-owned checks for `forge ci gate` — see `ci/gate`
+  vuln_scan: # zero-value = "all enabled"
     go: true
     docker: true
     npm: true
   e2e:
     enabled: false
-    runtime: docker-compose   # or "k3d"
+    runtime: docker-compose # or "k3d"
   permissions:
-    contents: read            # default
+    contents: read # default
 ```
 
 ### Which forge CI installs
@@ -140,12 +138,12 @@ and no registry secret. forge authenticates it with the same
 `forge env build --push` / `forge env deploy` log themselves in before their
 first push. So the scaffolded workflows differ by env, not by project:
 
-| Workflow | Login step | Credential |
-|---|---|---|
-| `release.yml` (hosted by construction) | none | `FORGE_CONTROL_PLANE_TOKEN` |
-| `build-images.yml`, hosted build env | none for the build; the trivy job runs `forge registry login <env>` with no flags, because it PULLS rather than pushing | `FORGE_CONTROL_PLANE_TOKEN` |
-| `build-images.yml`, cluster build env | `forge registry login <env> --username … --password-stdin` | `GITHUB_TOKEN` or your own |
-| `deploy.yml` (non-hosted envs only) | same as above | `GITHUB_TOKEN` or your own |
+| Workflow                               | Login step                                                                                                              | Credential                  |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | --------------------------- |
+| `release.yml` (hosted by construction) | none                                                                                                                    | `FORGE_CONTROL_PLANE_TOKEN` |
+| `build-images.yml`, hosted build env   | none for the build; the trivy job runs `forge registry login <env>` with no flags, because it PULLS rather than pushing | `FORGE_CONTROL_PLANE_TOKEN` |
+| `build-images.yml`, cluster build env  | `forge registry login <env> --username … --password-stdin`                                                              | `GITHUB_TOKEN` or your own  |
+| `deploy.yml` (non-hosted envs only)    | same as above                                                                                                           | `GITHUB_TOKEN` or your own  |
 
 Two things follow, and both are worth knowing before editing a workflow:
 
@@ -209,12 +207,12 @@ CI is a thin wrapper around a gate you run on your own machine. The workflow
 prepares an environment and calls ONE task per job, so the same command gives the
 same verdict locally:
 
-| Command | What it runs | CI job |
-|---|---|---|
-| `task ci` | `ci:checks`, then `test`, then `test:integration`, one summary table | none: run this instead of CI |
-| `task ci:checks` | verify-generated, lint, build, vuln-scan, license, KCL, deployability, plus your `ci.gate.extra_checks` | `checks` |
-| `task test` | unit tests + every frontend's | `test` |
-| `task test:integration` | the `integration`-tagged suite | `integration-test` |
+| Command                 | What it runs                                                                                            | CI job                       |
+| ----------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| `task ci`               | `ci:checks`, then `test`, then `test:integration`, one summary table                                    | none: run this instead of CI |
+| `task ci:checks`        | verify-generated, lint, build, vuln-scan, license, KCL, deployability, plus your `ci.gate.extra_checks` | `checks`                     |
+| `task test`             | unit tests + every frontend's                                                                           | `test`                       |
+| `task test:integration` | the `integration`-tagged suite                                                                          | `integration-test`           |
 
 Every check runs even after one fails; a check that could not run is `SKIPPED`
 and fails the gate unless named in `CI_SKIP`; tools run at the versions CI pins.
@@ -254,93 +252,26 @@ exposes, the right answer is almost always one of:
 3. Add a parallel Tier-2 workflow file. Keep the file name distinct
    from any Tier-1 name so forge never tries to regenerate it.
 
-## Adding a custom workflow
+## Extending CI
 
-The Tier-2 path. Drop a new file under `.github/workflows/` with any
-name forge doesn't already own (`docs.yml`, `tag-release.yml`,
-`slack-notify.yml`, …). Convention: open with the canonical
-"yours" banner so future readers see at a glance that the file is
-user-owned and forge will not touch it:
-
-```yaml
-# yours: scaffolded once, never touched again — forge will not overwrite this file
-name: Release
-on:
-  push:
-    tags: ['v*']
-permissions:
-  contents: write
-jobs:
-  release:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-      - name: GoReleaser
-        uses: goreleaser/goreleaser-action@v6
-        with:
-          version: latest
-          args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-```
-
-`forge project audit` and `forge project map` will report the file as `user-owned`.
-`forge lint --banners` ignores user-owned files (the banner check only
-fires on forge templates).
-
-## Extending `ci.yml`
-
-`ci.yml` is scaffold-once: it is yours, `forge generate` never rewrites it, and
-there is no forge.yaml key that appends jobs to it (the `ci:` block only feeds
-the one-time render). Pick the seam by what you are adding:
-
-- **A check** (a codegen drift check, a custom linter, a policy script): add it to
-  the gate with `ci.gate.extra_checks` (`ci/gate`). It then runs in `task ci` and in
-  the CI `checks` job, with no workflow edit and no extra runner.
-- **A job that needs its own runner** (a service container, another OS): edit
-  `ci.yml` and add the job, gated on `needs: changes` like the others, with
-  `timeout-minutes`.
-- **Anything with its own trigger** (cron, workflow_dispatch, release tags): a
-  parallel Tier-2 workflow file.
-
-## Common extensions
-
-- **Release.** Tier-2 `tag-release.yml` triggered on `push: tags: ['v*']`
-  using GoReleaser, ko, or a hand-rolled `gh release create`.
-  Generated `build-images.yml` covers main-branch image pushes;
-  release adds tag-driven artifact + image promotion.
-- **Deploy beyond k3d/staging/prod.** The generated `deploy.yml`
-  iterates the env directories discovered under `deploy/kcl/<env>/main.k`.
-  Add a preview-environment Tier-2 workflow keyed on PR labels or a
-  manual-promotion Tier-2 workflow keyed on `workflow_dispatch`.
-- **Slack / Discord notifications.** Tier-2 `notify.yml` triggered on
-  `workflow_run: completed` of `CI` — keeps notification logic out of
-  the generated chain.
-- **Codecov / coverage upload.** Set `ci.test.coverage: true` in
-  `forge.yaml` to have the `test` job upload a coverage
-  artifact, then add a Tier-2 workflow that downloads + uploads to
-  Codecov on `workflow_run`.
-- **Custom security scanners (Snyk, Semgrep).** Tier-2 workflow
-  triggered on schedule + PR; the gate's `vuln-go`/`vuln-npm` rows (and the
-  `docker-build` job's Trivy step) cover govulncheck/npm audit/Trivy and are
-  opinionated, so add scanners alongside rather than try to extend them.
+Adding a check (`ci.gate.extra_checks`), a job that needs its own runner, or a
+parallel Tier-2 workflow (release, notifications, coverage upload, extra
+scanners): **load `ci/extending`**. A new check belongs in the gate, not in a
+new job; see `ci/gate` for why.
 
 ## `forge ci` helper subcommands
 
 `forge ci gate` runs these as rows of the gate (you rarely call them directly),
 and each is runnable on its own:
 
-| Command | What it does |
-|---------|--------------|
-| `forge ci verify-generated` | Runs `forge generate` and asserts nothing changed (`git status --porcelain`, so a newly created file counts) — catches mock/codegen drift where a contract.go grew a parameter but the mock_gen.go wasn't refreshed. Refuses to run when a frontend's protoc-gen-es is missing |
-| `forge ci validate-kcl` | Renders every environment under `deploy/kcl/<env>/` and asserts the result is APPLYABLE — a `manifests` root exists, every document carries apiVersion + kind, and no other top-level key hides objects no deploy would apply. Shares its implementation with `forge doctor --signal deploy`, so CI and the doctor cannot disagree |
-| `forge doctor --signal deploy` | Deployability gate: probes, resource requests/limits, credentials sourced from Secrets rather than literal env values, ServiceAccounts bound to pods, and a way to apply pending SQL migrations. Reads the rendered manifests, so it needs no cluster and no image |
-| `forge ci vuln-scan --go` | Runs govulncheck against `./...` |
-| `forge ci vuln-scan --npm` | Runs `npm audit` in each frontend |
-| `forge ci migration-safety` | Runs `forge lint --migration-safety` against `db/migrations/` |
+| Command                        | What it does                                                                                                                                                                                                                                                                                                                       |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `forge ci verify-generated`    | Runs `forge generate` and asserts nothing changed (`git status --porcelain`, so a newly created file counts) — catches mock/codegen drift where a contract.go grew a parameter but the mock_gen.go wasn't refreshed. Refuses to run when a frontend's protoc-gen-es is missing                                                     |
+| `forge ci validate-kcl`        | Renders every environment under `deploy/kcl/<env>/` and asserts the result is APPLYABLE — a `manifests` root exists, every document carries apiVersion + kind, and no other top-level key hides objects no deploy would apply. Shares its implementation with `forge doctor --signal deploy`, so CI and the doctor cannot disagree |
+| `forge doctor --signal deploy` | Deployability gate: probes, resource requests/limits, credentials sourced from Secrets rather than literal env values, ServiceAccounts bound to pods, and a way to apply pending SQL migrations. Reads the rendered manifests, so it needs no cluster and no image                                                                 |
+| `forge ci vuln-scan --go`      | Runs govulncheck against `./...`                                                                                                                                                                                                                                                                                                   |
+| `forge ci vuln-scan --npm`     | Runs `npm audit` in each frontend                                                                                                                                                                                                                                                                                                  |
+| `forge ci migration-safety`    | Runs `forge lint --migration-safety` against `db/migrations/`                                                                                                                                                                                                                                                                      |
 
 Run `task ci` locally before pushing to reproduce the whole CI gate.
 
@@ -351,7 +282,7 @@ Forge has no dedicated CI-workflow analyzer. What covers the workflows today:
 - **`forge lint --banners`** — verifies every forge template (including
   `.github/workflows/*.yml`) carries the right Tier-1 / Tier-2 banner.
   Catches a generated workflow that lost its `# Code generated by
-  forge. DO NOT EDIT.` header or a Tier-2 scaffold missing the
+forge. DO NOT EDIT.` header or a Tier-2 scaffold missing the
   `# yours: scaffolded once, never touched again` banner. Runs only inside the forge repo
   (the templates live there).
 - **`forge project audit`** — reports drift on Tier-1 workflows (forge-space
@@ -371,7 +302,7 @@ or add a Tier-2 workflow that runs `actionlint` and friends against
   `dependabot.yml`) and the vendored `.github/actions/forge-deploy/action.yml`
   are scaffold-once: written once, then yours to edit.
   Deleting one sticks — `.forge/scaffolded.json` records it, so `forge
-  generate` does not bring it back. To get forge's current version of one,
+generate` does not bring it back. To get forge's current version of one,
   delete it and run `forge project rescaffold .github/workflows/<name>.yml`
   (only workflows this project has: e2e.yml needs an e2e suite,
   reconcile.yml the reconcile feature, release.yml and the forge-deploy
@@ -382,7 +313,7 @@ or add a Tier-2 workflow that runs `actionlint` and friends against
 - `forge generate` never rewrites a workflow that exists, so a fix to a
   workflow template reaches your project through `forge project upgrade`:
   `--check` names every workflow whose template has moved on, `--check
-  <path>` prints that file's diff, and `--force <path>` adopts the template
+<path>` prints that file's diff, and `--force <path>` adopts the template
   for that one file. Workflows are compared only when every env renders;
   otherwise the report names the env that did not.
 - Every forge workflow cancels a superseded run on a pull request ONLY:
@@ -394,7 +325,7 @@ or add a Tier-2 workflow that runs `actionlint` and friends against
   siblings) in `forge project upgrade --check`.
 - Tier-2 workflows live alongside Tier-1 in `.github/workflows/`. Use
   any name forge doesn't own; open with `# yours: scaffolded once,
-  never touched again — forge will not overwrite this file` so the
+never touched again — forge will not overwrite this file` so the
   boundary is visible.
 - The generated workflows install the forge go.mod resolves, at run
   time. Bumping forge in go.mod is the whole upgrade; there is no pin in

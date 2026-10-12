@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   untracked nested worktree made the checkout dirty, and the preceding
   `--dry-run` said nothing about releases. `--dry-run` now prints the line the
   real run prints (`would reuse release <v>` / `would cut new release <v>
-  because …`, with the dirty paths named) from the same function, and `--json`
+because …`, with the dirty paths named) from the same function, and `--json`
   carries it as `release_decision`. An untracked directory with its own `.git`
   is excluded from the dirty verdict and from the provenance tree hash
   (`release.InspectCheckout`); the decision line lists the ones it ignored.
@@ -35,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `traceparent` no browser span matched, so the API span's parent id joined to
     nothing. The trace interceptor now waits (at most 2s) for telemetry startup.
   - `forge env up` on a project with no commits yet no longer fails with `git
-    tag resolution: exit status 128`; it tags images `uncommitted`.
+tag resolution: exit status 128`; it tags images `uncommitted`.
   - `forge env up` no longer needs `air` on PATH: it installs its pinned air
     (v1.67.4) into forge's tool cache, and runs the API under `go-run` with a
     one-line notice if it cannot.
@@ -59,11 +59,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cache; a copy on PATH at another version, or a golangci-lint built with an
   older Go than `go.mod`, is not used). Every check runs even after one fails,
   a summary table is printed and appended to `$GITHUB_STEP_SUMMARY`, and the
-  exit status is non-zero if anything failed. A check that could not run is
-  `SKIPPED`, not a pass, and fails the gate unless named in `CI_SKIP`. Add your
-  own checks under `ci.gate.extra_checks` in forge.yaml. `ci.yml` is scaffold-once,
-  so existing projects adopt this through the new section in
-  `migrations/v0.1.45` (`forge project upgrade list`).
+exit status is non-zero if anything failed. A check that could not run is
+`SKIPPED`, not a pass, and fails the gate unless named in `CI_SKIP`. Add your
+own checks under `ci.gate.extra_checks`in forge.yaml.`ci.yml`is scaffold-once,
+so existing projects adopt this through the new section in`migrations/v0.1.45` (`forge project upgrade list`).
 - **A database that is not up yet no longer crash-loops the server.** The
   startup connect (`serverkit.AutoMigrateContext`, the scaffolded
   `openDatabase` via `serverkit.OpenDB`) retries with capped exponential
@@ -157,6 +156,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   On the normal `db migrate up` and `AutoMigrate` paths, a database with a
   `goose_db_version` table and nothing yet in `schema_migrations` is checked
   against that list:
+
   - **Exactly the listed set:** the baseline is recorded as applied without
     running its SQL, and later migrations apply on the same run.
     `Result.Adopted` is set and `AutoMigrate` logs `ADOPTED`.
@@ -174,13 +174,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   at `Open` and at boot on every database. `forge lint` reports the same at
   review time as the new `invalid-adopts-directive` rule. The scaffolded
   `db migrate up` prints the adoption. `forge project migrate import --from
-  goose` now warns that renumbering re-runs history on a database goose
+goose` now warns that renumbering re-runs history on a database goose
   already migrated. See the `db/deploy-migrations` skill, "Adopting a database
   another tool migrated".
+
 - **Adopt forge one service at a time: `// forge:unmanaged`.** A full-line
   comment above `service X {` takes that service out of forge's service model.
   buf still generates its code and it stays in the descriptor, but `forge
-  generate` scaffolds nothing service-scoped for it: no `internal/handlers/<svc>/`
+generate` scaffolds nothing service-scoped for it: no `internal/handlers/<svc>/`
   or rpc stubs, no mocks, CRUD wiring or entities, no mount, compose entry or
   subcommand, no frontend hooks or pages. `forge scaffold` skips it and refuses
   `scaffold service|rpc|entity --from-proto` on it, `forge lint`'s
@@ -413,6 +414,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the dev loop's migrate job never excluded a server booting with
   `AUTO_MIGRATE`. Six replicas racing one database, half through each entry
   point, failed every time:
+
   - two replicas ran the same migration, and the second failed on the
     table the first had just created;
   - replicas met `Dirty database version` while a peer was mid-apply;
@@ -428,6 +430,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a boot needs no extra pool slot. If the unlock fails, that connection is
   discarded rather than returned to the pool still holding the lock. Covered
   by `TestReplicasRacingThroughBothEntryPointsTakeTurns`.
+
 - **`forge project new --in-place` adopts the forge pin the module's go.mod
   already has.** Scaffolding reliant in place (its go.mod requires forge
   `v0.1.44-0.20261007193810-e75c74afb46e`) wrote the RUNNING binary's
@@ -459,7 +462,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`go run pkg@v`, npx, interpreter flags) have just their argv[0] checked.
 - **`forge generate` refuses a `(forge.v1.binary_config)` binding to a binary
   that does not exist.** `binary` accepted any string: `{binary: "x server
-  api"}` (a subcommand line where a binary name belongs) and
+api"}` (a subcommand line where a binary name belongs) and
   `{binary: "nonexistent"}` both generated a loader, a KCL schema and an env
   projection that no process ever loaded, contradicting forge.proto's own
   contract. A binding must now name a `cmd/<name>` directory; the refusal names
@@ -471,7 +474,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`forge lint` no longer reports a golangci-lint that cannot read the
   toolchain's export data as a typecheck failure.** On control-plane the
   gating lane failed with one `typecheck` error, `could not import time (…
-  export data version 5 is greater than maximum supported version 4)`, in a
+export data version 5 is greater than maximum supported version 4)`, in a
   file nobody had touched. The golangci-lint on PATH (v2.13.1, built with
   go1.27.0) passed the language check, but the module builds with go1.27.2,
   whose compiler writes export data version 5. golangci-lint decodes export

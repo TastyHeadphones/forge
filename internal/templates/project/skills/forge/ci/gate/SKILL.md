@@ -10,12 +10,12 @@ workflow prepares an environment (checkout, toolchains, caches) and calls ONE
 task per job; the task is the definition of the lane, so the same command gives
 the same verdict locally:
 
-| Command | What it runs | CI job that calls it |
-|---|---|---|
-| `task ci` | `ci:checks`, then `test`, then `test:integration`, in ONE summary table. No change detection: it runs everything | none: this is what you run instead of CI |
-| `task ci:checks` | the static and build lane (below) plus your `ci.gate.extra_checks` | `checks` |
-| `task test` | unit tests + every frontend's | `test` |
-| `task test:integration` | the `integration`-tagged suite | `integration-test` |
+| Command                 | What it runs                                                                                                     | CI job that calls it                     |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| `task ci`               | `ci:checks`, then `test`, then `test:integration`, in ONE summary table. No change detection: it runs everything | none: this is what you run instead of CI |
+| `task ci:checks`        | the static and build lane (below) plus your `ci.gate.extra_checks`                                               | `checks`                                 |
+| `task test`             | unit tests + every frontend's                                                                                    | `test`                                   |
+| `task test:integration` | the `integration`-tagged suite                                                                                   | `integration-test`                       |
 
 `task ci` and `task ci:checks` call `forge ci gate [checks|test|integration|all]`.
 The check list and the tool pins live in forge, not in a script copied into the
@@ -79,10 +79,10 @@ in a verdict; PRs cancel a superseded run per ref.
 ci:
   gate:
     extra_checks:
-      - name: gen-llm-gateway          # the row, and what CI_SKIP matches; unique
+      - name: gen-llm-gateway # the row, and what CI_SKIP matches; unique
         command: [go, run, ./cmd/gen-llm-gateway, -check]
-        dir: .                          # optional, project-relative
-        requires: [go]                  # optional; missing => SKIPPED, not PASS
+        dir: . # optional, project-relative
+        requires: [go] # optional; missing => SKIPPED, not PASS
 ```
 
 Extras run in the `checks` lane, after forge's own checks, so `task ci:checks`,

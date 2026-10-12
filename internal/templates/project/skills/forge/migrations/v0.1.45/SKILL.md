@@ -9,7 +9,6 @@ detection: grep -qs 'Extras = append(\[\]connect.Interceptor{otelInt}' cmd/*/cmd
 
 Each section below is independent: apply the ones whose "Use when" matches.
 
-
 ## 1. Typed observability destination
 
 Use when `deploy/kcl/<env>/main.k` has `_observability` but no `observability =` on its `forge.Bundle`.
@@ -34,6 +33,7 @@ Where an environment's telemetry goes is now **declared** on the Bundle as `forg
    ```
 
    and add `observability = _observability_decl` to the `forge.Bundle`.
+
 2. Staging/prod: leave `observability` unset (telemetry off, as before) or declare a destination. A workload that set `OTEL_EXPORTER_OTLP_*` by hand keeps working: an author's value wins.
 3. Delete any `env` entry that pointed a workload at `otel-collector.observability:4317`.
 4. `forge env render dev` — each host workload now carries the endpoint/protocol pair.
@@ -213,6 +213,7 @@ curl -si -X POST localhost:<port>/<pkg>.<Service>/<Method> -H 'content-type: app
 Then, in ClickHouse (`forge observe` or the HyperDX search): a span for that call with `TraceId = 0af7651916cd43dd8448eb211c80319c`, status error or unset, and an `otel_logs` row `rpc failed` with the same `TraceId`.
 
 Also covers `forge env up`:
+
 - A scaffold with no commits yet now tags images `uncommitted` instead of failing with "git tag resolution: exit status 128".
 - With `air` missing, `forge env up` installs forge's pinned air (v1.67.4) into its tool cache, or runs the API under `go-run` with a one-line notice if it cannot. Nothing to change.
 
@@ -248,6 +249,7 @@ Use when `Taskfile.yml` has no `ci:checks` task, or `.github/workflows/ci.yml` h
    `test` and `test:integration` already exist; if `test:integration` does not, add it (`go test -race -tags=integration -count=1 -timeout=10m ./...`).
 
 2. **ci.yml.** Move your project's own jobs and steps aside, then adopt forge's current file: delete `.github/workflows/ci.yml` and run `forge project rescaffold .github/workflows/ci.yml` (or `forge project upgrade --check .github/workflows/ci.yml` to read the diff, then `--force` to adopt it). Re-apply what was yours:
+
    - a step you added to `lint` / `build` / `vuln-scan` becomes an `extra_checks` entry (step 4) or, if it needs the runner's own environment, a step in `checks` before `task ci:checks`;
    - a job with its own runner requirement (a service container, another OS) stays a separate job: copy it back;
    - a repo whose code `go:embed`s a Markdown file narrows the docs-only filter in `changes`.
