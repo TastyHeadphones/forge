@@ -35,11 +35,13 @@ import (
 type Status string
 
 const (
+	// Pass is a check that ran and succeeded.
 	Pass Status = "PASS"
+	// Fail is a check that ran and failed.
 	Fail Status = "FAIL"
-	// Skip: the check did not run. Fails the gate unless Allowed.
+	// Skip is a check that did not run. It fails the gate unless Allowed.
 	Skip Status = "SKIPPED"
-	// NA: this project has nothing for the check to look at.
+	// NA is a check this project has nothing for. It is not a skip.
 	NA Status = "N/A"
 )
 
@@ -117,40 +119,44 @@ func (r Report) Failed() bool {
 	return false
 }
 
-// Counts tallies the rows by outcome. Skipped counts only the SKIPPED rows
-// that fail the gate; Allowed counts the ones CI_SKIP named.
-func (r Report) Counts() (passed, failed, skipped, allowed, na int) {
+// Tally is the rows of a report counted by outcome. Skipped counts only the
+// SKIPPED rows that fail the gate; Allowed counts the ones CI_SKIP named.
+type Tally struct{ Passed, Failed, Skipped, Allowed, NA int }
+
+// Counts tallies the rows by outcome.
+func (r Report) Counts() Tally {
+	var t Tally
 	for _, res := range r.Results {
 		switch {
 		case res.Status == Pass:
-			passed++
+			t.Passed++
 		case res.Status == Fail:
-			failed++
+			t.Failed++
 		case res.Status == Skip && res.Allowed:
-			allowed++
+			t.Allowed++
 		case res.Status == Skip:
-			skipped++
+			t.Skipped++
 		case res.Status == NA:
-			na++
+			t.NA++
 		}
 	}
-	return
+	return t
 }
 
 func (r Report) verdict() string {
-	passed, failed, skipped, allowed, na := r.Counts()
-	parts := []string{fmt.Sprintf("%d passed", passed)}
-	if failed > 0 {
-		parts = append(parts, fmt.Sprintf("%d FAILED", failed))
+	t := r.Counts()
+	parts := []string{fmt.Sprintf("%d passed", t.Passed)}
+	if t.Failed > 0 {
+		parts = append(parts, fmt.Sprintf("%d FAILED", t.Failed))
 	}
-	if skipped > 0 {
-		parts = append(parts, fmt.Sprintf("%d SKIPPED (not allowed)", skipped))
+	if t.Skipped > 0 {
+		parts = append(parts, fmt.Sprintf("%d SKIPPED (not allowed)", t.Skipped))
 	}
-	if allowed > 0 {
-		parts = append(parts, fmt.Sprintf("%d skipped by %s", allowed, SkipEnv))
+	if t.Allowed > 0 {
+		parts = append(parts, fmt.Sprintf("%d skipped by %s", t.Allowed, SkipEnv))
 	}
-	if na > 0 {
-		parts = append(parts, fmt.Sprintf("%d n/a", na))
+	if t.NA > 0 {
+		parts = append(parts, fmt.Sprintf("%d n/a", t.NA))
 	}
 	return strings.Join(parts, ", ")
 }

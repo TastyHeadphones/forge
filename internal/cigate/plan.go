@@ -114,13 +114,6 @@ func (p planner) forge(args ...string) []string {
 	return append(append([]string(nil), p.Forge...), args...)
 }
 
-func (p planner) disabled(flagOn bool, key string) string {
-	if flagOn {
-		return ""
-	}
-	return "disabled in forge.yaml (" + key + ") or not applicable to this project"
-}
-
 func (p planner) frontendDeps(lane Lane) []Check {
 	if !p.CI.HasFrontends {
 		return nil
@@ -413,7 +406,7 @@ func HasIntegrationTests(root string) bool {
 		if err != nil {
 			return nil
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		buf := make([]byte, 2048)
 		n, _ := f.Read(buf)
 		if integrationTag.Match(buf[:n]) {
