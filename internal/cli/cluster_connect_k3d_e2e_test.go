@@ -80,9 +80,18 @@ func TestClusterConnect_TokenAgainstARealCluster(t *testing.T) {
 		return caller, "acme", nil
 	}
 
+	// The delivery grant's namespace is the owner's, so it exists before connect.
+	const deliveryNS = "fcc-delivery"
+	runCluster(ctx, t, nil, "kubectl", "--context", kctx, "create", "namespace", deliveryNS)
+	deliverySecrets, err := parseDeliverySecrets([]string{deliveryNS + "/reliant-otel-auth"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	var out strings.Builder
 	if err := runClusterConnect(ctx, clusterConnectOptions{
 		Name: "e2e", KubeContext: kctx, Auth: "token", Env: "prod", Out: &out,
+		DeliverySecrets: deliverySecrets,
 	}); err != nil {
 		t.Fatalf("connect: %v\n%s", err, out.String())
 	}
@@ -96,6 +105,17 @@ func TestClusterConnect_TokenAgainstARealCluster(t *testing.T) {
 		{"get", "clusterrolebinding", "forge-connect-e2e"},
 	} {
 		runCluster(ctx, t, nil, "kubectl", append([]string{"--context", kctx}, obj...)...)
+	}
+
+	verifyDeliveryGrant(ctx, t, kctx, deliveryNS)
+
+	// Re-running connect is an idempotent upsert, not a collision.
+	out.Reset()
+	if err := runClusterConnect(ctx, clusterConnectOptions{
+		Name: "e2e", KubeContext: kctx, Auth: "token", Env: "prod", Out: &out,
+		DeliverySecrets: deliverySecrets,
+	}); err != nil {
+		t.Fatalf("a repeated connect failed: %v\n%s", err, out.String())
 	}
 
 	// The token the control plane received is the one the cluster minted: a
@@ -125,6 +145,10 @@ func TestClusterConnect_TokenAgainstARealCluster(t *testing.T) {
 		{"get", "secret", connectTokenServiceAccount + "-token", "-n", connectTokenNamespace},
 		{"get", "clusterrole", "forge-connect-e2e"},
 		{"get", "clusterrolebinding", "forge-connect-e2e"},
+		{"get", "validatingadmissionpolicy", "forge-connect-e2e-delivery"},
+		{"get", "validatingadmissionpolicybinding", "forge-connect-e2e-delivery"},
+		{"get", "role", "forge-connect-e2e-delivery", "-n", deliveryNS},
+		{"get", "rolebinding", "forge-connect-e2e-delivery", "-n", deliveryNS},
 	} {
 		if err := tryCluster(ctx, "kubectl", append([]string{"--context", kctx}, obj...)...); err == nil {
 			t.Errorf("disconnect left %s behind", strings.Join(obj[1:], " "))
@@ -155,4 +179,59 @@ func runCluster(ctx context.Context, t *testing.T, env []string, name string, ar
 
 func tryCluster(ctx context.Context, name string, args ...string) error {
 	return exec.CommandContext(ctx, name, args...).Run()
+}
+
+// verifyDeliveryGrant exercises the grant as the connect identity would, by
+// impersonating it: RBAC through `auth can-i`, and the admission policy by
+// attempting real writes. The policy is enforced asynchronously after its
+// binding appears, so the first denial is polled for.
+func verifyDeliveryGrant(ctx context.Context, t *testing.T, kctx, ns string) {
+	t.Helper()
+	as := "--as=system:serviceaccount:" + connectTokenNamespace + ":" + connectTokenServiceAccount
+	kube := func(args ...string) error {
+		return tryCluster(ctx, "kubectl", append([]string{"--context", kctx, as}, args...)...)
+	}
+	for _, tc := range []struct {
+		verb, res string
+		want      bool
+	}{
+		{"get", "secret/reliant-otel-auth", true},
+		{"patch", "secret/reliant-otel-auth", true},
+		{"get", "secret/something-else", false},
+		{"update", "secret/something-else", false},
+		{"list", "secrets", false},
+	} {
+		err := kube("auth", "can-i", tc.verb, tc.res, "-n", ns)
+		if (err == nil) != tc.want {
+			t.Errorf("can-i %s %s in %s: allowed=%v, want %v", tc.verb, tc.res, ns, err == nil, tc.want)
+		}
+	}
+	if err := kube("auth", "can-i", "get", "secret/reliant-otel-auth", "-n", "default"); err == nil {
+		t.Error("the name-pinned grant leaked into another namespace")
+	}
+
+	// Poll until the policy is live: an undeclared create must be refused.
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		if err := kube("create", "secret", "generic", "undeclared", "-n", ns); err != nil {
+			break
+		}
+		_ = tryCluster(ctx, "kubectl", "--context", kctx, "delete", "secret", "undeclared", "-n", ns)
+		if time.Now().After(deadline) {
+			t.Fatal("the admission policy never refused a create of an undeclared Secret")
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if err := kube("create", "secret", "generic", "reliant-otel-auth", "-n", ns, "--from-literal=token=x"); err != nil {
+		t.Errorf("creating the declared Secret was refused: %v", err)
+	}
+	// Right name, wrong type: a service-account-token Secret would mint a credential.
+	_ = tryCluster(ctx, "kubectl", "--context", kctx, "delete", "secret", "reliant-otel-auth", "-n", ns)
+	manifest := "apiVersion: v1\nkind: Secret\ntype: kubernetes.io/service-account-token\nmetadata:\n" +
+		"  name: reliant-otel-auth\n  namespace: " + ns + "\n  annotations:\n    kubernetes.io/service-account.name: default\n"
+	cmd := exec.CommandContext(ctx, "kubectl", "--context", kctx, as, "create", "-f", "-")
+	cmd.Stdin = strings.NewReader(manifest)
+	if err := cmd.Run(); err == nil {
+		t.Error("the declared name was admitted as a service-account-token Secret")
+	}
 }

@@ -83,6 +83,8 @@ func newClusterConnectCmd() *cobra.Command {
 		envName     string
 		token       string
 		dryRun      bool
+		delivery    []string
+		deliverySub string
 	)
 	cmd := &cobra.Command{
 		Use:   "connect <name>",
@@ -114,17 +116,42 @@ with no cloud identity to trust becomes a target at all.
 
 Re-running connect UPDATES the cluster of that name, so fixing an endpoint is
 the same command again. --env names WHICH control plane to talk to, from that
-env's forge.ControlPlane declaration.`,
+env's forge.ControlPlane declaration.
+
+SECRET DELIVERY — opt-in, off unless named. A Secret the control plane supplies
+and renews (forge.ControlPlaneSecret) needs write access to exactly that
+Secret and no other. Name each one:
+
+  forge cluster connect prod-us --context ... --env prod \
+    --delivery-secret control-plane-prod/reliant-otel-auth
+
+forge then applies, per namespace, a Role limited by resourceNames to get,
+update, patch and delete on the named Secrets, plus create — which RBAC cannot
+limit by name, so a ValidatingAdmissionPolicy admits only the named
+namespace/name pairs, only as type Opaque, for the delivery identities only.
+--delivery-subject (user:<name> or serviceaccount:<ns>/<name>) binds a second,
+dedicated delivery identity alongside the connect identity. Re-running connect
+re-converges the grant; --dry-run prints every object.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			secrets, err := parseDeliverySecrets(delivery)
+			if err != nil {
+				return err
+			}
+			subject, err := parseDeliverySubject(deliverySub)
+			if err != nil {
+				return err
+			}
 			return runClusterConnect(cmd.Context(), clusterConnectOptions{
-				Name:        args[0],
-				KubeContext: kubeContext,
-				Auth:        authFlag,
-				Env:         envName,
-				Token:       token,
-				DryRun:      dryRun,
-				Out:         cmd.OutOrStdout(),
+				Name:            args[0],
+				KubeContext:     kubeContext,
+				Auth:            authFlag,
+				Env:             envName,
+				Token:           token,
+				DryRun:          dryRun,
+				DeliverySecrets: secrets,
+				DeliverySubject: subject,
+				Out:             cmd.OutOrStdout(),
 			})
 		},
 	}
@@ -133,6 +160,10 @@ env's forge.ControlPlane declaration.`,
 	cmd.Flags().StringVar(&envName, "env", "", "Environment whose control plane to talk to (required)")
 	cmd.Flags().StringVar(&token, "token", "", "Credential to use, ahead of the env var and the credentials file")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print what would be sent and applied, and contact nothing")
+	cmd.Flags().StringArrayVar(&delivery, "delivery-secret", nil,
+		"<namespace>/<name> of a Secret the control plane may write and renew (repeatable)")
+	cmd.Flags().StringVar(&deliverySub, "delivery-subject", "",
+		"Also bind the delivery grant to this dedicated identity: user:<name> or serviceaccount:<namespace>/<name>")
 	return cmd
 }
 
@@ -178,7 +209,10 @@ type clusterConnectOptions struct {
 	Env         string
 	Token       string
 	DryRun      bool
-	Out         io.Writer
+	// DeliverySecrets / DeliverySubject: see connectRBAC.
+	DeliverySecrets []deliverySecret
+	DeliverySubject *deliverySubject
+	Out             io.Writer
 }
 
 // clusterConnectClient resolves the endpoint and credential for an env and
@@ -212,6 +246,10 @@ func runClusterConnect(ctx context.Context, opts clusterConnectOptions) error {
 		return err
 	}
 	gke, _ := parseGKEContext(target.Context)
+	probe := connectRBAC{DeliverySecrets: opts.DeliverySecrets, DeliverySubject: opts.DeliverySubject}
+	if err := probe.validateDelivery(); err != nil {
+		return err
+	}
 	if target.AddressNote != "" {
 		fmt.Fprintf(opts.Out, "registering %s: %s\n", target.Address, target.AddressNote)
 	}
@@ -227,6 +265,8 @@ func runClusterConnect(ctx context.Context, opts clusterConnectOptions) error {
 			Org:                 "<the env's organization>",
 			TokenNamespace:      connectTokenNamespace,
 			TokenServiceAccount: connectTokenServiceAccount,
+			DeliverySecrets:     opts.DeliverySecrets,
+			DeliverySubject:     opts.DeliverySubject,
 		})
 	}
 
@@ -241,6 +281,8 @@ func runClusterConnect(ctx context.Context, opts clusterConnectOptions) error {
 		Org:                 org,
 		TokenNamespace:      connectTokenNamespace,
 		TokenServiceAccount: connectTokenServiceAccount,
+		DeliverySecrets:     opts.DeliverySecrets,
+		DeliverySubject:     opts.DeliverySubject,
 	}
 
 	// ORDER DEPENDS ON THE AUTH.
@@ -253,11 +295,21 @@ func runClusterConnect(ctx context.Context, opts clusterConnectOptions) error {
 	// place it is reported. Applying earlier rendered `name: ` — a binding
 	// that authorizes nobody, with an apply that still "succeeded".
 	applyBootstrap := func() error {
+		if err := rbac.validateConnectIdentity(); err != nil {
+			return err
+		}
 		fmt.Fprintf(opts.Out, "applying bootstrap RBAC to %s (server-side, field manager forge)\n", target.Context)
-		if err := connectApply(ctx, target.Context, rbac.bootstrapManifests()); err != nil {
-			return fmt.Errorf("apply bootstrap RBAC to context %q: %w\n"+
-				"This needs cluster-admin on the target. It is a one-time bootstrap: it grants the "+
-				"platform the permissions its deploys need, which no deploy can grant itself", target.Context, err)
+		for _, stage := range rbac.bootstrapStages() {
+			if err := connectApply(ctx, target.Context, stage); err != nil {
+				hint := ""
+				if rbac.deliveryEnabled() {
+					hint = "\nThe delivery grant needs each --delivery-secret namespace to exist and the cluster to " +
+						"support ValidatingAdmissionPolicy (Kubernetes 1.30+); nothing past the failed stage was applied"
+				}
+				return fmt.Errorf("apply bootstrap RBAC to context %q: %w\n"+
+					"This needs cluster-admin on the target. It is a one-time bootstrap: it grants the "+
+					"platform the permissions its deploys need, which no deploy can grant itself%s", target.Context, err, hint)
+			}
 		}
 		return nil
 	}
@@ -424,8 +476,10 @@ func runClusterDisconnect(ctx context.Context, name, kubeContext, envName, token
 	if strings.TrimSpace(kubeContext) == "" {
 		fmt.Fprintf(out, "\nNo --context given, so nothing was deleted in the cluster. To clean up:\n\n"+
 			"    kubectl --context <ctx> delete clusterrole,clusterrolebinding %s\n"+
+			"    kubectl --context <ctx> delete validatingadmissionpolicybinding,validatingadmissionpolicy %s --ignore-not-found\n"+
+			"    kubectl --context <ctx> delete rolebinding,role --all-namespaces -l %s=%s --ignore-not-found\n"+
 			"    kubectl --context <ctx> delete namespace %s\n",
-			connectBootstrapName(name), connectTokenNamespace)
+			connectBootstrapName(name), deliveryObjectName(name), deliveryGrantLabelKey, deliveryGrantLabelValue, connectTokenNamespace)
 		return nil
 	}
 	rbac := connectRBAC{
@@ -446,6 +500,13 @@ func runClusterDisconnect(ctx context.Context, name, kubeContext, envName, token
 func deleteConnectObjects(ctx context.Context, kctx string, rbac connectRBAC, out io.Writer) error {
 	name := connectBootstrapName(rbac.ClusterName)
 	for _, target := range []struct{ args []string }{
+		// The delivery grant, if one was ever applied. Selected by label rather
+		// than by namespace, because disconnect is not told which namespaces
+		// were declared. The policy goes first: it only ever narrows.
+		{[]string{"delete", "validatingadmissionpolicybinding", deliveryObjectName(rbac.ClusterName), "--ignore-not-found"}},
+		{[]string{"delete", "validatingadmissionpolicy", deliveryObjectName(rbac.ClusterName), "--ignore-not-found"}},
+		{[]string{"delete", "rolebinding,role", "--all-namespaces", "--ignore-not-found", "-l",
+			deliveryGrantLabelKey + "=" + deliveryGrantLabelValue + ",forge.dev/connected-cluster=" + rbac.ClusterName}},
 		{[]string{"delete", "clusterrolebinding", name, "--ignore-not-found"}},
 		{[]string{"delete", "clusterrole", name, "--ignore-not-found"}},
 		{[]string{"delete", "secret", rbac.tokenSecretName(), "-n", rbac.TokenNamespace, "--ignore-not-found"}},
@@ -454,6 +515,12 @@ func deleteConnectObjects(ctx context.Context, kctx string, rbac connectRBAC, ou
 		cmd := exec.CommandContext(ctx, "kubectl", cluster.KubectlArgs(kctx, target.args...)...)
 		scrubSubprocessLogEnv(cmd)
 		if outBytes, err := cmd.CombinedOutput(); err != nil {
+			// A cluster too old for ValidatingAdmissionPolicy never had a
+			// delivery policy to delete; that is convergence, not failure.
+			if strings.Contains(target.args[1], "validatingadmissionpolicy") &&
+				strings.Contains(string(outBytes), "doesn't have a resource type") {
+				continue
+			}
 			return fmt.Errorf("delete %s on context %q: %w\n%s",
 				strings.Join(target.args[1:3], " "), kctx, err, strings.TrimSpace(string(outBytes)))
 		}
