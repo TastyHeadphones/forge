@@ -226,8 +226,8 @@ func canonicalJSON(v any) ([]byte, error) {
 }
 
 // rewriteLines replaces a file's contents atomically (write a temp file in
-// the same directory, then rename). Used ONLY by sessions.jsonl, the one
-// compacted file; every other file is append-only.
+// the same directory, then rename). Used by sessions.jsonl (compacted) and
+// the hosted-ledger mirror (hostedcache.go, a cache); every ledger file is append-only.
 func rewriteLines(path string, records []any) error {
 	if err := os.MkdirAll(filepath.Dir(path), dirMode); err != nil {
 		return fmt.Errorf("create %s: %w", filepath.Dir(path), err)

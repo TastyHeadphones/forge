@@ -44,6 +44,10 @@ const applyGateName = "apply"
 // A deploy held on a person (queued) recorded nothing about the cluster half
 // worth judging, so it records nothing here.
 func recordApplyOutcome(ctx context.Context, env string, plan promotePlan, ledger envLedger, started time.Time, applyErr error, o promoteFollowOptions) {
+	if ledger.Offline != nil && plan.Recorded != nil && !o.clientDeploy.dryRun {
+		recordOfflineApplyOutcome(env, plan, ledger, started, applyErr, o)
+		return
+	}
 	if !ledger.Hosted || plan.Recorded == nil || o.clientDeploy.dryRun || queuedOf(applyErr) != nil {
 		return
 	}

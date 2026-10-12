@@ -132,6 +132,12 @@ func bundleDigestForRelease(_ context.Context, projectDir, env, version string, 
 // enforces.
 func resolveDeployPlan(ctx context.Context, projectDir, env string, ledger envLedger, bundleDigest string, errOut io.Writer) (*release.Plan, error) {
 	switch {
+	case ledger.Offline != nil:
+		// The plan is the control plane's (it holds the recorded bundles);
+		// under --offline-ledger there is none to ask. The deploy proceeds
+		// behind the confirmation gate, as for any env with no plan.
+		fmt.Fprintf(errOut, "[plan] --offline-ledger: env %s's deploy plan needs the control plane, so none was computed.\n", env)
+		return nil, nil
 	case ledger.ledgerOnly():
 		return ledgerOnlyDeployPlan(ctx, projectDir, env, ledger, bundleDigest, errOut)
 	case ledger.Hosted:

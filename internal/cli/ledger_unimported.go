@@ -21,9 +21,15 @@ package cli
 // IT APPLIES TO BOTH BACKENDS. The doc states the refusal for an env whose
 // ledger moved to a control plane (§11.3) and for a non-empty machine ledger
 // (§12.4), but the hazard is identical whenever the SELECTED ledger lacks
-// records the checkout holds — and control-plane's prod, which declares no
-// control plane, lands on the machine ledger. A rule that fired only for
-// hosted envs would miss exactly the case that motivated it.
+// records the checkout holds — whether that is a control plane or the machine
+// ledger of an env that declares none. A rule that fired only for one backend
+// would miss exactly the case that motivated it. (control-plane's prod now
+// declares forge.ControlPlane, so it lands on the hosted ledger.)
+//
+// THE ONE BYPASS is `forge env deploy <env> --offline-ledger`, which deploys
+// from a cached copy of the hosted ledger because the control plane is down
+// (offline_ledger.go). It selects the offline ledger in ledgerFor, which skips
+// this check for that selection alone; no variable or other flag does.
 //
 // IT GOES QUIET BY CONSTRUCTION. Once `forge ledger import` has recorded
 // those promotions, the selected ledger contains them, the comparison finds
