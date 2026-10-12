@@ -4,9 +4,14 @@
 // W3C traceparent, WITHOUT any OTLP collector configured, so the backend
 // (otelconnect + otelhttp) joins the same distributed trace. If this test
 // fails, full-stack tracing is broken.
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { buildRuntimeInterceptors, traceInterceptor } from "./interceptors.js";
+import {
+  registerTelemetryStartup,
+  resetTelemetryGate,
+  telemetryReady,
+} from "./telemetry-gate.js";
 import {
   freshTraceparent,
   injectTraceContext,
@@ -59,5 +64,58 @@ describe("traceparent propagation", () => {
     // retryInterceptor is intentionally NOT in the default chain — React
     // Query is the single retry owner (see interceptors.ts).
     expect(buildRuntimeInterceptors()).toHaveLength(4);
+  });
+});
+
+describe("traceInterceptor and browser telemetry startup", () => {
+  type Req = { header: Headers };
+  const run = async (): Promise<{ calledAfterMs: number; traceparent: string | null }> => {
+    const req: Req = { header: new Headers() };
+    const t0 = Date.now();
+    let calledAfterMs = -1;
+    let traceparent: string | null = null;
+    const next = async (r: Req) => {
+      calledAfterMs = Date.now() - t0;
+      traceparent = r.header.get("traceparent");
+      return { message: {} };
+    };
+    const go = traceInterceptor() as unknown as (
+      n: typeof next,
+    ) => (r: Req) => Promise<unknown>;
+    await go(next)(req);
+    return { calledAfterMs, traceparent };
+  };
+
+  afterEach(() => {
+    resetTelemetryGate();
+  });
+
+  it("does not wait when telemetry is not starting", async () => {
+    const { calledAfterMs, traceparent } = await run();
+    expect(calledAfterMs).toBeLessThan(50);
+    expect(traceparent).toMatch(TRACEPARENT_RE);
+  });
+
+  it("holds the call until the SDK has patched fetch, so the traceparent names a real browser span", async () => {
+    let finish!: () => void;
+    registerTelemetryStartup(new Promise<void>((r) => (finish = r)));
+    setTimeout(finish, 120);
+    const { calledAfterMs } = await run();
+    expect(calledAfterMs).toBeGreaterThanOrEqual(100);
+  });
+
+  it("gives up after the bound when the SDK never starts (blocked chunk)", async () => {
+    registerTelemetryStartup(new Promise<void>(() => undefined));
+    const started = Date.now();
+    await telemetryReady(60);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(50);
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+
+  it("stops waiting if startup fails", async () => {
+    registerTelemetryStartup(Promise.reject(new Error("boom")));
+    const { calledAfterMs, traceparent } = await run();
+    expect(calledAfterMs).toBeLessThan(200);
+    expect(traceparent).toMatch(TRACEPARENT_RE);
   });
 });

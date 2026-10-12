@@ -278,3 +278,49 @@ func TestServeScaffoldTrustsTheBrowsersTraceContext(t *testing.T) {
 		t.Fatal("the serve scaffold builds no otelconnect interceptor (the assertion above would be vacuous)")
 	}
 }
+
+// Tracing must wrap auth: a call auth rejects is exactly the one you want a
+// span for, and the logs written for it must carry the span's trace_id. The
+// scaffold used to PREPEND otelconnect to Deps.Extras, which observe.Chain
+// appends after auth, so a 401 produced no span and its "rpc failed" line had
+// no trace_id. It belongs in Deps.Trace, the chain's outermost slot.
+func TestServeScaffoldOpensTheTraceSpanOutsideAuth(t *testing.T) {
+	file := parseServeFields(t, nil)
+	assignedToTrace := false
+	ast.Inspect(file, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.AssignStmt:
+			for _, lhs := range x.Lhs {
+				sel, ok := lhs.(*ast.SelectorExpr)
+				if ok && sel.Sel.Name == "Trace" {
+					assignedToTrace = true
+				}
+			}
+			// otelconnect must never be appended to Extras (it would run after auth).
+			for _, rhs := range x.Rhs {
+				if usesIdent(rhs, "otelInt") {
+					for _, lhs := range x.Lhs {
+						if sel, ok := lhs.(*ast.SelectorExpr); ok && sel.Sel.Name == "Extras" {
+							t.Error("the otelconnect interceptor is added to Deps.Extras, which runs after auth: a rejected call has no span")
+						}
+					}
+				}
+			}
+		}
+		return true
+	})
+	if !assignedToTrace {
+		t.Error("the serve scaffold never sets observe.Deps.Trace: the otelconnect span would open after auth")
+	}
+}
+
+func usesIdent(e ast.Expr, name string) bool {
+	found := false
+	ast.Inspect(e, func(n ast.Node) bool {
+		if id, ok := n.(*ast.Ident); ok && id.Name == name {
+			found = true
+		}
+		return !found
+	})
+	return found
+}

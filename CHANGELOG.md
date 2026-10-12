@@ -22,6 +22,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A dirty cut on a shared env (hosted, or a non-local cluster) now asks before
   it builds, and refuses with exit 5 and no build when there is no terminal;
   `--yes` accepts it.
+- **Traces, logs and profiles now line up.** Found in a live end-to-end run:
+  - The scaffolded `serve.go` put the `otelconnect` interceptor in
+    `observe.Deps.Extras`, which `observe.Chain` appends AFTER auth, so a call
+    auth rejected had no span, its `rpc failed` line and audit event carried no
+    `trace_id`, and profile samples had no span to link to. `observe.Deps` has a
+    new `Trace` field that `Chain` places outermost, followed by the pprof
+    labels naming its span; the scaffold uses it. `serve.go` is scaffold-once:
+    see `migrations/v0.1.45` section 5 for the one-line edit.
+  - `@reliantlabs/forge-web-runtime`: the first RPCs a page makes, which fire
+    before the lazy HyperDX SDK has patched `fetch`, carried a synthesized
+    `traceparent` no browser span matched, so the API span's parent id joined to
+    nothing. The trace interceptor now waits (at most 2s) for telemetry startup.
+  - `forge env up` on a project with no commits yet no longer fails with `git
+    tag resolution: exit status 128`; it tags images `uncommitted`.
+  - `forge env up` no longer needs `air` on PATH: it installs its pinned air
+    (v1.67.4) into forge's tool cache, and runs the API under `go-run` with a
+    one-line notice if it cannot.
 
 ### Added
 

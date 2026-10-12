@@ -739,7 +739,7 @@ func preflightHostRunners(e *KCLEntities, targets []string, env string) error {
 		if !ok {
 			continue
 		}
-		if _, err := hostRunnerLookPath(tool.bin); err != nil {
+		if _, ok := hostToolPath(tool.bin); !ok {
 			missing = append(missing, fmt.Sprintf("  %s runs under %s (%s), which is not on PATH: %s",
 				w.Name, w.Runtime.Host.Runner, tool.what, tool.install))
 		}
@@ -1550,6 +1550,7 @@ func upBuildDeployPhases(ctx context.Context, in upClusterInput) error {
 	if err := preflightGoModulesTidy(ctx, entities, in.projectDir); err != nil {
 		return err
 	}
+	provisionAir(ctx, entities, opts.targets)
 	if err := preflightHostRunners(entities, opts.targets, opts.env); err != nil {
 		return err
 	}
@@ -2915,6 +2916,7 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, w Workl
 	if err != nil {
 		return nil, "", err
 	}
+	pinHostToolPath(cmd, spec.Runner)
 	if spec.IgnoresArgs() && !spec.AirRunsArgs() {
 		fmt.Printf("[up] host %s: runner air takes its argv from %s (entrypoint / args_bin); the workload's args %v are not passed\n",
 			w.Name, emptyAs(spec.AirConfig, hostlaunch.DefaultAirConfig), spec.Args)

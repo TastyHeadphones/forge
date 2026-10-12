@@ -173,11 +173,14 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 {{- end}}
 
 	// INTERCEPTOR CHAIN — the order requests pass through, outermost first.
-	// observe.Chain fixes the observability half (recovery → request-id →
-	// logging → tracing → metrics) and then appends, in this order, the
-	// application interceptors named below: auth → audit → rate-limit.
-	// Recovery is outermost so a panic anywhere inside still produces a
-	// response; auth precedes audit so the audit log knows who called.
+	// observe.Chain fixes it: trace → recovery → request-id → logging →
+	// tracing → metrics, and then the application interceptors named below:
+	// auth → audit → rate-limit → extras (protovalidate last, right before
+	// the handler). The trace span is outermost, so a request auth rejects
+	// still has a span, and every log line written for it — the "rpc failed"
+	// line, the audit event — carries its trace_id. Recovery is next, so a
+	// panic anywhere inside still produces a response; auth precedes audit so
+	// the audit log knows who called.
 	chainDeps := observe.Deps{
 		Logger: logger,
 		Auth:   authInterceptor,
@@ -200,9 +203,10 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 	} else {
 		logger.Error("failed to create protovalidate interceptor", "error", verr)
 	}
-	// otelconnect PREPENDED, so the span it opens covers every interceptor
-	// after it — including auth rejections, which are exactly the requests
-	// you want to see in a trace.
+	// otelconnect goes in Deps.Trace, NOT Extras: Trace is the OUTERMOST slot
+	// of the chain, so the span covers auth rejections (exactly the requests
+	// you want to see) and every layer's log lines carry its trace_id. Extras
+	// run AFTER auth — an interceptor there never sees a rejected call.
 	//
 	// WithTrustRemote makes the browser's traceparent the PARENT of this span.
 	// Without it otelconnect treats every inbound trace context as untrusted
@@ -211,7 +215,7 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 	// browser is first-party here. Drop the option if this server is reachable
 	// by callers you do not want choosing your trace ids.
 	if otelInt, oerr := otelconnect.NewInterceptor(otelconnect.WithTrustRemote()); oerr == nil {
-		chainDeps.Extras = append([]connect.Interceptor{otelInt}, chainDeps.Extras...)
+		chainDeps.Trace = otelInt
 	} else {
 		logger.Error("failed to create otelconnect interceptor", "error", oerr)
 	}

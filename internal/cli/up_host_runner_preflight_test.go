@@ -1,7 +1,11 @@
 package cli
 
 import (
+	"context"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -52,4 +56,67 @@ func TestPreflightHostRunners(t *testing.T) {
 	if err := preflightHostRunners(e, nil, "dev"); err != nil {
 		t.Errorf("air installed: %v", err)
 	}
+}
+
+// With no air on PATH, `forge env up` provisions the pinned air itself
+// (declarative: the version is forge's pin, installed into forge's tool
+// cache). If that cannot happen — offline, no module proxy — the API runs
+// under go-run with a one-line notice rather than failing the dev loop.
+func TestProvisionAir(t *testing.T) {
+	newEntities := func() (*KCLEntities, *HostRuntime) {
+		h := &HostRuntime{Runner: "air"}
+		return &KCLEntities{Workloads: []WorkloadEntity{
+			{Name: "api", Kind: "service", Runtime: RuntimeEntity{Type: RuntimeHost, Host: h}},
+		}}, h
+	}
+	prevLook, prevInstall, prevDirs := hostRunnerLookPath, installAirFn, hostToolDirs
+	t.Cleanup(func() { hostRunnerLookPath, installAirFn, hostToolDirs = prevLook, prevInstall, prevDirs })
+	hostRunnerLookPath = func(string) (string, error) { return "", errors.New("not found") }
+
+	t.Run("installs the pinned air when PATH has none", func(t *testing.T) {
+		hostToolDirs = nil
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "air"+exeSuffix()), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		installAirFn = func(context.Context) (string, error) { return dir, nil }
+		e, h := newEntities()
+		provisionAir(context.Background(), e, nil)
+		if h.Runner != "air" {
+			t.Errorf("runner = %q, want air kept", h.Runner)
+		}
+		if err := preflightHostRunners(e, nil, "dev"); err != nil {
+			t.Errorf("provisioned air must satisfy the preflight: %v", err)
+		}
+		cmd := exec.Command("air", "-c", ".air.toml")
+		pinHostToolPath(cmd, "air")
+		if cmd.Path != filepath.Join(dir, "air"+exeSuffix()) {
+			t.Errorf("cmd.Path = %q, want the provisioned binary", cmd.Path)
+		}
+	})
+
+	t.Run("falls back to go-run when it cannot be installed", func(t *testing.T) {
+		hostToolDirs = nil
+		installAirFn = func(context.Context) (string, error) { return "", errors.New("proxy unreachable\nmore") }
+		e, h := newEntities()
+		provisionAir(context.Background(), e, nil)
+		if h.Runner != "go-run" {
+			t.Errorf("runner = %q, want go-run", h.Runner)
+		}
+		if err := preflightHostRunners(e, nil, "dev"); err != nil {
+			t.Errorf("go-run needs no tool: %v", err)
+		}
+	})
+
+	t.Run("an air on PATH is used as is", func(t *testing.T) {
+		hostToolDirs = nil
+		hostRunnerLookPath = func(bin string) (string, error) { return "/usr/bin/" + bin, nil }
+		defer func() { hostRunnerLookPath = func(string) (string, error) { return "", errors.New("not found") } }()
+		installAirFn = func(context.Context) (string, error) { t.Fatal("must not install when air is on PATH"); return "", nil }
+		e, h := newEntities()
+		provisionAir(context.Background(), e, nil)
+		if h.Runner != "air" {
+			t.Errorf("runner = %q", h.Runner)
+		}
+	})
 }

@@ -120,6 +120,7 @@ describe("the ./interceptors entry point", () => {
     expect(files.sort()).toEqual([
       "src/errors.ts",
       "src/interceptors.ts",
+      "src/telemetry-gate.ts",
       "src/trace.ts",
     ]);
     expect(bare).toEqual([
