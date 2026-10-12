@@ -274,7 +274,7 @@ func (l *Locker) tryLock(ctx context.Context, name string, key int64) (*session,
 		return nil, false, err
 	}
 	var got bool
-	if err := sess.conn.QueryRowContext(ctx, `SELECT pg_try_advisory_lock($1)`, key).Scan(&got); err != nil {
+	if err := sess.scan(ctx, l.opt.HeartbeatInterval, []any{&got}, `SELECT pg_try_advisory_lock($1)`, key); err != nil {
 		if ctx.Err() == nil {
 			sess.fail(err)
 		}
@@ -293,10 +293,8 @@ func (l *Locker) release(sess *session, name string, key int64) {
 	if sess.isLost() {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), l.opt.HeartbeatInterval)
-	defer cancel()
 	var ok bool
-	if err := sess.conn.QueryRowContext(ctx, `SELECT pg_advisory_unlock($1)`, key).Scan(&ok); err != nil || !ok {
+	if err := sess.scan(context.Background(), l.opt.HeartbeatInterval, []any{&ok}, `SELECT pg_advisory_unlock($1)`, key); err != nil || !ok {
 		// A lock we cannot unlock must not outlive this call: drop the whole
 		// session so the server releases it.
 		sess.fail(fmt.Errorf("unlock %q: ok=%v err=%v", name, ok, err))
@@ -317,7 +315,9 @@ func (l *Locker) session(ctx context.Context) (*session, error) {
 		return nil, err
 	}
 	var pid int
-	if err := conn.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+	qctx, qcancel := context.WithTimeout(ctx, l.opt.HeartbeatInterval)
+	defer qcancel()
+	if err := conn.QueryRowContext(qctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
@@ -333,10 +333,29 @@ type session struct {
 	pid  int
 	lost chan struct{}
 
+	// qmu serializes every query on conn. A *sql.Conn is one driver
+	// connection, and pgx refuses a second query while the first's result is
+	// still open ("conn busy"); database/sql does not prevent that. A process
+	// with fifteen leases has fifteen goroutines contending on this one
+	// session, so without it the session is declared lost within milliseconds
+	// of start and every lease it held is dropped.
+	qmu sync.Mutex
+
 	mu       sync.Mutex
 	held     map[string]struct{}
 	failure  error
 	lostOnce sync.Once
+}
+
+// scan runs one single-row query on the session and scans it into dest, under
+// qmu and a deadline, so a dead network cannot park a goroutine (and qmu) for
+// longer than one interval.
+func (s *session) scan(ctx context.Context, timeout time.Duration, dest []any, query string, args ...any) error {
+	s.qmu.Lock()
+	defer s.qmu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return s.conn.QueryRowContext(ctx, query, args...).Scan(dest...)
 }
 
 func (s *session) add(name string) {
@@ -406,13 +425,11 @@ func (s *session) heartbeat(interval time.Duration) {
 			return
 		case <-t.C:
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), interval)
 		var pid, n int
-		err := s.conn.QueryRowContext(ctx,
+		err := s.scan(context.Background(), interval, []any{&pid, &n},
 			`SELECT pg_backend_pid(),
 			        (SELECT count(*) FROM pg_locks
-			          WHERE locktype = 'advisory' AND pid = pg_backend_pid() AND granted)`).Scan(&pid, &n)
-		cancel()
+			          WHERE locktype = 'advisory' AND pid = pg_backend_pid() AND granted)`)
 		if err != nil {
 			s.fail(fmt.Errorf("heartbeat: %w", err))
 			return

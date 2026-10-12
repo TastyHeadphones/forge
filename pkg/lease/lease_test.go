@@ -360,3 +360,57 @@ func TestClosingTheLockerReleasesTheLeaseEvenWhenItsPoolStaysOpen(t *testing.T) 
 		return got
 	})
 }
+
+// Many leases on ONE Locker share one session. Before the session serialized
+// its queries, pgx answered a second concurrent query with "conn busy", the
+// session was declared lost and every lease it held was dropped. That is the
+// shape control-plane-workers has: fifteen leases per process, a standby
+// polling all of them at once, and a heartbeat on top.
+func TestManyLeasesOnOneLockerSurviveConcurrentPollingAndHeartbeats(t *testing.T) {
+	dsn := testDSN(t)
+	const n = 20
+	opt := lease.Options{RetryInterval: 5 * time.Millisecond, HeartbeatInterval: 20 * time.Millisecond, Logger: quiet}
+
+	run := func(l *lease.Locker, ctx context.Context, wg *sync.WaitGroup, starts *[n]atomic.Int32, leading *atomic.Int32) {
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_ = l.Run(ctx, "job-"+string(rune('a'+i)), func(ctx context.Context) error {
+					starts[i].Add(1)
+					leading.Add(1)
+					defer leading.Add(-1)
+					<-ctx.Done()
+					return nil
+				})
+			}()
+		}
+	}
+	oneConn := func() *sql.DB { db := pool(t, dsn); db.SetMaxOpenConns(1); return db }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	leader, standby := lease.New(oneConn(), opt), lease.New(oneConn(), opt)
+	t.Cleanup(func() { cancel(); wg.Wait(); _ = leader.Close(); _ = standby.Close() })
+
+	var lStarts, sStarts [n]atomic.Int32
+	var lLeading, sLeading atomic.Int32
+	run(leader, ctx, &wg, &lStarts, &lLeading)
+	eventually(t, "the leader to hold every lease", func() bool { return lLeading.Load() == n })
+	// The standby now polls 20 held leases every 5ms on one session, while
+	// both sessions heartbeat every 20ms.
+	run(standby, ctx, &wg, &sStarts, &sLeading)
+	time.Sleep(1500 * time.Millisecond)
+
+	if got := lLeading.Load(); got != n {
+		t.Fatalf("leader holds %d of %d leases after 1.5s of contention", got, n)
+	}
+	for i := range lStarts {
+		if got := lStarts[i].Load(); got != 1 {
+			t.Fatalf("job %d restarted %d times: its lease was dropped on a healthy session", i, got)
+		}
+	}
+	if got := sLeading.Load(); got != 0 {
+		t.Fatalf("standby led %d jobs while the leader held them", got)
+	}
+}
