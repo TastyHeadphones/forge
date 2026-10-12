@@ -51,68 +51,16 @@ The contract analyzer scans **both** `internal/` and `pkg/` by default. The conc
 
 Repeatedly adding `pkg/<X>` to `contracts.exclude` is a signal: either the package belongs in `internal/` (real business state → follow the contract pattern), or it's genuinely library code and the exclusion is correct. Don't reflexively exclude every `pkg/*` package.
 
-### Packages forge should not manage: `//forge:exclude-contract: <why>`
+### Package markers: which one, when
 
-There is ONE header directive for "forge does not manage this package". It takes a **reason**, on the same line:
+| Marker | The server… | Mock | Use when |
+|---|---|---|---|
+| *(none)* | constructs it in `compose.go` | yes | the default |
+| `//forge:external-component` | has it, built by hand in `providers.go` | yes | the server needs it, you build it |
+| `//forge:not-a-component: <why>` | does not have it | yes | only the CLI, a daemon or another binary builds it |
+| `//forge:exclude-contract: <why>` | — no contract at all | **no** | pure functions, test support, API types, strategy registries |
 
-```go
-// Package algos is a strategy registry.
-//
-//forge:exclude-contract: strategy registry — one constructor per algorithm, no single New(Deps) to bind
-package algos
-
-type Strategy interface {
-    Name() string
-    Run(ctx context.Context, input []float64) (float64, error)
-}
-
-var registry = map[string]Strategy{}
-
-func Register(s Strategy) { registry[s.Name()] = s }
-```
-
-It is the per-package equivalent of a `contracts.exclude` entry in `forge.yaml`: the package is skipped by the canonical-shape check, by bootstrap wiring, and by mock generation together. The trade is real — **no contract means no generated mock, no observability decorator and no seam** — so the marker costs something at lint time:
-
-- **A bare marker is a lint error** (`forge-exclude-contract-reason`). Write why, the same way a suppressed error-severity rule needs a reason. Codegen still honours a bare marker, so a missing reason never breaks `forge generate`; it fails `forge lint`.
-- **The marker is refused outright on two shapes, whatever the reason says**:
-  - `forge-exclude-contract-outbound-io`: the package calls an outbound-I/O entry point — an HTTP client, `database/sql`/pgx, a controller-runtime or client-go client, a gRPC/Connect client, NATS, Redis, an OCI registry client, or a cloud SDK. (Naming those types in a struct is fine; *calling* them is the signal. Local file I/O is not a signal.) **Fix:** make it an adapter — `contract.go` with `// forge:outbound-io` and a narrow `Service`, and `// forge:constructor` on `New(Deps)` (see `adapter`).
-  - `forge-exclude-contract-multi-impl`: the package declares an exported interface with two or more implementations in the module, at least one of them in the package itself. An interface with interchangeable implementations IS the contract. **Fix:** move it to `contract.go` (mark it `//forge:contract` if it is not named `Service`).
-
-**The only legitimate reasons**, and they are few:
-
-| Reason | Example |
-|---|---|
-| Pure functions / data vocabulary: no I/O, time, randomness or state | string-case helpers, a finding/severity enum, a strict decode+validate of a spec |
-| Test-support code (its non-test source imports `testing`) | an `httptest` fake of a vendor, a policy-enforcing test server |
-| API / CRD type packages | `api/v1alpha1` with deepcopy and `Validate()` |
-| A strategy registry (an exported `Register…(I)` taking the interface) | pluggable algorithms, each with its own constructor |
-| Analyzer / embed-only packages whose shape a framework dictates | a `go/analysis` sub-package, an `//go:embed` wrapper |
-
-Packages whose kind forge already exempts structurally — the `internal/app` composition seam, supervised workers under `internal/workers/`, controller-runtime reconciler packages (they have `SetupWithManager`) — are not refused for doing I/O: their shape is a forge runtime interface, not a `Service`.
-
-A dial or HTTP call whose target is **statically loopback** is not outbound I/O: a constant `"127.0.0.1:8080"`, `"[::1]:80"`, `"localhost:3000"` or `"http://localhost:3000/health"`, or `net.JoinHostPort("127.0.0.1", port)` with a constant host and any port. It cannot leave the machine. If the host comes from a variable, the gate cannot tell, so it still refuses. When the call really only reaches loopback, write the host as a constant.
-
-A genuinely-justified exception to a refusal (a conversion that is its own project) uses the ordinary suppression mechanism in the marker's comment block. That keeps it visible, reasoned, and reported by `--show-suppressed`:
-
-```go
-//forge:lint-disable-next-line forge-exclude-contract-outbound-io: 40-method DB layer; per-aggregate split tracked in #123
-//forge:exclude-contract: hand-written data layer, split pending
-package db
-```
-
-A marker that draws both refusals needs one allowance per rule, stacked. Each covers the marker.
-
-### Spelling: `//forge:` or `// forge:` — and what gofmt does to it
-
-Both spellings are accepted by every forge directive and marker. **Prefer `//forge:` (no space).** It is Go's directive syntax, the same family as `//go:build` and `//nolint:`. godoc hides it from rendered documentation, and gofmt places it deterministically.
-
-What gofmt does with it: it **moves every `//forge:` line to the end of the doc comment**, after any prose, and separates it from the prose with a blank `//`. It keeps the directives' relative order. A spaced `// forge:` line is prose to gofmt and stays where you wrote it. So the placement you see after saving is gofmt's, and it is stable.
-
-Forge reads directives in a way that survives this:
-
-- Markers (`forge:exclude-contract`, `forge:constructor`, `forge:contract`, …) are found anywhere in the comment, so a move does not matter.
-- `forge:lint-disable-next-line` covers **the next line of code, plus the comment lines between it and that code**. After gofmt moves a directive to the end of a doc comment it still covers the declaration the comment documents, and it still covers a marker further down the same block. It never crosses a blank line or a line of code.
-- The exclude-contract gate accepts an allowance anywhere in the marker's comment block. Mixing spellings (a spaced marker with an unspaced allowance) makes gofmt put the allowance *below* the marker, and that still applies.
+A bare marker (no reason) is a lint error. `exclude-contract` is refused on packages that make outbound calls or have an interface with two or more implementations. A server component that requires a `not-a-component` package fails `forge generate`. Both spellings, `//forge:` and `// forge:`, are accepted; prefer `//forge:`. **Load `contracts/package-markers`** for the full rules, the refusals and their fixes, and how gofmt places `//forge:` directives.
 
 ## Suppressing a contract or convention finding
 

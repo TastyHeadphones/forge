@@ -48,8 +48,8 @@ func TestAnnotations_JSONValidAndComplete(t *testing.T) {
 	// Go-source markers. The authoritative per-marker pin is
 	// TestAnnotations_MarkerNamesMatchRecognizers and its Go-source twin;
 	// this only guards the full dump against silent loss.
-	if len(spec.Markers) != 24 {
-		t.Errorf("expected 24 markers, got %d", len(spec.Markers))
+	if len(spec.Markers) != 25 {
+		t.Errorf("expected 25 markers, got %d", len(spec.Markers))
 	}
 
 	// The proto→column mapping a birth applies: every proto3 scalar kind
@@ -346,14 +346,14 @@ message LedgerEntity {
 		"forge:unmanaged",
 		"forge:optional-dep", "forge:optional-checked", "forge:constructor",
 		"forge:no-observe", "forge:service", "forge:exclude-contract",
-		"forge:external-component", "forge:outbound-io",
+		"forge:external-component", "forge:not-a-component", "forge:outbound-io",
 	} {
 		if !got[want] {
 			t.Errorf("markerSpecs missing recognized marker %q", want)
 		}
 	}
-	if len(got) != 23 {
-		t.Errorf("expected 23 marker specs, got %d", len(got))
+	if len(got) != 24 {
+		t.Errorf("expected 24 marker specs, got %d", len(got))
 	}
 
 	// Proto markers are pinned against codegen.KnownProtoMarkers — the same
@@ -508,6 +508,7 @@ func TestAnnotations_GoMarkerNamesMatchRecognizers(t *testing.T) {
 		{"forge:no-observe", "// forge:no-observe\npackage x\n", codegen.HasPackageNoObserveDirective},
 		{"forge:exclude-contract", "// forge:exclude-contract\npackage x\n", codegen.HasExcludeContractDirective},
 		{"forge:external-component", "// forge:external-component\npackage x\n", codegen.HasExternalComponentDirective},
+		{"forge:not-a-component", "// forge:not-a-component: CLI-only\npackage x\n", codegen.HasNotAComponentDirective},
 		{"forge:outbound-io", "// forge:outbound-io\npackage x\n", codegen.HasOutboundIODirective},
 	} {
 		if !tc.got(write(t, map[string]string{"doc.go": tc.body})) {
@@ -529,7 +530,7 @@ func TestAnnotations_GoMarkerNamesMatchRecognizers(t *testing.T) {
 		"forge:optional-dep": true, "forge:constructor": true,
 		"forge:no-observe": true, "forge:service": true,
 		"forge:exclude-contract": true, "forge:external-component": true,
-		"forge:outbound-io": true,
+		"forge:not-a-component": true, "forge:outbound-io": true,
 		// Lint-suppression directive: read by the analyzer, not by codegen,
 		// so it has no codegen recognizer to pin here.
 		"forge:optional-checked": true,

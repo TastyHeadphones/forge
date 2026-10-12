@@ -324,7 +324,7 @@ func CheckExcludeDirectives(pkgs []*packages.Package, opts ExcludeGateOptions) [
 	return applyDirectiveSuppressions(out)
 }
 
-func checkOnePackage(p *packages.Package, marker codegen.ExcludeContractMarker, candidates []*types.TypeName) []ExcludeFinding {
+func checkOnePackage(p *packages.Package, marker codegen.ReasonedMarker, candidates []*types.TypeName) []ExcludeFinding {
 	var out []ExcludeFinding
 	if marker.Reason == "" {
 		out = append(out, ExcludeFinding{
@@ -336,7 +336,7 @@ func checkOnePackage(p *packages.Package, marker codegen.ExcludeContractMarker, 
 				"the marker requires a reason", p.PkgPath),
 			FixHint: "write why forge should not manage this package: `//forge:exclude-contract: <why>` " +
 				"(pure functions, test-only support, API/CRD types, a strategy registry). If none of those is true, " +
-				"the package wants a contract.go instead — see `forge skill load contracts`",
+				"the package wants a contract.go instead — see `forge skill load contracts/package-markers`",
 		})
 	}
 	if isTestSupportPackage(p) || isStructurallyExemptKind(p) {
@@ -372,7 +372,7 @@ func checkOnePackage(p *packages.Package, marker codegen.ExcludeContractMarker, 
 				"cannot opt out of the contract system: an interface with interchangeable implementations IS the contract",
 				p.PkgPath, iface, len(impls), strings.Join(impls, ", ")),
 			FixHint: fmt.Sprintf("remove `//forge:exclude-contract` and move %s into a contract.go (mark it "+
-				"`//forge:contract` if it is not named Service) — see `forge skill load contracts`. A strategy "+
+				"`//forge:contract` if it is not named Service) — see `forge skill load contracts/package-markers`. A strategy "+
 				"registry is exempt when it exposes a `Register…(%s)` func", iface, iface),
 		})
 	}
