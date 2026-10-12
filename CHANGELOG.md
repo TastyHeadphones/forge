@@ -27,6 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Rendering the file mount for a workload's own volume waits on
   `forge.ControlPlaneSecret`.
 
+- **`forge cluster connect --delivery-secret <ns>/<name>` grants the control
+  plane least-privilege write access to declared Secrets.** Per namespace, a
+  Role with name-pinned `get/update/patch/delete` plus `create`, and a
+  fail-closed ValidatingAdmissionPolicy that admits only the declared
+  namespace/name pairs, only as `Opaque`, for the delivery identities only.
+  `--delivery-subject` binds an optional dedicated identity. Off unless named;
+  re-running is an idempotent upsert; `--dry-run` prints every object;
+  `disconnect` removes the grant.
+
 ### Fixed
 
 - **`forge env deploy <env> --dry-run` now predicts the real run's release

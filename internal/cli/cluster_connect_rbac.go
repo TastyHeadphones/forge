@@ -100,6 +100,12 @@ type connectRBAC struct {
 	// token auth. Empty on gcp.
 	TokenNamespace      string
 	TokenServiceAccount string
+	// DeliverySecrets are the Secrets the control plane may write and renew
+	// (see cluster_connect_delivery.go). Empty grants nothing.
+	DeliverySecrets []deliverySecret
+	// DeliverySubject is an optional dedicated delivery identity, bound
+	// alongside the connect identity.
+	DeliverySubject *deliverySubject
 }
 
 // tokenSecretName is the SA token Secret's name, derived so connect and
@@ -114,6 +120,24 @@ func (r connectRBAC) tokenSecretName() string { return r.TokenServiceAccount + "
 // perform env applies later, and it is converged by `cluster connect` because
 // no deploy can create the permission that lets the deploy run.
 func (r connectRBAC) bootstrapManifests() string {
+	return strings.Join(r.bootstrapStages(), "\n---\n") + "\n"
+}
+
+// bootstrapStages is bootstrapManifests split into the applies it is made of,
+// in order. kubectl carries on past a failed object in one stream, so the
+// delivery admission policy goes in its own stage ahead of the Roles that rely
+// on it: a failure there stops the grant instead of landing it ungated.
+func (r connectRBAC) bootstrapStages() []string {
+	stages := []string{r.baseManifests()}
+	if r.deliveryEnabled() {
+		stages = append(stages,
+			strings.Join(r.deliveryGuardManifests(), "\n---\n")+"\n",
+			strings.Join(r.deliveryGrantManifests(), "\n---\n")+"\n")
+	}
+	return stages
+}
+
+func (r connectRBAC) baseManifests() string {
 	var docs []string
 	add := func(s string) { docs = append(docs, strings.TrimRight(s, "\n")) }
 	labels := "  labels:\n" +

@@ -108,6 +108,32 @@ blast radius is bounded by the RBAC above — which is the control that actually
 matters. When rotation infrastructure exists, this is the one decision that
 changes.
 
+## Secret delivery: opt-in, named, least privilege
+
+Some Secrets are not deployed with a bundle but supplied and renewed by the
+control plane (a `forge.ControlPlaneSecret`). Connect grants write access to
+exactly those and nothing else, only when you name them:
+
+```bash
+forge cluster connect prod-us --context ... --env prod \
+  --delivery-secret control-plane-prod/reliant-otel-auth \
+  [--delivery-subject user:delivery@acme.iam.gserviceaccount.com]
+```
+
+- Per declared namespace, a **Role** (never a ClusterRole, whose `resourceNames`
+  would apply in every namespace) allows `get/update/patch/delete` pinned to the
+  named Secrets, plus `create`.
+- RBAC cannot pin `create` to a name, so a **ValidatingAdmissionPolicy**
+  (fail-closed, matched by exact username) admits writes from the delivery
+  identities only for the declared `namespace/name` pairs, and only as type
+  `Opaque` — otherwise a `service-account-token` Secret would mint a credential.
+- `--delivery-subject` adds a second, dedicated identity beside the connect one.
+- The policy is applied in its own step before the Roles, so a cluster without
+  ValidatingAdmissionPolicy (Kubernetes < 1.30) fails before the create grant lands.
+- Re-running connect re-converges it and **only adds**: a narrower re-run
+  replaces the policy at once but leaves old Roles for you to prune.
+  `disconnect` removes all of it. `--dry-run` prints every object.
+
 ## Binding an environment to it
 
 Registering a cluster does not point anything at it. An environment names it:
