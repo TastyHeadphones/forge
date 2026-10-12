@@ -136,3 +136,12 @@ linters:
       - path: ^components/library_prettier_test\.go$
         linters:
           - forbidigo
+
+      # The headers-file smoke boots two collector containers, so it is
+      # opt-in: RUN_HEADERS_FILE_SMOKE=1 is the switch, read by an
+      # integration-tagged test file that never compiles into a shipped binary
+      # and changes nothing about how the library behaves. Same reasoning as
+      # the prettier guard above; scoped to that one file.
+      - path: ^observe/headers_file_smoke_integration_test\.go$
+        linters:
+          - forbidigo

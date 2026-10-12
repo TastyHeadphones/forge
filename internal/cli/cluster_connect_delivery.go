@@ -15,11 +15,11 @@ package cli
 //     declared namespace (not a ClusterRole: a ClusterRole's resourceNames
 //     apply in EVERY namespace, so a same-named Secret anywhere would be
 //     readable). get/update/patch/delete are pinned with resourceNames.
-//     `create` cannot be: the name is not known to the authorizer, so RBAC
+//     `create` cannot be: the API server does not know the name yet, so RBAC
 //     can only allow create on Secrets in the namespace.
 //   - A ValidatingAdmissionPolicy closes that gap. For the delivery
-//     identities, and only them (matched by exact username, no label a tenant
-//     could strip), a Secret write is admitted iff its namespace/name was
+//     identities, and only them (matched by exact username, no label a
+//     workload could strip), a Secret write is admitted iff its namespace/name was
 //     declared AND its type is Opaque. Fail-closed: failurePolicy Fail.
 //
 // THE Opaque CHECK IS NOT DECORATION. Without it an identity that may create
