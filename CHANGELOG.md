@@ -44,7 +44,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Changed:** the OTLP endpoint/protocol pair `forge env up` gave host
   processes is now derived by that declaration (`ObservabilityEntity`) instead
   of the removed `clickstackHostOTLPEnv`.
-
+- **`forge.yaml` `generate.hooks`: run your own commands as part of `forge generate`.**
+  The escape hatch for a generator forge does not own, such as a query
+  generator kept while porting onto the ORM, a project codegen tool, or a docs
+  dump. Each hook is an argv (`command: [sqlc, generate]`; no shell, so
+  quoting is the same on every platform), an optional project-relative `dir:`,
+  and the `writes:` paths it produces. Hooks run in declaration order after
+  forge's codegen and before `go mod tidy` and the validation build, so their
+  output is tidied and compiled in the same run. A non-zero exit fails the
+  generate. Declared `writes:` join the rollback journal, so a failed generate
+  restores them like forge's own output. See `architecture`, "The Generate
+  Pipeline".
 - **Frontend builds are told what they were built from.** Every frontend build
   forge runs gets `FORGE_SOURCE_REPO`, `FORGE_SOURCE_REF`, `FORGE_SOURCE_COMMIT`
   (the GitSource pin and the sha it resolved to) and `FORGE_RELEASE` (the
@@ -678,6 +688,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **BREAKING: forge no longer runs or scaffolds sqlc.** The data-access path is
+  the ORM projected from the applied migrations: the generated `<Entity>Store`,
+  plus the owned `internal/db/<entity>_repo_ext.go` seam for anything it cannot
+  express (bun, CTEs, `FOR UPDATE SKIP LOCKED`, raw SQL), tested against a real
+  migrated database. The `sqlc generate` step is gone from `forge generate`, so
+  a root `sqlc.yaml` is no longer run implicitly: keep it running while
+  you port off it by declaring it as a `generate.hooks` entry (see Added). A root
+  `sqlc.yaml` with no hook running it gets a forge.yaml load warning that
+  spells out the hook. `forge project new` no longer writes `db/sqlc.yaml` or
+  `db/queries/`. That stub was dead on arrival anyway: generate only looked for
+  a ROOT `sqlc.yaml`, its paths were root-relative inside a file sqlc resolves
+  relative to `db/`, and it targeted the `internal/db` package the ORM generates
+  into. `db/README.md` now documents migrations, seeds and the query seam. The
+  `db`, `contracts`, `testing/integration` and `migration-service` skills say to
+  port sqlc queries onto the store, not to keep writing them.
 - **The host-application credential DEPOSIT is gone (`pkg/cloudcred.Save`,
   `Delete`, `HostClientID`, `Location`, `Credential`).** A host used to copy its
   own session token into `credentials.json` under client `host-app`, and forge
