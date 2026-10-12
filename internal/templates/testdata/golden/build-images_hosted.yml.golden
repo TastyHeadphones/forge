@@ -37,6 +37,7 @@ jobs:
   build-push:
     name: Build & Push
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     # Built for the first env in the promotion order — the one deploy.yml
     # auto-deploys — through forge, so the image lands in the registry THAT
     # env's KCL declares (deploy/kcl/staging/main.k). This workflow names
@@ -159,6 +160,7 @@ jobs:
     name: Vulnerability Scan
     needs: build-push
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -219,6 +221,7 @@ jobs:
       - build-push
       - trivy-scan
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     if: always()
     steps:
       - name: Summary

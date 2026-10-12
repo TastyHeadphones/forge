@@ -91,7 +91,10 @@ func TestCIWorkflows_InstallForgeFromProjectAtRunTime(t *testing.T) {
 		}),
 		"e2e.yml": render("e2e.yml.tmpl", E2EWorkflowData{ProjectName: "demo", Runtime: "k3d"}),
 	}
-	want := map[string]int{"ci.yml": 5, "deploy.yml": 1, "e2e.yml": 1}
+	// ci.yml installs forge in `checks` (the gate re-enters it) and in the k3d
+	// e2e job; the per-check jobs that each installed it are folded into
+	// `checks`, which is the point of the consolidation.
+	want := map[string]int{"ci.yml": 2, "deploy.yml": 1, "e2e.yml": 1}
 	for name, wf := range workflows {
 		if m := stampedForgeRefRE.Find(wf); m != nil {
 			t.Errorf("%s stamps a forge ref at scaffold time (%q) — it will drift from go.mod on the next forge bump", name, m)
@@ -299,6 +302,9 @@ func TestCIWorkflows_InstallForgeScriptResolvesFromProject(t *testing.T) {
 // goimports (so the Go stubs regenerated differently or not at all), and no
 // Node + `npm ci` (so forge skipped every frontend's TypeScript stubs with a
 // warning and certified the tree anyway) — houndersclub PR #8.
+//
+// verify-generated now runs inside `checks`, as one row of `task ci:checks`,
+// so the same toolchain must be in place before THAT step.
 func TestCIWorkflow_VerifyGeneratedHasItsToolchain(t *testing.T) {
 	ci, err := CITemplates("github").Render("ci.yml.tmpl", fullCIData())
 	if err != nil {
@@ -317,9 +323,9 @@ func TestCIWorkflow_VerifyGeneratedHasItsToolchain(t *testing.T) {
 	if err := yaml.Unmarshal(ci, &parsed); err != nil {
 		t.Fatal(err)
 	}
-	job, ok := parsed.Jobs["verify-generated"]
+	job, ok := parsed.Jobs["checks"]
 	if !ok {
-		t.Fatal("no verify-generated job")
+		t.Fatal("no checks job")
 	}
 	order := map[string]int{}
 	for i, s := range job.Steps {
@@ -330,18 +336,18 @@ func TestCIWorkflow_VerifyGeneratedHasItsToolchain(t *testing.T) {
 			order["node"] = i
 		case s.Run == "npm ci" && s.WorkingDirectory == "frontends/web":
 			order["npm"] = i
-		case s.Run == "forge ci verify-generated":
-			order["verify"] = i
+		case s.Run == "task ci:checks":
+			order["gate"] = i
 		}
 	}
-	for _, step := range []string{"tools", "node", "npm", "verify"} {
+	for _, step := range []string{"tools", "node", "npm", "gate"} {
 		if _, ok := order[step]; !ok {
-			t.Errorf("verify-generated is missing its %s step", step)
+			t.Errorf("checks (which runs verify-generated) is missing its %s step", step)
 		}
 	}
 	for _, before := range []string{"tools", "node", "npm"} {
-		if order[before] > order["verify"] {
-			t.Errorf("%s runs after verify-generated", before)
+		if order[before] > order["gate"] {
+			t.Errorf("%s runs after the gate that runs verify-generated", before)
 		}
 	}
 }

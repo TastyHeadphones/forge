@@ -52,9 +52,18 @@ func TestCIWorkflowTemplate_AllFeatures(t *testing.T) {
 		t.Fatal("missing 'jobs' key")
 	}
 
-	for _, expected := range []string{"lint", "test", "build", "verify-generated", "deployability", "vuln-scan", "docker-build", "e2e"} {
+	// The consolidated shape: one `checks` job holds every static and build
+	// check (lint, build, verify-generated, deployability, vuln-scan, license),
+	// behind one setup. The per-check jobs this replaced are gone on purpose;
+	// TestCIWorkflow_ChecksAreOneJob pins that they stay gone.
+	for _, expected := range []string{"changes", "checks", "test", "integration-test", "docker-build", "e2e"} {
 		if _, ok := jobs[expected]; !ok {
 			t.Errorf("missing job %q", expected)
+		}
+	}
+	for _, folded := range []string{"lint", "build", "verify-generated", "deployability", "vuln-scan", "license-check"} {
+		if _, ok := jobs[folded]; ok {
+			t.Errorf("job %q should be folded into `checks` (one setup per PR, not one per check)", folded)
 		}
 	}
 
@@ -128,14 +137,14 @@ func TestCIWorkflowTemplate_Minimal(t *testing.T) {
 	}
 
 	// Should NOT have optional jobs
-	for _, absent := range []string{"deployability", "vuln-scan", "e2e"} {
+	for _, absent := range []string{"e2e"} {
 		if _, ok := jobs[absent]; ok {
 			t.Errorf("job %q should not be present in minimal config", absent)
 		}
 	}
 
 	// Should have core jobs
-	for _, expected := range []string{"lint", "test", "build", "verify-generated", "docker-build"} {
+	for _, expected := range []string{"changes", "checks", "test", "integration-test", "docker-build"} {
 		if _, ok := jobs[expected]; !ok {
 			t.Errorf("missing job %q", expected)
 		}

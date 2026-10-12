@@ -370,6 +370,10 @@ type CIWorkflowData struct {
 	// Left empty by every caller and filled by withDefaults with
 	// GolangciLintVersion, so a new construction site cannot ship `latest`.
 	GolangciLintVersion string
+
+	// BufVersion is the buf release the checks job installs. Filled by
+	// withDefaults with BufVersion for the same reason.
+	BufVersion string
 }
 
 // withDefaults satisfies selfDefaulting. An explicit GolangciLintVersion
@@ -377,6 +381,9 @@ type CIWorkflowData struct {
 func (d CIWorkflowData) withDefaults() interface{} {
 	if d.GolangciLintVersion == "" {
 		d.GolangciLintVersion = GolangciLintVersion
+	}
+	if d.BufVersion == "" {
+		d.BufVersion = BufVersion
 	}
 	return d
 }

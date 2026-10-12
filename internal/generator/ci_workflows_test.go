@@ -149,8 +149,8 @@ func TestCIWorkflows_VerifyGeneratedInstallsBufWhereGenerateRunsIt(t *testing.T)
 	}
 }
 
-// verifyGeneratedBuf renders ci.yml from files and reports whether its
-// verify-generated job installs buf, and the version it pins.
+// verifyGeneratedBuf renders ci.yml from files and reports whether the job that
+// runs verify-generated (`checks`) installs buf, and the version it pins.
 func verifyGeneratedBuf(t *testing.T, files []CIWorkflowFile) (installs bool, version string) {
 	t.Helper()
 	data, ok := ciFile(files, ".github/workflows/ci.yml").(templates.CIWorkflowData)
@@ -172,9 +172,11 @@ func verifyGeneratedBuf(t *testing.T, files []CIWorkflowFile) (installs bool, ve
 	if err := yaml.Unmarshal(out, &workflow); err != nil {
 		t.Fatalf("rendered ci.yml is not YAML: %v\n%s", err, out)
 	}
-	job, ok := workflow.Jobs["verify-generated"]
+	// verify-generated is a row of the `checks` job (`task ci:checks`), so the
+	// buf it regenerates with is installed there.
+	job, ok := workflow.Jobs["checks"]
 	if !ok {
-		t.Fatalf("rendered ci.yml has no verify-generated job:\n%s", out)
+		t.Fatalf("rendered ci.yml has no checks job:\n%s", out)
 	}
 	for _, step := range job.Steps {
 		if strings.HasPrefix(step.Uses, "bufbuild/buf-setup-action@") {
