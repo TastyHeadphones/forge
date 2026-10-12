@@ -1,14 +1,13 @@
 ---
 name: v0.1.45
-description: Upgrade a project to forge v0.1.45. One section per change — (1) the typed `forge.Observability` declaration replaces the bare `_observability` toggle; (2) continuous profiles, on by default beside the local ClickStack (`profiles_port`, the `otel-profiles` collector); (3) `gen/go.mod` requiring the retired `github.com/reliant-labs/forge/pkg` module, which `forge generate` now rewrites (the root `go.mod` is yours to fix); (4) the gitignored `.npmrc` (`legacy-peer-deps`) that stops `npm install` crashing in a `--link-forge` project; (5) `serve.go` opens the otelconnect span OUTSIDE auth (`chainDeps.Trace`), so rejected calls have spans and request logs carry `trace_id`. Use when deploy/kcl/<env>/main.k has `_observability` but no `observability =` on its forge.Bundle or no `profiles_port`, when `grep forge/pkg gen/go.mod go.mod` matches or `forge env up` reports "go module graph is stale" on every start, when a bridged frontend's `npm install` dies with "Cannot read properties of null (reading 'edgesOut')", or when `grep -n 'Extras = append(\[\]connect.Interceptor{otelInt}' cmd/*/cmd/serve.go` matches.
+description: Upgrade a project to forge v0.1.45. One section per change — (1) the typed `forge.Observability` declaration replaces the bare `_observability` toggle; (2) continuous profiles, on by default beside the local ClickStack (`profiles_port`, the `otel-profiles` collector); (3) `gen/go.mod` requiring the retired `github.com/reliant-labs/forge/pkg` module, which `forge generate` now rewrites (the root `go.mod` is yours to fix); (4) the gitignored `.npmrc` (`legacy-peer-deps`) that stops `npm install` crashing in a `--link-forge` project; (5) `serve.go` opens the otelconnect span OUTSIDE auth (`chainDeps.Trace`), so rejected calls have spans and request logs carry `trace_id`; (6) lean CI over a local gate — `task ci` / `task ci:checks`, a consolidated `.github/workflows/ci.yml`. Use when deploy/kcl/<env>/main.k has `_observability` but no `observability =` on its forge.Bundle or no `profiles_port`, when `grep forge/pkg gen/go.mod go.mod` matches or `forge env up` reports "go module graph is stale" on every start, when a bridged frontend's `npm install` dies with "Cannot read properties of null (reading 'edgesOut')", or when `grep -n 'Extras = append(\[\]connect.Interceptor{otelInt}' cmd/*/cmd/serve.go` matches, or when Taskfile.yml has no `ci:checks` task or `.github/workflows/ci.yml` runs one job per check instead of calling `task ci:checks`.
 version: v0.1.45
-detection: grep -qs 'Extras = append(\[\]connect.Interceptor{otelInt}' cmd/*/cmd/serve.go || (grep -qs '^_observability = ' deploy/kcl/*/main.k && ! grep -qs '^    observability = ' deploy/kcl/*/main.k) || (grep -qs '^_observability = ' deploy/kcl/dev/main.k && ! grep -qs 'profiles_port' deploy/kcl/dev/main.k) || grep -qsE '^[[:space:]]*(require[[:space:]]+)?github\.com/reliant-labs/forge/pkg[[:space:]]+v' go.mod gen/go.mod
+detection: grep -qs 'Extras = append(\[\]connect.Interceptor{otelInt}' cmd/*/cmd/serve.go || (grep -qs '^_observability = ' deploy/kcl/*/main.k && ! grep -qs '^    observability = ' deploy/kcl/*/main.k) || (grep -qs '^_observability = ' deploy/kcl/dev/main.k && ! grep -qs 'profiles_port' deploy/kcl/dev/main.k) || grep -qsE '^[[:space:]]*(require[[:space:]]+)?github\.com/reliant-labs/forge/pkg[[:space:]]+v' go.mod gen/go.mod || (test -f Taskfile.yml && ! grep -qs '^  ci:checks:' Taskfile.yml) || (test -f .github/workflows/ci.yml && ! grep -qs 'task ci:checks' .github/workflows/ci.yml)
 ---
 
 # Upgrading to v0.1.45
 
 Each section below is independent: apply the ones whose "Use when" matches.
-
 
 ## 1. Typed observability destination
 
@@ -34,6 +33,7 @@ Where an environment's telemetry goes is now **declared** on the Bundle as `forg
    ```
 
    and add `observability = _observability_decl` to the `forge.Bundle`.
+
 2. Staging/prod: leave `observability` unset (telemetry off, as before) or declare a destination. A workload that set `OTEL_EXPORTER_OTLP_*` by hand keeps working: an author's value wins.
 3. Delete any `env` entry that pointed a workload at `otel-collector.observability:4317`.
 4. `forge env render dev` — each host workload now carries the endpoint/protocol pair.
@@ -213,5 +213,64 @@ curl -si -X POST localhost:<port>/<pkg>.<Service>/<Method> -H 'content-type: app
 Then, in ClickHouse (`forge observe` or the HyperDX search): a span for that call with `TraceId = 0af7651916cd43dd8448eb211c80319c`, status error or unset, and an `otel_logs` row `rpc failed` with the same `TraceId`.
 
 Also covers `forge env up`:
+
 - A scaffold with no commits yet now tags images `uncommitted` instead of failing with "git tag resolution: exit status 128".
 - With `air` missing, `forge env up` installs forge's pinned air (v1.67.4) into its tool cache, or runs the API under `go-run` with a one-line notice if it cannot. Nothing to change.
+
+## 6. Lean CI over a local gate
+
+Use when `Taskfile.yml` has no `ci:checks` task, or `.github/workflows/ci.yml` has one job per check (`lint`, `build`, `verify-generated`, `vuln-scan`, `deployability`, `license-check`) instead of one `checks` job that runs `task ci:checks`.
+
+### What changed
+
+`ci.yml` is scaffold-once (yours), so `forge generate` never rewrites it and your project keeps the old nine-job shape until you adopt the new one. Why it is worth adopting: GitHub bills each job rounded up to the whole minute, and every job repeats checkout, toolchain setup, cache restore and the forge install before doing any work. The one project generated from the old layout spent roughly half its Actions minutes on setup, and about $850/month at its peak pace.
+
+- **A local gate: `forge ci gate`**, behind two new Taskfile tasks. `task ci` runs everything CI runs (`ci:checks`, then `test`, then `test:integration`) in one summary table; `task ci:checks` is the static and build lane. Run `task ci` before you push and you have the verdict CI would give.
+- **The workflow became a thin wrapper.** Jobs are `changes` (skips the heavy jobs for a docs-only change), `checks` (one setup, then `task ci:checks`), `test` (`task test`), `integration-test` (`task test:integration`, PRs only, only when the repo has `//go:build integration` files), plus `docker-build` and `e2e` where you already had them. `lint`, `build`, `verify-generated`, `deployability`, `vuln-scan` and `license-check` are no longer jobs: they are rows in the gate. Every job has `timeout-minutes`.
+- **Gate semantics.** Every check runs even if an earlier one failed, then one table; non-zero exit if any failed. A check that could not run (missing tool, dirty tree) is `SKIPPED`, which is not a pass and fails the gate unless you name it: `CI_SKIP=vuln-go task ci`. Under Actions the table is appended to the job summary.
+- **Tools run at the versions CI pins** (golangci-lint, buf, govulncheck, go-licenses), built into forge's tool cache on first use. A copy on PATH at another version, or a golangci-lint built with a Go older than your `go.mod`, is not used.
+- **Your own checks** go under `ci.gate.extra_checks` in forge.yaml (name, command, optional `dir` and `requires`) instead of a new job or a script copied into the repo. They run in `checks`, so `task ci` runs them too.
+
+### Steps
+
+1. **Taskfile.yml.** `forge generate` does not touch it, so add the two tasks (copy them from a fresh `forge project new`, or paste these):
+
+   ```yaml
+   ci:
+     desc: "The whole PR gate locally (what CI runs): ci:checks + test + test:integration, one summary"
+     cmds:
+       - forge ci gate all
+   ci:checks:
+     desc: "Static + build lane of the CI gate (what the CI `checks` job runs)"
+     cmds:
+       - forge ci gate checks
+   ```
+
+   `test` and `test:integration` already exist; if `test:integration` does not, add it (`go test -race -tags=integration -count=1 -timeout=10m ./...`).
+
+2. **ci.yml.** Move your project's own jobs and steps aside, then adopt forge's current file: delete `.github/workflows/ci.yml` and run `forge project rescaffold .github/workflows/ci.yml` (or `forge project upgrade --check .github/workflows/ci.yml` to read the diff, then `--force` to adopt it). Re-apply what was yours:
+
+   - a step you added to `lint` / `build` / `vuln-scan` becomes an `extra_checks` entry (step 4) or, if it needs the runner's own environment, a step in `checks` before `task ci:checks`;
+   - a job with its own runner requirement (a service container, another OS) stays a separate job: copy it back;
+   - a repo whose code `go:embed`s a Markdown file narrows the docs-only filter in `changes`.
+
+3. **Branch protection.** The required checks were the old job names. Require `Checks`, `Test` and (if you have an integration lane) `Integration Tests` instead; `changes` and the skipped jobs report as satisfied.
+
+4. **Project checks.** For each thing the old workflow did that forge's gate does not:
+
+   ```yaml
+   ci:
+     gate:
+       extra_checks:
+         - name: gen-llm-gateway
+           command: [go, run, ./cmd/gen-llm-gateway, -check]
+           requires: [go]
+   ```
+
+   Names must be unique and may not reuse one of forge's (`forge ci gate --list`).
+
+5. **Run it once.** `task ci` on a committed tree. `verify-generated` needs the committed tree (it attributes every change to `forge generate`), so a dirty tree reports it `SKIPPED` rather than a misleading pass.
+
+### Verify
+
+`forge ci gate --list` names every check and its lane. `task ci:checks` prints a summary table whose last line is `PASS` or `FAIL`. `.github/workflows/ci.yml` has jobs `changes`, `checks`, `test`, `integration-test` and each one has `timeout-minutes`; each calls exactly one `task`. `actionlint .github/workflows/ci.yml` is clean.

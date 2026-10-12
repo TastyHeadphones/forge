@@ -32,3 +32,27 @@ const GolangciLintVersion = "v2.14.0"
 // with 3.5.3, the version projects ran. A `^3.5.0` range drifts the same way
 // on its own, one `npm install` at a time.
 const PrettierVersion = "3.5.3"
+
+// BufVersion is the one buf release forge pins wherever buf's output must be
+// reproducible: the scaffolded ci.yml installs it (bufbuild/buf-setup-action),
+// and `forge ci gate` holds the buf on PATH to it before verify-generated and
+// buf lint run. verify-generated regenerates the tree and demands identical
+// bytes, so buf must not move under it. 1.50.0 is buf-setup-action@v1's own
+// default. TestGateToolPinsMatchTheScaffoldedWorkflow
+// (internal/templates/ci_gate_test.go) fails when the workflow names another.
+const BufVersion = "1.50.0"
+
+// GovulncheckVersion is the govulncheck release `forge ci gate` installs
+// (into forge's tools cache) when the one on PATH is not it.
+//
+// It has a FLOOR, not just a ceiling: govulncheck vendors golang.org/x/tools
+// to build the SSA it traces calls through, and a copy older than the
+// toolchain panics on syntax it cannot parse. v1.1.4 vendored x/tools v0.29.0
+// and died with `panic: unexpected expr: *ast.KeyValueExpr` under Go 1.27 — a
+// crash, not a finding, so the gate reported nothing at all. Keep this at or
+// above the release that supports the newest Go a scaffolded go.mod declares.
+const GovulncheckVersion = "v1.7.0"
+
+// GoLicensesVersion is the go-licenses release `forge ci gate` installs when
+// the one on PATH is not it.
+const GoLicensesVersion = "v1.6.0"

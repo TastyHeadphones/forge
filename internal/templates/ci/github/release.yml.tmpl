@@ -60,6 +60,7 @@ jobs:
     # Evidence, produced ONCE per release and attached to every promote.
     name: Checks
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -94,6 +95,7 @@ jobs:
     name: Build & release ${{"{{"}} github.ref_name {{"}}"}}
     needs: checks
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -130,6 +132,7 @@ jobs:
     name: Deploy → {{.Env.Name}}
     needs: {{if .Prev}}{{.Prev}}{{else}}build-release{{end}}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     # A GitHub Environment.{{if .Env.Protection}} Give it REQUIRED REVIEWERS in the repository
     # settings: that is the approval this job waits on.{{end}}
     environment: {{.Env.Name}}

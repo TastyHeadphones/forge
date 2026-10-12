@@ -36,6 +36,7 @@ func newCICmd() *cobra.Command {
 	cmd.AddCommand(newCIMigrationSafetyCmd())
 	cmd.AddCommand(newCIRunCmd())
 	cmd.AddCommand(newCISummarizeCmd())
+	cmd.AddCommand(newCIGateCmd())
 	return cmdutil.StrictGroup(cmd)
 }
 

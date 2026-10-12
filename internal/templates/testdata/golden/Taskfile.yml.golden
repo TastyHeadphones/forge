@@ -10,6 +10,8 @@ version: '3'
 # │   task test:integration  `integration`-tagged tests     │
 # │   task test:e2e          End-to-end tests               │
 # │   task test:all          Unit + frontend + integration  │
+# │   task ci                The whole PR gate, locally     │
+# │   task ci:checks         Static + build lane of it      │
 # │                                                         │
 # │ Everything that needs forge's own orchestration stays   │
 # │ a forge command:                                        │
@@ -201,6 +203,41 @@ tasks:
     cmds:
       - task: test
       - task: test:integration
+
+  ci:
+    # The whole PR gate, locally: ci:checks, then test, then test:integration,
+    # in ONE summary table. The scaffolded .github/workflows/ci.yml is a thin
+    # wrapper around the same three lanes (`task ci:checks`, `task test`,
+    # `task test:integration`), so this is the verdict CI would give, on your
+    # machine, before you push. It runs everything: change detection (skipping
+    # jobs a docs-only change cannot affect) is a CI cost optimization and lives
+    # in the workflow; locally you scope by running one lane.
+    #
+    # The gate lives in forge (`forge ci gate`), not in a script copied here, so
+    # it improves with forge and carries the same tool pins as CI. Rules, all
+    # enforced by it:
+    #   - every check runs even if an earlier one failed, then one table;
+    #   - exit non-zero if anything failed;
+    #   - a check that could not run (missing tool, dirty tree) is SKIPPED, not
+    #     PASS, and fails the gate unless named: CI_SKIP=vuln-go task ci
+    #   - tools run at the versions CI pins, from forge's tool cache.
+    # Add your own checks under `ci.gate.extra_checks` in forge.yaml.
+    desc: "The whole PR gate locally (what CI runs): ci:checks + test + test:integration, one summary"
+    cmds:
+      - cmd: |
+          command -v forge >/dev/null 2>&1 || { echo "forge CLI not on PATH — the CI gate is 'forge ci gate' (https://github.com/reliant-labs/forge)" >&2; exit 1; }
+          forge ci gate all
+
+  ci:checks:
+    # The static and build lane — what the `checks` CI job runs after its one
+    # shared setup: verify-generated, lint, build, vulnerability and license
+    # scans, KCL validation and deployability, plus your ci.gate.extra_checks.
+    # See `task ci` for the semantics; `forge ci gate --list` names every check.
+    desc: "Static + build lane of the CI gate: verify-generated, lint, build, vuln-scan, KCL (what the CI `checks` job runs)"
+    cmds:
+      - cmd: |
+          command -v forge >/dev/null 2>&1 || { echo "forge CLI not on PATH — the CI gate is 'forge ci gate' (https://github.com/reliant-labs/forge)" >&2; exit 1; }
+          forge ci gate checks
 
   lint:
     desc: Run all linters via the forge CLI (Go + proto + frontend)

@@ -62,6 +62,19 @@ type CIInputs struct {
 	MixedEnvs []string
 }
 
+// CIWorkflowDataFor returns what the scaffolded ci.yml renders with: which lints,
+// scanners and jobs this project has. `forge ci gate` plans its checks from
+// the same struct, so a forge.yaml toggle means the same thing to the workflow
+// and to the local gate.
+func CIWorkflowDataFor(root string, cfg *config.ProjectConfig, in CIInputs) templates.CIWorkflowData {
+	for _, f := range CIWorkflowsFor(root, cfg, in) {
+		if f.Dest == ".github/workflows/ci.yml" {
+			return f.Data.(templates.CIWorkflowData)
+		}
+	}
+	return templates.CIWorkflowData{}
+}
+
 // CIWorkflowsFor is CIWorkflows with every caller-supplied input.
 func CIWorkflowsFor(root string, cfg *config.ProjectConfig, in CIInputs) []CIWorkflowFile {
 	frontends := in.Frontends

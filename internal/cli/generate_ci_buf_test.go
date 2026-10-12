@@ -115,9 +115,10 @@ func verifyGeneratedInstallsBuf(t *testing.T, files []generator.CIWorkflowFile) 
 	if err := yaml.Unmarshal(out, &workflow); err != nil {
 		t.Fatalf("rendered ci.yml is not YAML: %v\n%s", err, out)
 	}
-	job, ok := workflow.Jobs["verify-generated"]
+	// verify-generated is a row of the `checks` job (`task ci:checks`).
+	job, ok := workflow.Jobs["checks"]
 	if !ok {
-		t.Fatalf("rendered ci.yml has no verify-generated job:\n%s", out)
+		t.Fatalf("rendered ci.yml has no checks job:\n%s", out)
 	}
 	for _, step := range job.Steps {
 		if strings.HasPrefix(step.Uses, "bufbuild/buf-setup-action@") {
