@@ -418,3 +418,134 @@ func indexOf(l []string, s string) int {
 	}
 	return -1
 }
+
+func tokenAgentSpec() ObservabilityAgentSpec {
+	s := agentSpec()
+	s.HeadersSecret = nil
+	s.TokenSecret = &ObservabilitySecretKey{Name: "otlp-token", Key: "token"}
+	return s
+}
+
+// A renewable token reaches the destination through bearertokenauth reading a
+// file, not an env var read once at start.
+func TestAgentConfigReadsARenewableTokenFromAFile(t *testing.T) {
+	cfg, err := tokenAgentSpec().AgentConfig("forge-observability")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed map[string]any
+	if err := yaml.Unmarshal([]byte(cfg), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	ext := parsed["extensions"].(map[string]any)["bearertokenauth"].(map[string]any)
+	if ext["filename"] != "/etc/otel-auth/token" {
+		t.Errorf("bearertokenauth must read the mounted file, got %v", ext)
+	}
+	if retry := ext["retry_on_failure"].(map[string]any); retry["enabled"] != true {
+		t.Errorf("the agent must outlive a not-yet-created Secret: %v", retry)
+	}
+	exp := parsed["exporters"].(map[string]any)["otlphttp/destination"].(map[string]any)
+	if exp["auth"].(map[string]any)["authenticator"] != "bearertokenauth" {
+		t.Errorf("the exporter must authenticate through the extension: %v", exp["auth"])
+	}
+	if _, ok := exp["headers"]; ok {
+		t.Error("a token secret must not also render a headers env reference")
+	}
+	exts := parsed["service"].(map[string]any)["extensions"].([]any)
+	found := false
+	for _, e := range exts {
+		found = found || e == "bearertokenauth"
+	}
+	if !found {
+		t.Errorf("the extension must be enabled under service.extensions: %v", exts)
+	}
+}
+
+// The token Secret is a whole-directory volume, which is the only form the
+// kubelet refreshes in place; a subPath mount would pin the first value for the
+// pod's lifetime and silently defeat renewal.
+func TestAgentMountsTheTokenSecretWithoutSubPath(t *testing.T) {
+	objs, err := RenderObservabilityAgent(tokenAgentSpec(), agentCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ds appsv1.DaemonSet
+	for _, o := range objs {
+		if o.GetKind() == "DaemonSet" {
+			if err := runtime.DefaultUnstructuredConverter.FromUnstructured(o.Object, &ds); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	c := ds.Spec.Template.Spec.Containers[0]
+	var mount *corev1.VolumeMount
+	for i := range c.VolumeMounts {
+		if c.VolumeMounts[i].Name == "otlp-token" {
+			mount = &c.VolumeMounts[i]
+		}
+	}
+	if mount == nil || mount.MountPath != "/etc/otel-auth" || !mount.ReadOnly || mount.SubPath != "" {
+		t.Fatalf("token mount = %+v, want read-only whole-directory /etc/otel-auth", mount)
+	}
+	var vol *corev1.Volume
+	for i, v := range ds.Spec.Template.Spec.Volumes {
+		if v.Name == "otlp-token" {
+			vol = &ds.Spec.Template.Spec.Volumes[i]
+		}
+	}
+	if vol == nil || vol.Secret == nil || vol.Secret.SecretName != "otlp-token" {
+		t.Fatalf("token volume = %+v", vol)
+	}
+	if vol.Secret.Optional == nil || !*vol.Secret.Optional {
+		t.Error("the volume must be optional so the agent starts before the Secret exists")
+	}
+	if len(vol.Secret.Items) != 1 || vol.Secret.Items[0].Key != "token" || vol.Secret.Items[0].Path != "token" {
+		t.Errorf("the declared key must surface as /etc/otel-auth/token: %+v", vol.Secret.Items)
+	}
+	for _, e := range c.Env {
+		if e.Name == "FORGE_OTLP_HEADERS" {
+			t.Error("no headers env var may be rendered for a token secret")
+		}
+	}
+}
+
+func TestAgentWithoutATokenSecretMountsNothingExtra(t *testing.T) {
+	objs, err := RenderObservabilityAgent(agentSpec(), agentCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range objs {
+		if o.GetKind() != "DaemonSet" {
+			continue
+		}
+		var ds appsv1.DaemonSet
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(o.Object, &ds); err != nil {
+			t.Fatal(err)
+		}
+		for _, v := range ds.Spec.Template.Spec.Volumes {
+			if v.Name == "otlp-token" {
+				t.Error("an agent with a headers secret must not mount a token volume")
+			}
+		}
+	}
+	cfg, _ := agentSpec().AgentConfig("forge-observability")
+	if strings.Contains(cfg, "bearertokenauth") {
+		t.Error("the headers form must not render the bearer extension")
+	}
+}
+
+func TestTokenSecretValidation(t *testing.T) {
+	both := agentSpec()
+	both.TokenSecret = &ObservabilitySecretKey{Name: "t", Key: "k"}
+	if err := both.validate(); err == nil || !strings.Contains(err.Error(), "declare one") {
+		t.Errorf("both credentials must be refused, got %v", err)
+	}
+	empty := tokenAgentSpec()
+	empty.TokenSecret = &ObservabilitySecretKey{Name: "x"}
+	if err := empty.validate(); err == nil {
+		t.Error("a token secret without a key must be refused")
+	}
+	if _, err := tokenAgentSpec().ForwarderConfig(); err == nil {
+		t.Error("the local forwarder has no mounted file: a token secret must be refused there")
+	}
+}

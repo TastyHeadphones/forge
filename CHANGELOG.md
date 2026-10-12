@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Telemetry credentials rotate with no restart.** `forge/pkg/observe`
+  honours `OTEL_EXPORTER_OTLP_HEADERS_FILE` (and
+  `OTEL_EXPORTER_OTLP_<SIGNAL>_HEADERS_FILE`): a file in the
+  `OTEL_EXPORTER_OTLP_HEADERS` format, attached per request on all four signals
+  (traces, metrics, logs, profiles; HTTP via a RoundTripper, gRPC via per-RPC
+  credentials) and re-read when its mtime changes (stat at most every 5s, no
+  goroutine). Headers in `OTEL_EXPORTER_OTLP_HEADERS` win over the file. A
+  missing or unreadable file exports without its headers and logs one WARN per
+  minute; it never fails or blocks the app.
+  On a cluster, `forge.ObservabilityDestination.token_secret` mounts the
+  node agent's bearer token as a file (Secret volume, no `subPath`) read by
+  `bearertokenauth{filename}`, which re-reads it on change; it is exclusive with
+  `headers_secret`, which is still read once at start. Verified against
+  opentelemetry-collector-contrib 0.162 with a kubelet-style symlink swap
+  (`RUN_HEADERS_FILE_SMOKE=1 go test -tags integration -run TestHeadersFileSmoke ./pkg/observe/`).
+  Rendering the file mount for a workload's own volume waits on
+  `forge.ControlPlaneSecret`.
+
 ### Fixed
 
 - **`forge env deploy <env> --dry-run` now predicts the real run's release

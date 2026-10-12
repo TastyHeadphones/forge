@@ -170,8 +170,11 @@ type profilesTarget struct {
 	// named no scheme.
 	Insecure bool
 	Headers  map[string]string
-	Timeout  time.Duration
-	Gzip     bool
+	// FileHeaders, when non-nil, adds the headers of
+	// OTEL_EXPORTER_OTLP_HEADERS_FILE to every send; Headers wins on a clash.
+	FileHeaders *headerSource
+	Timeout     time.Duration
+	Gzip        bool
 }
 
 // resolveProfilesTarget turns Config and the OTEL_* environment into the
@@ -231,6 +234,8 @@ func resolveProfilesTarget(cfg Config) (profilesTarget, error) {
 			t.Headers[strings.TrimSpace(k)] = strings.TrimSpace(v)
 		}
 	}
+
+	t.FileHeaders = headerSourceFor(signalProfiles)
 
 	ms := signalProfiles.env("TIMEOUT")
 	if ms == "" {

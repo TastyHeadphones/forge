@@ -61,6 +61,11 @@ const (
 	// and the exporter's persistent queue, so a restart neither re-reads nor
 	// drops what was in flight.
 	agentStorageDir = "/var/lib/forge-otel-agent"
+	// agentTokenDir is where the bearer-token Secret is mounted, as a whole
+	// directory: a file mounted with subPath is never refreshed by the kubelet.
+	agentTokenDir = "/etc/otel-auth"
+	// agentTokenFile is the token's file name inside agentTokenDir.
+	agentTokenFile = "token"
 	// agentHeadersEnv is the container environment variable the collector
 	// config reads the destination's headers from.
 	agentHeadersEnv = "FORGE_OTLP_HEADERS"
@@ -92,7 +97,14 @@ type ObservabilityAgentSpec struct {
 	// HeadersSecret holds the destination's request headers as a JSON object
 	// of header name to value. Nil sends none.
 	HeadersSecret *ObservabilitySecretKey `json:"headersSecret,omitempty"`
-	Signals       ObservabilitySignals    `json:"signals"`
+	// TokenSecret holds a bearer token as the key's whole value (no JSON, no
+	// scheme). The node agent mounts it as a file and sends it as
+	// "Authorization: Bearer <token>" through the collector's bearertokenauth
+	// extension, which re-reads the file when it changes: a Secret that is
+	// renewed in place (kubectl, a control plane) takes effect with no restart.
+	// Mutually exclusive with HeadersSecret, which is read once at start.
+	TokenSecret *ObservabilitySecretKey `json:"tokenSecret,omitempty"`
+	Signals     ObservabilitySignals    `json:"signals"`
 	// Image is the collector image; MemoryLimitMiB bounds the agent.
 	Image          string `json:"image,omitempty"`
 	MemoryLimitMiB int    `json:"memoryLimitMiB,omitempty"`
@@ -114,7 +126,33 @@ func (s ObservabilityAgentSpec) validate() error {
 	if s.HeadersSecret != nil && (s.HeadersSecret.Name == "" || s.HeadersSecret.Key == "") {
 		errs = append(errs, errors.New("headersSecret needs both name and key"))
 	}
+	if s.TokenSecret != nil && (s.TokenSecret.Name == "" || s.TokenSecret.Key == "") {
+		errs = append(errs, errors.New("tokenSecret needs both name and key"))
+	}
+	if s.HeadersSecret != nil && s.TokenSecret != nil {
+		errs = append(errs, errors.New("headersSecret and tokenSecret both set the Authorization header: declare one"))
+	}
 	return errors.Join(errs...)
+}
+
+// bearerAuthName is the bearertokenauth extension's component id.
+const bearerAuthName = "bearertokenauth"
+
+// bearerExtension is the extension that reads the token file. The kubelet
+// refreshes a Secret volume by swapping a symlink; the extension re-reads the
+// file when that happens (verified against contrib 0.162 in the F2 smoke), so
+// a renewed token reaches the next export with no restart. The retry keeps the
+// agent up, exporting without a token, until the Secret exists, so a first
+// deploy never waits on whatever mints the token.
+func bearerExtension() map[string]any {
+	return map[string]any{
+		"filename": agentTokenDir + "/" + agentTokenFile,
+		"retry_on_failure": map[string]any{
+			"enabled":     true,
+			"interval":    "10s",
+			"max_retries": 0,
+		},
+	}
 }
 
 // exporterName is the destination exporter's component id.
@@ -143,6 +181,9 @@ func (s ObservabilityAgentSpec) exporter() map[string]any {
 	}
 	if s.HeadersSecret != nil {
 		e["headers"] = "${env:" + agentHeadersEnv + "}"
+	}
+	if s.TokenSecret != nil {
+		e["auth"] = map[string]any{"authenticator": bearerAuthName}
 	}
 	if s.Protocol == "grpc" {
 		if strings.HasPrefix(s.Endpoint, "http://") {
@@ -283,16 +324,22 @@ func (s ObservabilityAgentSpec) AgentConfig(namespace string) (string, error) {
 		"operators":         logOps,
 	}
 	exporters := map[string]any{s.exporterName(): s.exporter()}
+	extensions := map[string]any{
+		"health_check": map[string]any{"endpoint": "0.0.0.0:13133"},
+		"file_storage": map[string]any{"directory": "/var/lib/otel-agent", "create_directory": true},
+	}
+	extNames := []string{"health_check", "file_storage"}
+	if s.TokenSecret != nil {
+		extensions[bearerAuthName] = bearerExtension()
+		extNames = append(extNames, bearerAuthName)
+	}
 	cfg := map[string]any{
-		"extensions": map[string]any{
-			"health_check": map[string]any{"endpoint": "0.0.0.0:13133"},
-			"file_storage": map[string]any{"directory": "/var/lib/otel-agent", "create_directory": true},
-		},
+		"extensions": extensions,
 		"receivers":  receivers,
 		"processors": processors,
 		"exporters":  exporters,
 		"service": map[string]any{
-			"extensions": strs("health_check", "file_storage"),
+			"extensions": strs(extNames...),
 			"pipelines":  s.agentPipelines(),
 		},
 	}
@@ -327,6 +374,9 @@ func (s ObservabilityAgentSpec) agentPipelines() map[string]any {
 func (s ObservabilityAgentSpec) ForwarderConfig() (string, error) {
 	if err := s.validate(); err != nil {
 		return "", err
+	}
+	if s.TokenSecret != nil {
+		return "", errors.New("destination.token_secret is a file mounted into the cluster node agent and the local forwarder has none: use headers_secret for a local env")
 	}
 	receivers := map[string]any{}
 	processors := map[string]any{}
@@ -472,8 +522,31 @@ func RenderObservabilityAgent(s ObservabilityAgentSpec, ctx ObservabilityContext
 			SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: s.HeadersSecret.Name}, Key: s.HeadersSecret.Key},
 		}})
 	}
+	volumeMounts := []corev1.VolumeMount{
+		{Name: "config", MountPath: "/etc/otel", ReadOnly: true},
+		{Name: "pod-logs", MountPath: "/var/log/pods", ReadOnly: true},
+		{Name: "storage", MountPath: "/var/lib/otel-agent"},
+	}
 	hostPathPods, hostPathStore := corev1.HostPathDirectory, corev1.HostPathDirectoryOrCreate
 	readOnly, noEscalate, root := true, false, int64(0)
+	volumes := []corev1.Volume{
+		{Name: "config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: name}}}},
+		{Name: "pod-logs", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/var/log/pods", Type: &hostPathPods}}},
+		{Name: "storage", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: agentStorageDir, Type: &hostPathStore}}},
+	}
+	if s.TokenSecret != nil {
+		// A whole-directory Secret volume (never subPath) so the kubelet
+		// refreshes the token in place. optional: the agent starts, and
+		// retries the file, before whatever renews the token has created
+		// the Secret.
+		optional := true
+		volumes = append(volumes, corev1.Volume{Name: "otlp-token", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+			SecretName: s.TokenSecret.Name,
+			Optional:   &optional,
+			Items:      []corev1.KeyToPath{{Key: s.TokenSecret.Key, Path: agentTokenFile}},
+		}}})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{Name: "otlp-token", MountPath: agentTokenDir, ReadOnly: true})
+	}
 	podLabels := copyLabels(labels)
 	ds := &appsv1.DaemonSet{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "apps/v1", Kind: "DaemonSet"},
@@ -511,17 +584,9 @@ func RenderObservabilityAgent(s ObservabilityAgentSpec, ctx ObservabilityContext
 							Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 							SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 						},
-						VolumeMounts: []corev1.VolumeMount{
-							{Name: "config", MountPath: "/etc/otel", ReadOnly: true},
-							{Name: "pod-logs", MountPath: "/var/log/pods", ReadOnly: true},
-							{Name: "storage", MountPath: "/var/lib/otel-agent"},
-						},
+						VolumeMounts: volumeMounts,
 					}},
-					Volumes: []corev1.Volume{
-						{Name: "config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: name}}}},
-						{Name: "pod-logs", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/var/log/pods", Type: &hostPathPods}}},
-						{Name: "storage", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: agentStorageDir, Type: &hostPathStore}}},
-					},
+					Volumes: volumes,
 				},
 			},
 		},

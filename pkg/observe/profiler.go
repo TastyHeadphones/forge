@@ -271,8 +271,11 @@ func newProfilesSender(t profilesTarget) (func(context.Context, pprofile.Profile
 		}
 		client := pprofileotlp.NewGRPCClient(conn)
 		send := func(ctx context.Context, pd pprofile.Profiles) error {
-			if len(t.Headers) > 0 {
-				md := metadata.New(t.Headers)
+			md := metadata.New(t.Headers)
+			if t.FileHeaders != nil {
+				t.FileHeaders.each(func(k, v string) { md.Set(k, v) })
+			}
+			if md.Len() > 0 {
 				ctx = metadata.NewOutgoingContext(ctx, md)
 			}
 			_, err := client.Export(ctx, pprofileotlp.NewExportRequestFromProfiles(pd))
@@ -301,6 +304,9 @@ func newProfilesSender(t profilesTarget) (func(context.Context, pprofile.Profile
 			return err
 		}
 		req.Header = hdr
+		if t.FileHeaders != nil {
+			t.FileHeaders.each(func(k, v string) { req.Header.Set(k, v) })
+		}
 		for k, v := range t.Headers {
 			req.Header.Set(k, v)
 		}

@@ -24,6 +24,8 @@ observability = forge.Observability {
 }
 ```
 
+`headers_secret` is read when the agent starts. For a credential that gets renewed, declare `token_secret = forge.ObservabilitySecretRef {name = "otlp-token", key = "token"}` instead (the key holds just the token).
+
 ## The fields
 
 | Field | Default | Meaning |
@@ -33,6 +35,7 @@ observability = forge.Observability {
 | `destination.endpoint` | — | OTLP base URL (required inside a destination) |
 | `destination.protocol` | `http/protobuf` | `grpc` also supported |
 | `destination.headers_secret` | none | `{name, key}`: a reference, **never an inline value**. The value is a JSON object of header → value, e.g. `{"authorization": "<key>"}` |
+| `destination.token_secret` | none | `{name, key}`: a **bare bearer token** that is renewed in place. The agent mounts the Secret as a file (whole-directory volume, optional, so it starts before the Secret exists) and `bearertokenauth{filename}` sends `Authorization: Bearer <token>`, re-reading it on change: **no restart on renewal**. Exclusive with `headers_secret`. Cluster only; the local forwarder refuses it |
 | `signals.traces / metrics / logs` | `True` | an off signal is `OTEL_<SIGNAL>_EXPORTER=none` at the app and has no collector pipeline |
 | `signals.profiles` | unset | unset = **on with the local ClickStack** (no destination, `profiles_port` set), off everywhere else; `True` adds a profiles pipeline (and the `service.profilesSupport` gate), so the backend must store them. See `observability/profiles` |
 | `sampling.traces_ratio` | `1.0` | **head sampling in the SDK**: every workload gets `OTEL_TRACES_SAMPLER=parentbased_traceidratio` + `OTEL_TRACES_SAMPLER_ARG=<ratio>`, so each service follows the root span and a trace is whole or absent. No collector samples traces. Needs a destination; your own sampler env wins |

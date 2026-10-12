@@ -3440,14 +3440,25 @@ schema ObservabilityDestination:
             endpoint = "https://otlp.example.com"
             headers_secret = forge.ObservabilitySecretRef {name = "otlp-auth", key = "headers"}
         }
+
+    `headers_secret` is read once, when the agent starts. For a bearer token
+    that gets renewed (a short-lived ingest token a control plane rewrites in
+    place), use `token_secret` instead: the Secret key holds the bare token, the
+    agent mounts it as a file and re-reads it when it changes, so renewal needs
+    no restart.
+
+        token_secret = forge.ObservabilitySecretRef {name = "otlp-token", key = "token"}
     """
     endpoint: str
     protocol: "http/protobuf" | "grpc" = "http/protobuf"
     headers_secret?: ObservabilitySecretRef
+    token_secret?: ObservabilitySecretRef
 
     check:
         regex.match(endpoint, r"^https?://[^/ ]+(:[0-9]+)?(/[^ ]*)?$"), \
             "ObservabilityDestination.endpoint '${endpoint}' must be an absolute http(s) OTLP URL (e.g. https://otlp.example.com)"
+        not (headers_secret and token_secret), \
+            "ObservabilityDestination sets both headers_secret and token_secret; both write the Authorization header. Use token_secret for a bearer token that is renewed in place (no restart), headers_secret for headers that never change"
 
 schema ObservabilitySignals:
     """Which signals the env ships. A disabled signal is switched off at the
