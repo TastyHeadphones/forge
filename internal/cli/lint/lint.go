@@ -1193,7 +1193,7 @@ func runAllLinters(ctx context.Context, opts lintRunOptions) (lintLaneTally, err
 		paths:         opts.paths,
 		cfg:           opts.cfg,
 		cwd:           cwd,
-		golangciMemo:  &golangciMemo{},
+		golangciMemo:  newGolangciMemo(productionGolangciToolchain()),
 	}
 	hasFailed := false
 
