@@ -170,3 +170,41 @@ type Options = operatorkit.Options
 func Run(ctx context.Context, logger *slog.Logger, opts Options, controllers []Controller) error {
 	return operatorkit.Run(ctx, logger, opts, controllers)
 }
+
+// Leader is the one thing [Singleton] needs from a lease implementation: run
+// fn only while this process holds the named lease, cancel fn's context when
+// the lease is lost, and keep contending until ctx ends. *lease.Locker
+// (forge/pkg/lease) satisfies it.
+type Leader interface {
+	Run(ctx context.Context, name string, fn func(ctx context.Context) error) error
+}
+
+// Singleton wraps a worker so that, across all replicas sharing the Leader's
+// database, at most one runs it at a time. The others stand by and take over
+// when the holder exits, crashes or loses its session.
+//
+// Use it for a worker that is NOT safe to run concurrently. A worker that
+// already is (a durable JetStream consumer, a SKIP LOCKED queue drain, an
+// idempotent set-based sweep) should NOT be wrapped: it would idle replicas for
+// no benefit and make the lease a single point of throughput.
+//
+// The wrapped worker must be restartable: its Start (or RunContext) is called
+// again whenever this replica re-acquires the lease after losing it. A worker
+// that returns nil while holding the lease is treated as finished (a worker
+// that disabled itself), not as a reason to re-contend.
+//
+// The lease is named "worker/<name>". A nil leader returns w unchanged, for a
+// process with no database to lease from.
+func Singleton(l Leader, w serverkit.Worker) serverkit.Worker {
+	if l == nil {
+		return w
+	}
+	run := w.Start
+	if cw, ok := w.(serverkit.ContextWorker); ok {
+		run = cw.RunContext
+	}
+	leaseName := "worker/" + w.Name()
+	return NewContextWorkerInstance(w.Name(),
+		func(ctx context.Context) error { return l.Run(ctx, leaseName, run) },
+		w.Stop)
+}
