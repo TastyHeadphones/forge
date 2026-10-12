@@ -203,8 +203,32 @@ func Singleton(l Leader, w serverkit.Worker) serverkit.Worker {
 	if cw, ok := w.(serverkit.ContextWorker); ok {
 		run = cw.RunContext
 	}
-	leaseName := "worker/" + w.Name()
-	return NewContextWorkerInstance(w.Name(),
-		func(ctx context.Context) error { return l.Run(ctx, leaseName, run) },
-		w.Stop)
+	name := "worker/" + w.Name()
+	return &SingletonWorker{
+		ContextWorkerInstance: *NewContextWorkerInstance(w.Name(),
+			func(ctx context.Context) error { return l.Run(ctx, name, run) },
+			w.Stop),
+		leaseName: name,
+	}
+}
+
+// SingletonWorker is what [Singleton] returns: a ContextWorker that runs its
+// inner worker under a lease. It is exported so a project can assert, without
+// starting anything, which of its workers are leased (see [LeaseNameOf]).
+type SingletonWorker struct {
+	ContextWorkerInstance
+	leaseName string
+}
+
+// LeaseName is the lease this worker contends for.
+func (w *SingletonWorker) LeaseName() string { return w.leaseName }
+
+// LeaseNameOf reports the lease a worker runs under, or "" when it is not a
+// [Singleton]. A project test uses it to pin which workers are leased and which
+// run on every replica, so a worker added later must be classified.
+func LeaseNameOf(w serverkit.Worker) string {
+	if sw, ok := w.(interface{ LeaseName() string }); ok {
+		return sw.LeaseName()
+	}
+	return ""
 }

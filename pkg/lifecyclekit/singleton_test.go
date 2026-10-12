@@ -90,3 +90,14 @@ func TestSingletonWithNilLeaderIsTheWorkerItself(t *testing.T) {
 		t.Fatal("nil leader must return the worker unchanged")
 	}
 }
+
+func TestLeaseNameOfDistinguishesLeasedFromParallelWorkers(t *testing.T) {
+	inner := lifecyclekit.WrapWorker("sweeper", &plain{})
+	if got := lifecyclekit.LeaseNameOf(inner); got != "" {
+		t.Fatalf("a plain worker has lease %q", got)
+	}
+	leased := lifecyclekit.Singleton(&fakeLeader{}, inner)
+	if got := lifecyclekit.LeaseNameOf(leased); got != "worker/sweeper" {
+		t.Fatalf("LeaseNameOf = %q, want worker/sweeper", got)
+	}
+}
