@@ -164,7 +164,7 @@ func (r *Resolver) ensure(ctx context.Context, t Tool) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	if err := os.Rename(filepath.Join(stage, t.Binary+exeSuffix()), bin); err != nil {
+	if err := replaceFile(filepath.Join(stage, t.Binary+exeSuffix()), bin); err != nil {
 		return "", err
 	}
 	if got := r.Probe(bin, t); !sameVersion(got, t.Version) {
@@ -225,7 +225,9 @@ func moduleGoDirective(dir string) string {
 
 // builtWithGo reads the Go release a binary was built with from `go version`.
 func builtWithGo(path string) string {
-	out, err := exec.Command("go", "version", path).Output()
+	cmd := exec.Command("go", "version", path)
+	cmd.Env = goexec.Env()
+	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}
@@ -234,6 +236,18 @@ func builtWithGo(path string) string {
 		return f[len(f)-1]
 	}
 	return ""
+}
+
+// replaceFile moves src to dst, replacing dst if it exists. os.Rename replaces
+// on Unix but fails on Windows when dst exists (a stale or half-installed
+// binary from an earlier run), so dst is removed first. A dst that is a running
+// executable cannot be removed on Windows; that surfaces as the error rather
+// than a silently kept old binary.
+func replaceFile(src, dst string) error {
+	if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("replace %s: %w", dst, err)
+	}
+	return os.Rename(src, dst)
 }
 
 func mkdirParent(dir string) string {
@@ -266,7 +280,9 @@ func probeVersion(path string, t Tool) string {
 	if _, err := os.Stat(path); err != nil {
 		return ""
 	}
-	if out, err := exec.Command("go", "version", "-m", path).Output(); err == nil {
+	vm := exec.Command("go", "version", "-m", path)
+	vm.Env = goexec.Env()
+	if out, err := vm.Output(); err == nil {
 		mod := t.BuildModule
 		if mod == "" {
 			mod = t.Module

@@ -10,6 +10,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cigate"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // newCIGateCmd builds `forge ci gate`: the local CI gate. A scaffolded
@@ -108,6 +109,10 @@ func newCIGateCmd() *cobra.Command {
 				Root:     root,
 				Groups:   groups || onActions,
 				Resolver: cigate.NewResolver(root, cmd.ErrOrStderr()),
+				// CI runs with go's default -mod=readonly; a caller's
+				// GOFLAGS=-mod=mod would let the gate's `go build` rewrite
+				// go.mod and go.sum and report a verdict CI would not give.
+				Env: goexec.Env(),
 			})
 			rep.RenderText(cmd.OutOrStdout())
 			if path := os.Getenv("GITHUB_STEP_SUMMARY"); path != "" {
