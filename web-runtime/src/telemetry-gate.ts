@@ -34,7 +34,9 @@ export function registerTelemetryStartup(p: Promise<unknown>): void {
  * `maxMs`, whichever is first. Resolves immediately when none is starting or it
  * has already settled.
  */
-export function telemetryReady(maxMs: number = TELEMETRY_WAIT_MS): Promise<void> {
+export function telemetryReady(
+  maxMs: number = TELEMETRY_WAIT_MS,
+): Promise<void> {
   const p = startup;
   if (!p) {
     return Promise.resolve();

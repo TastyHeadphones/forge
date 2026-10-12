@@ -141,12 +141,12 @@ cannot name its own version. So forge tells it. Every frontend build forge
 runs (`forge env deploy` for Firebase / bucket / build-only, and the hosted
 static build) gets:
 
-| Variable | Value |
-|---|---|
-| `FORGE_SOURCE_REPO` | the GitSource `repo` as declared |
-| `FORGE_SOURCE_REF` | the GitSource `ref` — the pin: a tag, a branch, or a sha |
-| `FORGE_SOURCE_COMMIT` | the sha that ref resolved to when it was fetched |
-| `FORGE_RELEASE` | the release version the deploy is bound to |
+| Variable              | Value                                                    |
+| --------------------- | -------------------------------------------------------- |
+| `FORGE_SOURCE_REPO`   | the GitSource `repo` as declared                         |
+| `FORGE_SOURCE_REF`    | the GitSource `ref` — the pin: a tag, a branch, or a sha |
+| `FORGE_SOURCE_COMMIT` | the sha that ref resolved to when it was fetched         |
+| `FORGE_RELEASE`       | the release version the deploy is bound to               |
 
 All four are always present and EMPTY when forge does not know the value —
 an in-repo frontend, an unbound deploy, or a source standing in for its pin
