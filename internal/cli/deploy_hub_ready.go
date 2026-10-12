@@ -128,7 +128,7 @@ func nonEmptyStrings(vals ...string) []string {
 // deployApplyPath names, in one line, which machinery ships an env —
 // what `forge env deploy <env> --explain` prints so the operator does not
 // have to infer it from the ledger's flags.
-func deployApplyPath(ledger envLedger, fluxReconciled bool) string {
+func deployApplyPath(ledger envLedger) string {
 	switch {
 	case ledger.hubConverged():
 		return "hub converge — forge records the promotion and bundle; the control plane's reconciler applies it to the connected clusters; nothing is applied from this machine"
@@ -138,8 +138,6 @@ func deployApplyPath(ledger envLedger, fluxReconciled bool) string {
 		return "mixed — forge applies the cluster/compose/frontend half FROM THIS MACHINE (kubectl, server-side apply), and the control plane converges the hosted half"
 	case ledger.Hosted:
 		return "hosted — forge publishes to the control plane, which runs it; nothing is applied from this machine"
-	case fluxReconciled:
-		return "flux — forge writes the release pointer; the in-cluster Flux applies the bundle"
 	default:
 		return "client apply — forge applies from this machine (kubectl, server-side apply)"
 	}

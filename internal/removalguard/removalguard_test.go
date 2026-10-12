@@ -105,8 +105,6 @@ var removals = []removal{
 					"kcl/lib/flux.k",
 					"kcl/render.k",
 					"kcl/tests/positive_flux_chart.k",
-					"internal/cli/cluster_flux.go",
-					"internal/cli/cluster_flux_test.go",
 					"internal/cli/flux_reconcile_e2e_test.go",
 					"internal/templates/project/skills/forge/deploy/flux/SKILL.md",
 				},

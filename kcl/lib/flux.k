@@ -1,12 +1,11 @@
 """
 Forge KCL — Flux as a declared platform dependency.
 
-WHY FLUX IS A LIBRARY COMPONENT AND NOT A HIDDEN INSTALL. An env with no
-control plane still needs something to converge it: forge records a bundle and
-writes a desired-state pointer, and a reconciler in the cluster applies it. The
-reconciler is Flux, and Flux is itself a platform dependency — a HelmChart like
-cert-manager or Envoy Gateway — so it is DECLARED rather than installed by a
-side effect.
+WHY FLUX IS A LIBRARY COMPONENT AND NOT A HIDDEN INSTALL. forge never installs
+Flux into a deploy target by itself. An env that runs a Flux of its own (a
+control plane reconciling hosted workloads) declares it, because Flux is a
+platform dependency — a HelmChart like cert-manager or Envoy Gateway — and a
+platform dependency is DECLARED rather than installed by a side effect.
 
 That declaration has to be shared rather than copied, for a reason that bit
 control-plane first. cp's `e2e` env ALREADY installs Flux into its

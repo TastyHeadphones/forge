@@ -364,7 +364,15 @@ type Shape struct {
 	// it is recorded on every ensure. Omitted when empty, so an env that
 	// declares none encodes, and hashes, exactly as it did before the field.
 	ControlPlaneSecrets []ShapeControlPlaneSecret `json:"control_plane_secrets,omitempty"`
+	// Applier is who applies this env when it DECLARES one: "forge" for a real
+	// environment forge applies on purpose (the platform's own env, which its
+	// own hub must not apply). Empty means undeclared, and omitted, so every
+	// shape recorded before the field encodes and hashes as it did.
+	Applier string `json:"applier,omitempty"`
 }
+
+// ApplierForge is [Shape.Applier] for an env forge applies by declaration.
+const ApplierForge = "forge"
 
 // ShapeWorkload is one declared workload and where it runs.
 type ShapeWorkload struct {
@@ -528,6 +536,9 @@ func (s Shape) Validate() error {
 		if strings.TrimSpace(w.Name) == "" || strings.TrimSpace(w.Runtime) == "" {
 			return fmt.Errorf("%w: shape workload needs a name and a runtime", ErrInvalid)
 		}
+	}
+	if s.Applier != "" && s.Applier != ApplierForge {
+		return fmt.Errorf("%w: shape applier %q (expected %q or none)", ErrInvalid, s.Applier, ApplierForge)
 	}
 	delivered := map[string]bool{}
 	for _, c := range s.ControlPlaneSecrets {

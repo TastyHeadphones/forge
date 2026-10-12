@@ -58,6 +58,9 @@ type ShapeInput struct {
 	// renews (forge.ControlPlaneSecret), already in shape vocabulary. Names and
 	// destinations; a value never reaches forge.
 	ControlPlaneSecrets []release.ShapeControlPlaneSecret
+
+	// Applier is the env's declared applier (release.ApplierForge), or "".
+	Applier string
 }
 
 // ProjectShape projects one env's render into the shape a ledger indexes.
@@ -89,6 +92,7 @@ func ProjectShape(in ShapeInput) (release.Shape, error) {
 		Objects:   objects,
 
 		ControlPlaneSecrets: in.ControlPlaneSecrets,
+		Applier:             in.Applier,
 	}.Canonical()
 	if err := shape.Validate(); err != nil {
 		return release.Shape{}, err

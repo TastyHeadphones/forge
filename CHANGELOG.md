@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`Bundle.applier = "forge"`: a declared self-applied platform env.** A real
+  environment forge applies on purpose and permanently, for an env whose own
+  control plane must not apply it (control-plane's `prod`: a hub applying the
+  env that runs the hub is circular). It is exempt from the planned
+  F-REFUSE-DIRECT, is **never recorded hub-converged** however fully its
+  clusters are bound to connected clusters, and is recorded in the shape
+  (`shape.applier`). Setting it beside `lifecycle` is refused: they answer one
+  question opposite ways. `output.applier` is a new render-contract key (null
+  when undeclared); every `render_contract` golden gains `"applier": null`.
+  See `deploy/shape` and `migrations/v0.1.45` section 8.
+
+### Removed
+
+- **The dead in-cluster Flux pointer path.** #461 made `reconcilesThroughFlux()`
+  unconditionally false and asked for the follow-up that deletes the rest. Gone:
+  forge's own Flux install in `forge cluster up`, the OCIRepository/Kustomization
+  pointer `forge env deploy` wrote, its convergence wait, the Flux-secret sync,
+  the Flux plan-live reader, `forge env status`'s in-cluster convergence, and
+  the `internal/flux` pointer/observe code (about 5,000 lines with tests). What
+  stays is `forge.flux_chart()` and the declared bootstrap-chart install. The
+  direct-apply notice no longer claims the env "will be reconciled from its
+  bundle".
+
 - **`forge.ControlPlaneSecret`: a Secret the env's declared control plane
   supplies and renews.** `Bundle.control_plane_secrets` declares one (`name`,
   `cluster`, `namespace`, `kind = "telemetry_token"`). It is recorded in the

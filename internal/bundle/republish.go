@@ -5,10 +5,9 @@ package bundle
 //
 // WHY THIS EXISTS. A machine-ledger env's bundle is written into the ledger's
 // own OCI LAYOUT — a directory — because a local env's bundle is not shipped.
-// That is the right default and it holds right up until the env turns out to
-// have an IN-CLUSTER RECONCILER, which cannot read a directory on a
-// developer's laptop. So the deploy publishes the recorded bundle to the
-// env's registry and points Flux at it.
+// That is the right default and it holds right up until a reconciler has to
+// fetch it: Flux cannot read a directory on a developer's laptop. So a
+// bundle is published to a registry before anything points a reconciler at it.
 //
 // REPUBLISHING IS NOT REBUILDING, and the distinction is the whole safety
 // property. [Build] renders; this copies. If the deploy re-rendered instead,

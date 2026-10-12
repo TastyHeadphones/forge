@@ -9,17 +9,17 @@ package cli
 // THE CONTRACT (#461). Flux on a cluster comes only from a control plane's own
 // declaration; forge never installs it into a deploy target and never routes
 // a deploy through an in-cluster pointer. Every env without a
-// forge.ControlPlane applies directly and prints a transitional note pointing
-// at forge.ControlPlane + connected_cluster.
+// forge.ControlPlane applies directly, and an env that declares neither a
+// lifecycle nor an applier prints a note naming the two ways to say so.
 //
 // These tests used to pin the OPPOSITE — `forge cluster up` installing
 // source- and kustomize-controller, and `forge env deploy` writing an
 // OCIRepository + Kustomization pointer that Flux converged. #461 made
-// reconcilesThroughFlux unconditionally false, so that path is unreachable
-// from every env and both tests went hard-red on every branch. They are
+// that path unreachable from every env (it has since been deleted), and both
+// tests went hard-red on every branch. They are
 // rewritten to the new contract rather than deleted because the cluster-level
 // half is not observable anywhere else: a unit test can assert that
-// fluxInstallTargets returns nil, but only a real cluster shows that nothing
+// nothing installs Flux, but only a real cluster shows that nothing
 // in flux-system was created, that the workload is owned by forge's own
 // field manager rather than kustomize-controller, and that a declared Secret's
 // real value lands without ever riding the bundle.
@@ -98,7 +98,7 @@ func TestE2EDirectApplyEnvInstallsNoFlux(t *testing.T) {
 	//     NOT claim to record desired state for an in-cluster reconciler;
 	//  2. the workload is owned by forge's own field manager, not by
 	//     kustomize-controller, and no Flux object names this env.
-	if !strings.Contains(deployOut, realClusterNoticeLine) {
+	if !strings.Contains(deployOut, lifecycleNoticeLine) {
 		t.Errorf("deploy did not print the direct-apply note for an env with no control plane:\n%s", deployOut)
 	}
 	if strings.Contains(deployOut, "desired state for its in-cluster reconciler") {
@@ -273,9 +273,8 @@ func assertFluxInstalled(t *testing.T, kctx string) {
 
 // assertNoFluxInstalled is the cluster-level half of #461: `forge cluster up`
 // on an env that declares no Flux chart leaves no Flux behind — no
-// flux-system controllers and no Flux CRDs. A unit test can show that
-// fluxInstallTargets returns nil; only the cluster shows nothing else
-// installed it either.
+// flux-system controllers and no Flux CRDs. Only the cluster can
+// show that nothing installed it.
 func assertNoFluxInstalled(t *testing.T, kctx string) {
 	t.Helper()
 	// -o name, not JSON: with flux-system absent (the expected case) kubectl
@@ -599,7 +598,7 @@ func TestE2EDirectApplySecretsLandAndStayOutOfTheBundle(t *testing.T) {
 	if strings.Contains(deployOut, realValue) {
 		t.Fatalf("the deploy printed a Secret value:\n%s", deployOut)
 	}
-	if !strings.Contains(deployOut, realClusterNoticeLine) {
+	if !strings.Contains(deployOut, lifecycleNoticeLine) {
 		t.Errorf("deploy did not print the direct-apply note for an env with no control plane:\n%s", deployOut)
 	}
 

@@ -21,6 +21,13 @@ const (
 	// and deleted inside one run. Routing it through a reconciler would add
 	// a control loop with nothing to converge to.
 	lifecycleEphemeral = "ephemeral"
+
+	// applierForge is Bundle.applier = "forge": a REAL environment that forge
+	// applies, by declaration and permanently. It is the answer for an env
+	// whose own control plane must not apply it (the platform's own env: a hub
+	// applying the env that runs the hub is circular), and it is not a
+	// stopgap on the way to a reconciler.
+	applierForge = "forge"
 )
 
 // DirectApplyAllowed reports whether forge may apply to this environment
@@ -42,15 +49,24 @@ const (
 // and this returns false for it. That default is deliberate: an env whose
 // author forgot to declare it is treated as production, not as scratch.
 //
+//  3. the env DECLARES `applier = "forge"` — a real environment that forge
+//     applies on purpose. The cluster is not scratch (lifecycle would be a
+//     false claim, and KCL checks it), and no reconciler is wanted: the
+//     platform's own env cannot be applied by the hub it runs. Declaring who
+//     applies is exactly what this predicate asks, so it is allowed.
+//
 // TODAY NOTHING REFUSES ON THIS. It drives a notice and the JSON
-// projections. The refusal (F-REFUSE-DIRECT) lands once the bundle→Flux path
-// is proven end to end, and because the predicate is already here and
+// projections. The refusal (F-REFUSE-DIRECT) will land for an env that
+// declares none of the three, and because the predicate is already here and
 // already correct, that change is a flag flip rather than a migration.
 func DirectApplyAllowed(e *KCLEntities) bool {
 	if e == nil {
 		// No render, so no declaration and no target. Nothing is known to
 		// need a reconciler, and the callers here are notice/projection
 		// paths that must not invent one.
+		return true
+	}
+	if e.Applier == applierForge {
 		return true
 	}
 	switch e.Lifecycle {
@@ -61,12 +77,14 @@ func DirectApplyAllowed(e *KCLEntities) bool {
 }
 
 // lifecycleNoticeLine is the ONE line a direct cluster apply prints for an
-// env that declares no lifecycle.
+// env that declares neither a lifecycle nor an applier.
 //
 // It is a NOTICE, not a warning, and it changes no behaviour: the apply it
 // annotates still runs, identically. Its whole job is to make the coming
 // change visible at the place it will land, so the day direct apply is
-// retired is not the day anyone first hears about it.
+// refused is not the day anyone first hears about it. It names the two ways
+// out: lifecycle for scratch clusters, applier for a real env forge applies
+// on purpose.
 //
 // Stdout is deliberate and it is safe: `forge env render`'s manifest stream
 // and every --json document divert stdout for their duration (see
@@ -74,5 +92,5 @@ func DirectApplyAllowed(e *KCLEntities) bool {
 // kubectl is reading or ahead of a document a jq is parsing. The apply paths
 // that print it already report their progress on stdout, and a notice about
 // an apply belongs with the apply.
-const lifecycleNoticeLine = "Note: this env is not declared local/ephemeral; it will be reconciled from its bundle " +
-	"(forge env deploy records + waits) once direct apply is retired"
+const lifecycleNoticeLine = "Note: this env declares neither `lifecycle` (a scratch cluster) nor `applier = \"forge\"` " +
+	"(a real env forge applies on purpose); direct apply to it will be refused once F-REFUSE-DIRECT lands. Declare the one that is true"

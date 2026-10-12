@@ -358,6 +358,7 @@ func bundleShapeInputOf(doc envShapeDoc) bundle.ShapeInput {
 		Images:        doc.images,
 
 		ControlPlaneSecrets: doc.Shape.ControlPlaneSecrets,
+		Applier:             doc.Shape.Applier,
 	}
 }
 

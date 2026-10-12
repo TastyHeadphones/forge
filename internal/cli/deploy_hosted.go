@@ -130,6 +130,16 @@ func envConvergedByHub(e *KCLEntities) bool {
 	if e == nil || e.HasHosted() {
 		return false
 	}
+	// A DECLARED applier is a decision, not an inference, and it outranks the
+	// inference below. The platform's own env binds clusters the hub could
+	// converge, and a hub applying the env that runs the hub is circular, so
+	// binding must never be read as "the hub applies this". Without this,
+	// declaring applier = "forge" would still record hubConverged = true for
+	// an env whose every cluster is bound, and the control plane would start a
+	// second applier over objects forge applies.
+	if e.Applier == applierForge {
+		return false
+	}
 	if bound, _ := declaredBindings(e); len(bound) == 0 {
 		return false
 	}

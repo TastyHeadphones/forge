@@ -337,6 +337,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		StatefulWorkloads: shapeStatefulWorkloadsOf(entities),
 
 		ControlPlaneSecrets: shapeControlPlaneSecretsOf(entities),
+		Applier:             shapeApplierOf(entities),
 	})
 	if err != nil {
 		return envShapeDoc{}, fmt.Errorf("project env %q: %w", envName, err)
@@ -525,6 +526,16 @@ func shapeControlPlaneSecretsOf(e *KCLEntities) []release.ShapeControlPlaneSecre
 	return out
 }
 
+// shapeApplierOf projects the env's declared applier. Only a DECLARATION is
+// recorded: an env that declares none stays empty, so "undeclared" and "forge
+// applies it on purpose" remain different facts a reader can tell apart.
+func shapeApplierOf(e *KCLEntities) string {
+	if e != nil && e.Applier == applierForge {
+		return release.ApplierForge
+	}
+	return ""
+}
+
 // shapeSecretProviderOf is WHERE this env's secret values come from, in
 // forge's provider vocabulary. "hosted" is normalized to the control plane's
 // own word for it so a reader does not have to know forge's spelling.
@@ -710,6 +721,9 @@ func writeShapeSummary(w io.Writer, doc envShapeDoc) {
 			}
 			fmt.Fprintf(w, "    %s\n", line)
 		}
+	}
+	if doc.Shape.Applier != "" {
+		fmt.Fprintf(w, "  applied by: %s (declared: Bundle.applier)\n", doc.Shape.Applier)
 	}
 	if len(doc.Shape.ControlPlaneSecrets) > 0 {
 		fmt.Fprintf(w, "  delivered by the control plane: %d (names only; the control plane mints and renews them)\n", len(doc.Shape.ControlPlaneSecrets))
