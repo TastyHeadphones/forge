@@ -446,6 +446,24 @@ services:
       - sh
       - -c
       - |
+        cat > /tmp/forge-bind.js <<'FORGE_BIND'
+        var T = ObjectId("5f6c6f63616c5f7465616d5f");
+        var ids = {};
+        db.sources.find({team: T}).forEach(function (s) { ids[s.name] = s._id.str; });
+        db.dashboards.find({team: T, provisioned: true}).forEach(function (d) {
+          var tiles = (d.tiles || []).map(function (t) { if (t.config && ids[t.config.source]) { t.config.source = ids[t.config.source]; } return t; });
+          var filters = (d.filters || []).map(function (f) { if (ids[f.source]) { f.source = ids[f.source]; } return f; });
+          db.dashboards.updateOne({_id: d._id}, {$$set: {tiles: tiles, filters: filters}});
+        });
+        var raw = "";
+        try { raw = cat("/etc/forge/dashboards/saved-searches_gen.ndjson"); } catch (e) {}
+        raw.split("\n").forEach(function (line) {
+          if (!line) { return; }
+          var s = JSON.parse(line);
+          if (!ids[s.source]) { return; }
+          db.savedsearches.updateOne({team: T, name: s.name}, {$$set: {select: s.select, where: s.where, whereLanguage: s.whereLanguage, orderBy: s.orderBy, source: ObjectId(ids[s.source]), tags: s.tags}}, {upsert: true});
+        });
+        FORGE_BIND
         (
           until curl -fs http://localhost:8000/health >/dev/null 2>&1; do sleep 3; done
           last=
@@ -461,11 +479,18 @@ services:
                 sh -c 'exec env "$$@" /otel-entrypoint.sh /usr/local/bin/opampsupervisor' sh >/proc/1/fd/1 2>&1 &
               sleep 20
             fi
-            now=$$(cd "$$DASHBOARD_PROVISIONER_DIR" && cksum *.json 2>/dev/null)
+            now=$$(cd "$$DASHBOARD_PROVISIONER_DIR" && cksum *.json *.ndjson 2>/dev/null)
             if [ "$$now" != "$$last" ]; then
               mongo --quiet hyperdx --eval 'db.teams.updateOne({_id: ObjectId("5f6c6f63616c5f7465616d5f")}, {$$setOnInsert: {name: "Local App Team", collectorAuthenticationEnforced: false}}, {upsert: true})' >/dev/null
               (cd /app && MONGO_URI=mongodb://db:27017/hyperdx IS_LOCAL_APP_MODE='DANGEROUSLY_is_local_app_mode💀' HYPERDX_IMAGE=all-in-one-noauth RUN_SCHEDULED_TASKS_EXTERNALLY=true DASHBOARD_PROVISIONER_TEAM_ID=5f6c6f63616c5f7465616d5f ./packages/api/bin/hyperdx task provision-dashboards) >/proc/1/fd/1 2>&1 && last="$$now"
             fi
+            # Dashboards name their source ("Logs", "Traces", "Metrics"); the
+            # UI looks a source up by its mongo id, which is random per
+            # database. Swap each name for this database's id, and upsert the
+            # generated saved searches, which the file provisioner has no path
+            # for. Idempotent, so it runs every pass: a name already replaced
+            # matches nothing, and a source that does not exist yet is retried.
+            mongo --quiet hyperdx /tmp/forge-bind.js >/dev/null
             sleep 15
           done
         ) &
