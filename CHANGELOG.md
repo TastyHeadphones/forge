@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`forge env deploy <env> --dry-run` now predicts the real run's release
+  decision, and a nested git checkout is no longer "dirt".** A bare
+  `forge env deploy prod` cut and built a whole new release because an
+  untracked nested worktree made the checkout dirty, and the preceding
+  `--dry-run` said nothing about releases. `--dry-run` now prints the line the
+  real run prints (`would reuse release <v>` / `would cut new release <v>
+  because …`, with the dirty paths named) from the same function, and `--json`
+  carries it as `release_decision`. An untracked directory with its own `.git`
+  is excluded from the dirty verdict and from the provenance tree hash
+  (`release.InspectCheckout`); the decision line lists the ones it ignored.
+  A dirty cut on a shared env (hosted, or a non-local cluster) now asks before
+  it builds, and refuses with exit 5 and no build when there is no terminal;
+  `--yes` accepts it.
+
 ### Added
 
 - **A database that is not up yet no longer crash-loops the server.** The

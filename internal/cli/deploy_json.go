@@ -811,6 +811,11 @@ type deployJSONReport struct {
 	// binding.
 	Release string `json:"release,omitempty"`
 
+	// ReleaseDecision is what a no-version deploy would do about the
+	// release — reuse one or cut a new one — set by --dry-run from the
+	// same function the real run decides with.
+	ReleaseDecision *deployJSONReleaseDecision `json:"release_decision,omitempty"`
+
 	Preflight deployJSONPreflight `json:"preflight"`
 	Images    deployJSONImages    `json:"images"`
 
@@ -841,6 +846,25 @@ type deployJSONReport struct {
 	ExitCode int  `json:"exit_code"`
 	// Error is the failure message when OK is false.
 	Error string `json:"error,omitempty"`
+}
+
+// deployJSONReleaseDecision is the release decision, whole.
+type deployJSONReleaseDecision struct {
+	// Action is "reuse" or "cut".
+	Action string `json:"action"`
+	// Version is the release reused, or the one that would be cut.
+	Version string `json:"version"`
+	// Reason is why nothing was reused. Empty for a reuse.
+	Reason string `json:"reason,omitempty"`
+	// Dirty is true when the checkout has uncommitted changes of its own,
+	// DirtyPaths lists them, and NestedCheckouts lists the nested git
+	// checkouts that were seen and ignored.
+	Dirty           bool     `json:"dirty"`
+	DirtyPaths      []string `json:"dirty_paths"`
+	NestedCheckouts []string `json:"nested_checkouts"`
+	// RequiresConfirmation is true when a real run asks before building
+	// (a dirty cut on a shared env).
+	RequiresConfirmation bool `json:"requires_confirmation"`
 }
 
 // ─── The accumulator ──────────────────────────────────────────────────────────
@@ -886,6 +910,23 @@ func (r *deployReport) setApplyPath(path string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.doc.ApplyPath = path
+}
+
+func (r *deployReport) setReleaseDecision(c deployReleaseChoice, requiresConfirmation bool) {
+	if r == nil {
+		return
+	}
+	d := &deployJSONReleaseDecision{
+		Action: "cut", Version: c.Version, Reason: c.Reason, Dirty: c.Dirty,
+		DirtyPaths: append([]string{}, c.DirtyPaths...), NestedCheckouts: append([]string{}, c.Nested...),
+		RequiresConfirmation: requiresConfirmation,
+	}
+	if c.Reuse != nil {
+		d.Action, d.Version = "reuse", c.Reuse.Version
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.doc.ReleaseDecision = d
 }
 
 func (r *deployReport) setMode(m deployJSONMode) {

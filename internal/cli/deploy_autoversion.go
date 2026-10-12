@@ -96,10 +96,31 @@ var releaseImageResolves = func(ctx context.Context, ref string) (bool, error) {
 	return cluster.RegistryImageChecker{}.ImageExists(ctx, ref)
 }
 
+// resolveFrontendPinArtifacts is where each source-pinned frontend's pin
+// resolves today. A var so a test can state a moved pin without a network.
+var resolveFrontendPinArtifacts = addFrontendSourceArtifacts
+
+// inspectDeployCheckout lists the checkout's own uncommitted paths and the
+// nested git checkouts it ignores, for the decision's wording only — the
+// dirty verdict itself is the provenance's. A var so a test can state them.
+var inspectDeployCheckout = func(ctx context.Context, projectDir string) release.Changes {
+	changes, _ := release.InspectDir(ctx, projectDir)
+	return changes
+}
+
 // deployReleaseChoice is what a no-version deploy decided BEFORE building
 // anything: deploy a release that already holds this checkout's content, or
 // cut a new one.
 type deployReleaseChoice struct {
+	// Nested are the nested git checkouts (parked worktrees, cloned repos)
+	// that were left out of the checkout's dirty verdict. Stated on the
+	// decision line so a reader can see they were seen and ignored.
+	Nested []string
+	// Dirty is true when the checkout had uncommitted changes of its own;
+	// DirtyPaths lists them. The first reason a cut is not a reuse, and the
+	// one a shared env asks about before building.
+	Dirty      bool
+	DirtyPaths []string
 	// Reuse is the release to deploy exactly as recorded. Nil means cut.
 	Reuse *release.Release
 	// Version is the auto version to cut under, when Reuse is nil.
@@ -115,6 +136,9 @@ type deployReuseQuery struct {
 	Env        string
 	// Provenance is this checkout, through captureReleaseProvenance.
 	Provenance release.Provenance
+	// Changes are the checkout's uncommitted paths and ignored nested
+	// checkouts. Wording only: Provenance.Dirty decides.
+	Changes release.Changes
 	// RenderOptions are the deploy's `-D name=value` options.
 	RenderOptions []string
 	Releases      releaseLedger
@@ -155,6 +179,30 @@ type deployReuseQuery struct {
 // rendered, a registry that will not answer — each is a reason to build, never
 // a reason to deploy bytes nobody verified, and each is named in Reason.
 func chooseDeployRelease(ctx context.Context, q deployReuseQuery) deployReleaseChoice {
+	choice := chooseDeployReleaseFor(ctx, q)
+	choice.Nested = q.Changes.Nested
+	choice.Dirty = q.Provenance.Dirty
+	choice.DirtyPaths = q.Changes.Paths
+	return choice
+}
+
+// decideDeployRelease is THE release decision of a no-version deploy: the one
+// call both the real run (buildAndCutForDeploy) and `--dry-run` make, over the
+// same checkout capture, so a preview cannot predict something the real run
+// does not do.
+func decideDeployRelease(ctx context.Context, projectDir, envName string, renderOptions []string, ledger envLedger) deployReleaseChoice {
+	return chooseDeployRelease(ctx, deployReuseQuery{
+		ProjectDir:    projectDir,
+		Env:           envName,
+		Provenance:    captureReleaseProvenance(ctx, projectDir),
+		Changes:       inspectDeployCheckout(ctx, projectDir),
+		RenderOptions: renderOptions,
+		Releases:      ledger.Releases,
+		Now:           time.Now(),
+	})
+}
+
+func chooseDeployReleaseFor(ctx context.Context, q deployReuseQuery) deployReleaseChoice {
 	cut := func(reason string) deployReleaseChoice {
 		return deployReleaseChoice{Version: autoVersionFor(q.Provenance, q.Now), Reason: reason}
 	}
@@ -162,7 +210,7 @@ func chooseDeployRelease(ctx context.Context, q deployReuseQuery) deployReleaseC
 	case q.Provenance.Tree == "":
 		return cut("this checkout's tree could not be hashed, so no recorded release can be shown to hold the same content")
 	case q.Provenance.Dirty:
-		return cut("the checkout has uncommitted changes, and only a clean tree — whose hash git can check against its commit — is matched to an existing release")
+		return cut("the checkout has uncommitted changes" + describePaths(q.Changes.Paths) + ", and only a clean tree — whose hash git can check against its commit — is matched to an existing release")
 	case len(q.RenderOptions) > 0:
 		return cut("render options (-D) were passed, and a release does not record the options its build rendered under")
 	case q.Releases == nil:
@@ -232,7 +280,7 @@ func releaseReuseRefusal(ctx context.Context, q deployReuseQuery, rel release.Re
 func releaseGapsForEnv(ctx context.Context, projectDir, env string, entities *KCLEntities, rel release.Release) ([]string, error) {
 	gaps := releaseCoverageGaps(entities, rel.Artifacts, env)
 	current := map[string]release.Artifact{}
-	if err := addFrontendSourceArtifacts(ctx, projectDir, entities, current); err != nil {
+	if err := resolveFrontendPinArtifacts(ctx, projectDir, entities, current); err != nil {
 		return nil, err
 	}
 	for _, name := range slices.Sorted(maps.Keys(current)) {
@@ -310,19 +358,52 @@ func releaseImageRepository(name string, art release.Artifact) string {
 	return ""
 }
 
+// describePaths is " (a, b, c, +N more)" for a non-empty list, bounded so a
+// checkout with thousands of changes still gets one readable line.
+func describePaths(paths []string) string {
+	const shown = 5
+	if len(paths) == 0 {
+		return ""
+	}
+	list := paths
+	more := ""
+	if len(paths) > shown {
+		list = paths[:shown]
+		more = fmt.Sprintf(", +%d more", len(paths)-shown)
+	}
+	return " (" + strings.Join(list, ", ") + more + ")"
+}
+
 // announce prints the choice, ONE line, before anything is built: an operator
 // who sees an unchanged checkout rebuilding must be told why at the top, not
 // infer it from ten minutes of build output.
-func (c deployReleaseChoice) announce(out io.Writer, env string) {
+//
+// dryRun changes only the tense. `forge env deploy <env> --dry-run` prints
+// the same decision from the same function, as a prediction, so the line a
+// preview shows and the line the real run shows are one sentence.
+func (c deployReleaseChoice) announce(out io.Writer, env string, dryRun bool) {
+	nested := ""
+	if len(c.Nested) > 0 {
+		nested = fmt.Sprintf(" [nested git checkouts are not part of this tree and were ignored: %s]", strings.Join(c.Nested, ", "))
+	}
 	if rel := c.Reuse; rel != nil {
 		cutAt := "an unrecorded time"
 		if !rel.CreatedAt.IsZero() {
 			cutAt = rel.CreatedAt.UTC().Format(time.RFC3339)
 		}
-		fmt.Fprintf(out, "[deploy] reusing release %s (cut at %s): it records this checkout's tree %s and this forge (%s), "+
-			"covers everything env %s declares, and every image it pins still resolves — nothing is built\n",
-			rel.Version, cutAt, shortHash(rel.Provenance.Tree), rel.Provenance.ForgeVersion, env)
+		verb := "reusing"
+		if dryRun {
+			verb = "would reuse"
+		}
+		fmt.Fprintf(out, "[deploy] %s release %s (cut at %s): it records this checkout's tree %s and this forge (%s), "+
+			"covers everything env %s declares, and every image it pins still resolves — nothing is built%s\n",
+			verb, rel.Version, cutAt, shortHash(rel.Provenance.Tree), rel.Provenance.ForgeVersion, env, nested)
 		return
 	}
-	fmt.Fprintf(out, "[deploy] cutting new release %s because %s\n", c.Version, c.Reason)
+	if dryRun {
+		fmt.Fprintf(out, "[deploy] would cut new release %s because %s — a real run builds and pushes every artifact env %s declares first%s\n",
+			c.Version, c.Reason, env, nested)
+		return
+	}
+	fmt.Fprintf(out, "[deploy] cutting new release %s because %s%s\n", c.Version, c.Reason, nested)
 }

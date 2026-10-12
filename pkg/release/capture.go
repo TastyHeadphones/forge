@@ -78,11 +78,11 @@ func CaptureProvenance(ctx context.Context, dir string, opts CaptureOptions) (Pr
 	}
 	p.Repo = canonicalRemote(ctx, top)
 
-	status, err := gitOut(ctx, top, "status", "--porcelain", "--untracked-files=all")
+	changes, err := InspectCheckout(ctx, top)
 	if err != nil {
-		return p, fmt.Errorf("capture provenance: git status: %w", err)
+		return p, fmt.Errorf("capture provenance: %w", err)
 	}
-	p.Dirty = status != ""
+	p.Dirty = changes.Dirty()
 	if !p.Dirty {
 		tree, err := gitOut(ctx, top, "rev-parse", "HEAD^{tree}")
 		if err != nil {
@@ -91,10 +91,10 @@ func CaptureProvenance(ctx context.Context, dir string, opts CaptureOptions) (Pr
 		p.Tree = tree
 		return p, nil
 	}
-	if dirtySize(top, status) > CaptureMaxDirtySize {
+	if dirtySize(top, changes.Paths) > CaptureMaxDirtySize {
 		return p, nil // unhashed: Provenance.Unhashed reports it
 	}
-	tree, err := dirtyTree(ctx, top)
+	tree, err := dirtyTree(ctx, top, changes.Nested)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return p, nil // unhashed, by budget
@@ -109,7 +109,11 @@ func CaptureProvenance(ctx context.Context, dir string, opts CaptureOptions) (Pr
 // untracked-unignored files — through a TEMPORARY index, so the user's staged
 // state is never read or written. Two captures of the same dirty state give
 // the same tree.
-func dirtyTree(ctx context.Context, top string) (string, error) {
+//
+// Nested git checkouts are left out of the hash, as InspectCheckout leaves
+// them out of the dirty verdict: they are another checkout's content, and
+// `git add -A` would otherwise record each as an embedded-repo gitlink.
+func dirtyTree(ctx context.Context, top string, nested []string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, CaptureTreeTimeout)
 	defer cancel()
 	tmp, err := os.CreateTemp("", "forge-provenance-index-*")
@@ -122,7 +126,11 @@ func dirtyTree(ctx context.Context, top string) (string, error) {
 	_ = os.Remove(idx)
 	defer os.Remove(idx)
 	env := append(os.Environ(), "GIT_INDEX_FILE="+idx)
-	for _, args := range [][]string{{"read-tree", "HEAD"}, {"add", "-A"}} {
+	addArgs := []string{"add", "-A", "--", "."}
+	for _, n := range nested {
+		addArgs = append(addArgs, ":(exclude,literal)"+strings.TrimSuffix(n, "/"))
+	}
+	for _, args := range [][]string{{"read-tree", "HEAD"}, addArgs} {
 		if _, err := gitOutEnv(ctx, top, env, args...); err != nil {
 			if ctx.Err() != nil {
 				return "", ctx.Err()
@@ -137,19 +145,11 @@ func dirtyTree(ctx context.Context, top string) (string, error) {
 	return out, err
 }
 
-// dirtySize estimates the bytes `git add -A` would hash: the sizes of every
-// path git status reports. Deleted paths cost nothing.
-func dirtySize(top, porcelain string) int64 {
+// dirtySize estimates the bytes `git add -A` would hash: the sizes of the
+// given changed paths. Deleted paths cost nothing.
+func dirtySize(top string, paths []string) int64 {
 	var total int64
-	for _, line := range strings.Split(porcelain, "\n") {
-		if len(line) < 4 {
-			continue
-		}
-		path := line[3:]
-		if i := strings.Index(path, " -> "); i >= 0 {
-			path = path[i+4:]
-		}
-		path = strings.Trim(path, `"`)
+	for _, path := range paths {
 		if fi, err := os.Stat(filepath.Join(top, path)); err == nil && !fi.IsDir() {
 			total += fi.Size()
 		}
@@ -158,6 +158,75 @@ func dirtySize(top, porcelain string) int64 {
 		}
 	}
 	return total
+}
+
+// Changes is what `git status` reports for a checkout, split by whether it is
+// this checkout's own content.
+type Changes struct {
+	// Paths are the checkout's own uncommitted changes — tracked edits,
+	// deletions, and untracked-unignored files — relative to the top of the
+	// checkout, in git's order.
+	Paths []string
+	// Nested are untracked directories that are the root of ANOTHER git
+	// checkout (a parked worktree, a cloned repo), with git's trailing slash.
+	// They are not this checkout's content and are not in Paths.
+	Nested []string
+}
+
+// Dirty reports whether the checkout has changes of its own.
+func (c Changes) Dirty() bool { return len(c.Paths) > 0 }
+
+// InspectCheckout reads `git status` for the checkout whose top is top.
+//
+// A NESTED GIT CHECKOUT IS NOT DIRT. An untracked directory with its own .git
+// is another repository (agents park linked worktrees inside the project
+// directory), and the status of the repository around it says nothing about
+// the bytes this checkout would build. Counting it made a clean checkout
+// "dirty", which cut and built a whole new release for an unchanged tree.
+// Every other untracked file still counts.
+func InspectCheckout(ctx context.Context, top string) (Changes, error) {
+	out, err := gitRaw(ctx, top, nil, "--no-optional-locks", "status", "--porcelain", "-z", "--untracked-files=all")
+	if err != nil {
+		return Changes{}, err
+	}
+	var c Changes
+	entries := strings.Split(string(out), "\x00")
+	for i := 0; i < len(entries); i++ {
+		e := entries[i]
+		if len(e) < 4 {
+			continue
+		}
+		xy, path := e[:2], e[3:]
+		// A rename or copy is followed by its origin as a separate entry.
+		if strings.ContainsAny(xy, "RC") {
+			i++
+		}
+		if xy == "??" && strings.HasSuffix(path, "/") && IsNestedCheckout(filepath.Join(top, path)) {
+			c.Nested = append(c.Nested, path)
+			continue
+		}
+		c.Paths = append(c.Paths, path)
+	}
+	return c, nil
+}
+
+// InspectDir is InspectCheckout for any directory inside a checkout. A
+// directory that is not in a git checkout has no changes and is not an error,
+// as in CaptureProvenance.
+func InspectDir(ctx context.Context, dir string) (Changes, error) {
+	top, err := gitOut(ctx, dir, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return Changes{}, nil
+	}
+	return InspectCheckout(ctx, top)
+}
+
+// IsNestedCheckout reports whether dir is the root of a git checkout: a
+// repository (`.git` directory) or a linked worktree (`.git` file), whatever
+// it is named.
+func IsNestedCheckout(dir string) bool {
+	_, err := os.Lstat(filepath.Join(dir, ".git"))
+	return err == nil
 }
 
 // canonicalRemote returns origin's URL as "host/owner/repo": no scheme, no
@@ -212,6 +281,13 @@ func gitOut(ctx context.Context, dir string, args ...string) (string, error) {
 }
 
 func gitOutEnv(ctx context.Context, dir string, env []string, args ...string) (string, error) {
+	out, err := gitRaw(ctx, dir, env, args...)
+	return strings.TrimSpace(string(out)), err
+}
+
+// gitRaw is git's stdout untouched: a leading space is meaningful in
+// `status --porcelain` and trimming it shifts every field.
+func gitRaw(ctx context.Context, dir string, env []string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	if env != nil {
@@ -222,9 +298,9 @@ func gitOutEnv(ctx context.Context, dir string, env []string, args ...string) (s
 	out, err := cmd.Output()
 	if err != nil {
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, msg)
+			return nil, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, msg)
 		}
-		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+		return nil, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	}
-	return strings.TrimSpace(string(out)), nil
+	return out, nil
 }

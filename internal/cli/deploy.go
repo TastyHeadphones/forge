@@ -58,7 +58,20 @@ artifact the env declares, and every image it pins still resolves in its
 registry, nothing is built or cut: forge prints "reusing release <v>" and
 deploys it. Otherwise it prints "cutting new release <v> because …" before
 building. A dirty checkout, another forge version, a -D option, an artifact the
-release lacks, or an image the registry no longer holds each cut a new one.
+release lacks, or an image the registry no longer holds each cut a new one. A nested git checkout inside the
+project (a parked worktree, a cloned repo) is another repository, not a change
+to this one, and does not make the checkout dirty; the decision line names the
+ones it ignored.
+
+A DIRTY CUT ON A SHARED ENV ASKS FIRST. When the checkout has uncommitted
+changes and the env is hosted or runs on a cluster that is not a local dev
+cluster, forge prompts (default no) before building, because the release it
+would cut describes no commit. With no terminal it refuses (exit 5) having
+built nothing; --yes accepts it. A local env never asks.
+
+--dry-run PREDICTS THIS. It prints the same decision line the real run prints
+-- "would reuse release <v>" or "would cut new release <v> because …" -- from
+the same function, and --json carries it as release_decision.
 
 A SCOPED DEPLOY NEEDS A RELEASE. --frontends-only and --target ship part of the
 env, so they are refused with NO version: a no-version deploy cuts a release
@@ -562,6 +575,11 @@ func dispatchSpecChangeDeploy(ctx context.Context, envName string, f deployCmdFl
 	report := newDeployReport(envName, f.jsonOut)
 	if f.explain {
 		return runDeployExplain(ctx, envName, report)
+	}
+	// A bare `--dry-run` previews a deploy whose real run would build and
+	// cut. Say which release it would use, from the real run's own decision.
+	if f.dryRun && !f.promote.requestedRelease() {
+		previewDeployDecision(ctx, envName, f, report)
 	}
 	if _, err := hostedCapacityPreflightForEnv(ctx, projectDirForKCL(), envName, false, progressWriter(f.jsonOut)); err != nil {
 		return err

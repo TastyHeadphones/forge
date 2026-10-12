@@ -41,7 +41,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/pkg/release"
@@ -197,15 +196,13 @@ type deployCutResult struct {
 // without producing new ones; a rebuild would (see its comment — 2026-10-09,
 // prod). The choice is printed first, either way.
 func buildAndCutForDeploy(ctx context.Context, projectDir, envName string, f deployCmdFlags, ledger envLedger) (deployCutResult, error) {
-	choice := chooseDeployRelease(ctx, deployReuseQuery{
-		ProjectDir:    projectDir,
-		Env:           envName,
-		Provenance:    captureReleaseProvenance(ctx, projectDir),
-		RenderOptions: f.renderOptions,
-		Releases:      ledger.Releases,
-		Now:           time.Now(),
-	})
-	choice.announce(os.Stdout, envName)
+	choice := decideDeployRelease(ctx, projectDir, envName, f.renderOptions, ledger)
+	choice.announce(os.Stdout, envName, false)
+	if dirtyCutNeedsConfirmation(ctx, projectDir, envName, choice) {
+		if err := gateDirtyCut(envName, choice, *newDeployConfirm(f.promote, choice.Version), progressWriter(f.jsonOut)); err != nil {
+			return deployCutResult{}, err
+		}
+	}
 	if choice.Reuse != nil {
 		return deployCutResult{Version: choice.Reuse.Version, Reused: true}, nil
 	}

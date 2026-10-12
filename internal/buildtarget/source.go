@@ -97,11 +97,11 @@ func CaptureSource(ctx context.Context, dir, projectDir string) (*Source, error)
 	// --no-optional-locks: the checkout is usually someone else's working
 	// copy (a sibling repo another process is using), and a status that
 	// refreshes the index takes a lock it has no business holding.
-	status, err := gitLine(ctx, top, "--no-optional-locks", "status", "--porcelain", "--untracked-files=all")
+	changes, err := release.InspectCheckout(ctx, top)
 	if err != nil {
 		return nil, fmt.Errorf("capture the source checkout of %s: %w", dir, err)
 	}
-	src := &Source{Dir: top, Commit: head, Dirty: status != ""}
+	src := &Source{Dir: top, Commit: head, Dirty: changes.Dirty()}
 	if url, err := gitLine(ctx, top, "remote", "get-url", "origin"); err == nil {
 		src.Repo = release.CanonicalRepo(url)
 	}
