@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`forge env deploy <env> --offline-ledger`: a break-glass for a hosted ledger
+  whose control plane is down.** With the control plane unreachable, a
+  `forge.ControlPlane` env could not resolve its current release, and
+  `FORGE_LEDGER=machine` hit the unimported-ledger refusal without the live
+  release; the only fallback was an unrehearsed fresh cut that rebuilds every
+  image. forge now keeps a read-through copy of each hosted env's current
+  promotion and release (per project and env, under `$FORGE_LEDGER_HOME`),
+  refreshed by every successful ledger read or write. `--offline-ledger`
+  deploys that release by its recorded digests with no build and no contact
+  with the control plane, prints the copy's age and what it will replay, and
+  queues the promotion (with the apply's verdict). The next successful ledger
+  read replays the queue idempotently, as a compare-and-set against the
+  promotion the copy named: if the env moved meanwhile the record is refused
+  and stays queued rather than overwriting it. It redeploys the cached release
+  only, refuses envs whose hosted tiers or hub-converged clusters the control
+  plane applies, and is the only bypass of the unimported-ledger refusal.
+
+### Added
+
 - **Telemetry credentials rotate with no restart.** `forge/pkg/observe`
   honours `OTEL_EXPORTER_OTLP_HEADERS_FILE` (and
   `OTEL_EXPORTER_OTLP_<SIGNAL>_HEADERS_FILE`): a file in the

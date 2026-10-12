@@ -243,6 +243,9 @@ type envLedger struct {
 	// reports where records go can say what was overridden, rather than
 	// letting the override read as "this env declares nothing".
 	OverriddenEndpoint string
+	// Offline is set when `--offline-ledger` replaced a hosted ledger with
+	// its cached copy (offline_ledger.go). Nil otherwise.
+	Offline *offlineBindings
 }
 
 // ledgerOnly reports a hosted-ledger env whose control plane converges NONE
@@ -285,6 +288,13 @@ func ledgerFor(ctx context.Context, projectDir, env string) (envLedger, error) {
 	if err != nil {
 		return envLedger{}, err
 	}
+	// --offline-ledger is the one thing that bypasses the unimported-
+	// checkout refusal: the cached ledger cannot be asked what it has
+	// imported, and an operator in an outage has chosen to deploy without
+	// consulting it. Nothing else — no env var, no other flag — does.
+	if l.Offline != nil {
+		return l, nil
+	}
 	if err := checkLedgerImported(ctx, projectDir, env, l); err != nil {
 		return envLedger{}, err
 	}
@@ -307,13 +317,48 @@ func selectLedger(ctx context.Context, projectDir, env string) (envLedger, error
 		// control plane, so the answer is this machine's ledger. This
 		// is how a test project, and an env named only on the command
 		// line, keep working.
+		if offlineLedgerRequested(ctx) {
+			return envLedger{}, fmt.Errorf("--offline-ledger: this checkout has no deploy/kcl/%s/main.k, so env %q declares no control plane to be offline from", env, env)
+		}
 		return machineLedger(projectDir)
 	}
 	entities, err := RenderKCL(ctx, projectDir, env)
 	if err != nil {
 		return envLedger{}, fmt.Errorf("choose the release ledger for env %q: render deploy/kcl/%s: %w", env, env, err)
 	}
+	if offlineLedgerRequested(ctx) {
+		return offlineLedgerForEntities(env, entities, projectDir)
+	}
 	return ledgerForEntities(env, entities, projectDir)
+}
+
+// offlineLedgerForEntities is --offline-ledger's selection: the env's cached
+// ledger, for an env whose ledger is a control plane and whose deploy this
+// machine alone applies. Nothing that could reach the control plane runs — not
+// the credential, not the client.
+func offlineLedgerForEntities(env string, entities *KCLEntities, projectDir string) (envLedger, error) {
+	decl := declarationFromEntities(entities)
+	if decl == nil {
+		return envLedger{}, fmt.Errorf("--offline-ledger: env %q keeps its ledger on this machine, not on a control plane, so there is no hosted ledger to be offline from", env)
+	}
+	if sel, err := ledgerSelectionFromEnv(); err != nil {
+		return envLedger{}, err
+	} else if sel == ledgerSelectMachine {
+		return envLedger{}, fmt.Errorf("--offline-ledger and %s=%s contradict each other: one deploys from the cached hosted ledger, the other from this machine's own", ledgerSelectionEnv, ledgerSelectMachine)
+	}
+	ep, err := cloud.ResolveEndpoint(env, decl)
+	if err != nil {
+		return envLedger{}, err
+	}
+	base := envLedger{
+		HubConverged: envConvergedByHub(entities),
+		HostedTiers:  hostedTiersOf(entities),
+	}
+	base.Mixed = envAppliesLocally(entities) && !base.HubConverged
+	if !base.ledgerOnly() {
+		return envLedger{}, offlineShapeError(env, ep.URL, base.HubConverged, base.HostedTiers)
+	}
+	return openOfflineLedger(projectDir, env, ep.URL, base)
 }
 
 // ledgerForEntities is the render-free half of ledgerFor, split out so the
@@ -366,7 +411,7 @@ func ledgerForEntities(env string, entities *KCLEntities, projectDir string) (en
 	l.HubConverged = envConvergedByHub(entities)
 	l.Mixed = envAppliesLocally(entities) && !l.HubConverged
 	l.HostedTiers = hostedTiersOf(entities)
-	return l, nil
+	return attachHostedMirror(l, projectDir), nil
 }
 
 // bindingStoreFor is ledgerFor for the callers that need only the promotion

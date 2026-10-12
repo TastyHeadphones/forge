@@ -666,6 +666,11 @@ type hostedStore struct {
 	// holds is promotion id → what the write said it is queued on, for the
 	// promotions THIS process appended (see QueuedHolds).
 	holds map[string][]deploytarget.HostedHold
+
+	// mirror is the local read-through copy of this ledger (hosted_cache.go).
+	// Nil when the project has none (a test, an unnamed project).
+	mirror   *hostedMirror
+	replayed map[string]bool // env → queue already replayed by this process
 }
 
 // hostedLedger binds both halves of an env's ledger to one client. project
@@ -760,8 +765,22 @@ func (s *hostedStore) promotionFromWire(env string, w wirePromotion) (release.Pr
 // Current is the newest ListPromotions entry. An environment the control
 // plane has never heard of has, by definition, never been promoted.
 func (s *hostedStore) Current(ctx context.Context, env string) (release.Promotion, bool, error) {
+	p, bound, err := s.current(ctx, env)
+	if err != nil {
+		return p, bound, err
+	}
+	// The control plane just answered: replay what an offline deploy queued,
+	// then read again so the caller sees the ledger as that deploy left it.
+	if s.replayOnContact(ctx, env) {
+		return s.current(ctx, env)
+	}
+	return p, bound, nil
+}
+
+func (s *hostedStore) current(ctx context.Context, env string) (release.Promotion, bool, error) {
 	id, err := s.envID(ctx, env)
 	if errors.Is(err, errHostedEnvNotFound) {
+		s.remember(ctx, env, release.Promotion{}, false)
 		return release.Promotion{}, false, nil
 	}
 	if err != nil {
@@ -774,12 +793,14 @@ func (s *hostedStore) Current(ctx context.Context, env string) (release.Promotio
 		return release.Promotion{}, false, err
 	}
 	if len(resp.Promotions) == 0 {
+		s.remember(ctx, env, release.Promotion{}, false)
 		return release.Promotion{}, false, nil
 	}
 	p, err := s.promotionFromWire(env, resp.Promotions[0])
 	if err != nil {
 		return release.Promotion{}, false, err
 	}
+	s.remember(ctx, env, p, true)
 	return p, true, nil
 }
 
@@ -895,6 +916,9 @@ func (s *hostedStore) Append(ctx context.Context, p release.Promotion, guard app
 		return release.Promotion{}, err
 	}
 	written, err := s.promotionFromWire(p.Env, resp.Promotion)
+	if err == nil {
+		s.remember(ctx, p.Env, written, true)
+	}
 	if err == nil && len(resp.Holds) > 0 {
 		s.mu.Lock()
 		if s.holds == nil {

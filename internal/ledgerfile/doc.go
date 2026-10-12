@@ -27,6 +27,8 @@
 //	  promotions/<env>.jsonl
 //	  gates/<env>.jsonl     the post-promote evidence the old file ledger could not hold
 //	  bundles.jsonl         BundleRecord (the blob is in ./oci/)
+//	  hosted-cache/<env>.jsonl  last-known state of a HOSTED env's ledger (--offline-ledger)
+//	  hosted-queue/<env>.jsonl  promotions made offline, awaiting replay
 //	  applies/<env>.jsonl   Apply and ApplyOutcome lines; outcome joined by apply id
 //	  sessions.jsonl        LocalSession heartbeats are COMPACTED (the only non-append file)
 //	  verifications.jsonl   reserved for source verification (deferred with §9 to #516)
