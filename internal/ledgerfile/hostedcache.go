@@ -43,6 +43,21 @@ type HostedSnapshot struct {
 	// Release is the release Current names, with the digests it pins. Nil
 	// when it could not be read at refresh time.
 	Release *release.Release `json:"release,omitempty"`
+	// History is the promotions BEFORE Current, newest first, each with the
+	// release it bound. Together with Current it is the break-glass window:
+	// the releases an offline deploy can roll back to. Window is how many
+	// promotions (Current included) the snapshot was asked to keep; zero
+	// means History was never read, so a reader refetches it.
+	History []CachedPromotion `json:"history,omitempty"`
+	Window  int               `json:"window,omitempty"`
+}
+
+// CachedPromotion is one cached promotion and the release it bound. Release
+// is nil when the release could not be read at refresh time: the promotion is
+// then listed but cannot be deployed offline (its digests are unknown).
+type CachedPromotion struct {
+	Promotion release.Promotion `json:"promotion"`
+	Release   *release.Release  `json:"release,omitempty"`
 }
 
 func (h HostedSnapshot) validate() error {
@@ -54,7 +69,14 @@ func (h HostedSnapshot) validate() error {
 	case h.Bound && h.Current == nil:
 		return fmt.Errorf("%w: a bound hosted snapshot needs its promotion", release.ErrInvalid)
 	case h.Bound:
-		return h.Current.Validate()
+		if err := h.Current.Validate(); err != nil {
+			return err
+		}
+	}
+	for _, c := range h.History {
+		if err := c.Promotion.Validate(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -78,6 +100,11 @@ type QueuedPromotion struct {
 	QueuedAt            time.Time     `json:"queued_at"`
 	// CacheRefreshedAt is the age of the cache this was decided from.
 	CacheRefreshedAt time.Time `json:"cache_refreshed_at"`
+	// AfterKey is the queued record this one was made on top of, when an
+	// earlier offline deploy in the same outage had not replayed yet (a second
+	// rollback). The replay sends it only once that record has landed, and
+	// compare-and-sets against the promotion that record created.
+	AfterKey string `json:"after_key,omitempty"`
 	// Gates are the evidence recorded after the apply ran (its verdict).
 	Gates []release.Gate `json:"gates,omitempty"`
 }
@@ -178,6 +205,20 @@ func (s *Store) DropQueuedPromotion(env, key string) error {
 			}
 		}
 		return kept, nil
+	})
+}
+
+// RebaseQueued re-points the records queued on top of afterKey at the
+// promotion that record created, once it has landed. Persisted so a replay
+// interrupted between two records resumes from the right expectation.
+func (s *Store) RebaseQueued(env, afterKey, promotionID string) error {
+	return s.rewriteQueue(env, func(all []QueuedPromotion) ([]QueuedPromotion, error) {
+		for i := range all {
+			if all[i].AfterKey == afterKey {
+				all[i].AfterKey, all[i].ExpectedPromotionID = "", promotionID
+			}
+		}
+		return all, nil
 	})
 }
 

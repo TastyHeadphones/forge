@@ -355,6 +355,7 @@ func registerDeployApplyFlags(cmd *cobra.Command, f *deployCmdFlags) {
 	flags.BoolVar(&f.skipPreflight, "skip-preflight", false, "Skip the deploy preflight (verify referenced Secret keys + container images exist on the live target BEFORE applying). Default-on for remote/cloud clusters; bypass at your own risk.")
 	flags.BoolVar(&f.noDigest, "no-digest", false, "Deploy by the mutable :tag even when the build state captured an immutable image digest. By default forge pins the manifest to <image>@sha256:... so a re-tagged/cached layer can't ship; this escape hatch restores tag-based references.")
 	flags.BoolVar(&f.offlineLedger, "offline-ledger", false, "Break-glass for a control plane that is down: deploy the env's cached CURRENT release by its recorded digests (nothing is built, the ledger is not contacted) and queue the promotion record, replayed idempotently on the next successful ledger contact. Refuses a hosted tier and a hub-converged env, and a move to any other release. Prints the cache's age; the cache is refreshed by every successful ledger read or write")
+	flags.StringVar(&f.offlineTo, "to", "", "With --offline-ledger: deploy this CACHED release instead of the current one — a release version, a cached promotion id, or `previous` (the release before the current one). The rollback for a bad release that took the control plane down. Refused if the release is not in this machine's offline copy (`forge env status <env>` lists what is)")
 	flags.BoolVar(&f.jsonOut, "json", false, "Emit machine-readable JSON describing the whole invocation — mode (explain/dry_run/apply), the declared-cluster guard verdict, the target cluster + namespace, the preflight findings, per-image digest-vs-tag pinning, the resource identities applied, and the per-resource rollout outcome (ready / failed / timed_out / not_waited). Works with --explain and --dry-run, which is how a UI previews a deploy. Same exit codes as text mode; the human output moves to stderr so stdout carries exactly one JSON document.")
 	flags.StringVar(&f.rolloutMode, "rollout", "wait", "What to do after the manifests land: 'wait' (wait for every Deployment/Job and FAIL if any does not become ready — the default), 'warn' (wait and report, but exit 0), or 'skip' (apply and return immediately).")
 	flags.DurationVar(&f.rolloutTimeout, "rollout-timeout", 0, "Per-resource readiness budget (e.g. 90s, 10m). Applies to EACH Deployment and one-shot Job, not the set. Default 5m.")
@@ -508,6 +509,9 @@ type deployCmdFlags struct {
 	// offlineLedger deploys the cached current release with the hosted
 	// ledger unreachable (offline_ledger.go).
 	offlineLedger bool
+	// offlineTo names the cached release --offline-ledger deploys: a release
+	// version, a cached promotion id, or "previous".
+	offlineTo string
 	// renderOptions are raw `-D name=value` values pushed into the env's KCL
 	// before any render this command does.
 	renderOptions []string
@@ -536,6 +540,9 @@ type deployCmdFlags struct {
 func dispatchDeployCmd(ctx context.Context, envName string, f deployCmdFlags) error {
 	if err := bindBuildRenderOptions(buildOptions{env: envName, renderOptions: f.renderOptions}); err != nil {
 		return err
+	}
+	if f.offlineTo != "" && !f.offlineLedger {
+		return errors.New("--to belongs to --offline-ledger (the break-glass rollback). Online, name the release: forge env deploy " + envName + " <version>")
 	}
 	if f.offlineLedger {
 		return dispatchOfflineDeploy(ctx, envName, f)

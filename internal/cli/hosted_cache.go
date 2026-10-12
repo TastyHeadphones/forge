@@ -26,6 +26,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -74,27 +76,105 @@ func (m *hostedMirror) warnOnce(err error) {
 	})
 }
 
-// remember records what the control plane just said env runs. Best-effort.
+// offlineWindowEnv sets how many of an env's latest promotions (current
+// included) the offline copy keeps.
+const offlineWindowEnv = "FORGE_OFFLINE_LEDGER_WINDOW"
+
+const (
+	defaultOfflineWindow = 5
+	maxOfflineWindow     = 50
+)
+
+// offlineWindow is the number of promotions the offline copy keeps: the
+// break-glass depth. An unparsable value is the default, never an error — this
+// runs inside ordinary ledger reads, which must not fail over a cache setting.
+func offlineWindow() int {
+	n, err := strconv.Atoi(strings.TrimSpace(os.Getenv(offlineWindowEnv)))
+	switch {
+	case err != nil || n < 1:
+		return defaultOfflineWindow
+	case n > maxOfflineWindow:
+		return maxOfflineWindow
+	}
+	return n
+}
+
+// remember records what the control plane just said env runs, and the
+// promotions before it. Best-effort.
+//
+// A refresh whose current promotion is the one already held costs no extra
+// call: only its timestamp moves. Otherwise the last N promotions are read and
+// each release is fetched once (or reused from the previous copy), because a
+// rollback needs the digests a promotion bound, not just its version label.
 func (s *hostedStore) remember(ctx context.Context, env string, p release.Promotion, bound bool) {
 	m := s.mirror
 	if m == nil {
 		return
 	}
-	snap := ledgerfile.HostedSnapshot{Env: env, Endpoint: m.endpoint, RefreshedAt: time.Now().UTC().Truncate(time.Second), Bound: bound}
+	window := offlineWindow()
+	snap := ledgerfile.HostedSnapshot{Env: env, Endpoint: m.endpoint, RefreshedAt: time.Now().UTC().Truncate(time.Second), Bound: bound, Window: window}
 	if bound {
 		snap.Current = &p
-		// The release is the half that makes the cache deployable: the
-		// digests the promotion pinned are in it. Re-read only when the
-		// binding moved, so the common refresh costs no extra call.
 		prev, err := m.store.HostedSnapshot(env)
-		if err == nil && prev != nil && prev.Endpoint == m.endpoint && prev.Bound && prev.Current != nil && prev.Current.ID == p.ID && prev.Release != nil {
-			snap.Release = prev.Release
-		} else if rel, gerr := s.Get(ctx, p.Release); gerr == nil && rel != nil {
-			snap.Release = rel
+		if err != nil || prev == nil || prev.Endpoint != m.endpoint {
+			prev = nil
+		}
+		if prev != nil && prev.Bound && prev.Current != nil && prev.Current.ID == p.ID &&
+			prev.Release != nil && prev.Window == window {
+			snap.Release, snap.History = prev.Release, prev.History
+		} else {
+			s.fillWindow(ctx, env, p, window, prev, &snap)
 		}
 	}
 	if err := m.store.PutHostedSnapshot(snap); err != nil {
 		m.warnOnce(err)
+	}
+}
+
+// fillWindow reads the promotions before p and the releases they bound.
+func (s *hostedStore) fillWindow(ctx context.Context, env string, p release.Promotion, window int, prev *ledgerfile.HostedSnapshot, snap *ledgerfile.HostedSnapshot) {
+	known := map[string]*release.Release{}
+	if prev != nil {
+		if prev.Release != nil {
+			known[prev.Release.Version] = prev.Release
+		}
+		for _, h := range prev.History {
+			if h.Release != nil {
+				known[h.Release.Version] = h.Release
+			}
+		}
+	}
+	releaseOf := func(version string) *release.Release {
+		if r, ok := known[version]; ok {
+			return r
+		}
+		r, err := s.Get(ctx, version)
+		if err != nil || r == nil {
+			return nil
+		}
+		known[version] = r
+		return r
+	}
+	snap.Release = releaseOf(p.Release)
+	snap.History = []ledgerfile.CachedPromotion{}
+	if window <= 1 {
+		return
+	}
+	page, err := s.HistoryPage(ctx, env, historyQuery{Limit: window})
+	if err != nil {
+		// The current promotion is still cached. Window 0 says the history
+		// was never read, so the next refresh retries it.
+		snap.History, snap.Window = nil, 0
+		return
+	}
+	for _, h := range page.Promotions {
+		if h.ID == p.ID {
+			continue
+		}
+		if len(snap.History) >= window-1 {
+			break
+		}
+		snap.History = append(snap.History, ledgerfile.CachedPromotion{Promotion: h, Release: releaseOf(h.Release)})
 	}
 }
 
@@ -143,12 +223,25 @@ func (s *hostedStore) replayQueue(ctx context.Context, env string, discard bool)
 	if err != nil {
 		return res, err
 	}
+	// landed: queue key -> the promotion id it created, for the records that
+	// were made on top of it.
+	landed := map[string]string{}
 	for _, q := range queue {
 		if q.Endpoint != m.endpoint {
 			res.Left++
 			continue
 		}
-		done, refusal, err := s.replayOne(ctx, q)
+		if q.AfterKey != "" {
+			id, ok := landed[q.AfterKey]
+			if !ok {
+				// The record this one stands on has not landed (refused or
+				// still queued): this one cannot either.
+				res.Left++
+				continue
+			}
+			q.AfterKey, q.ExpectedPromotionID = "", id
+		}
+		done, refusal, err := s.replayOne(ctx, q, landed)
 		switch {
 		case err != nil:
 			return res, err
@@ -176,7 +269,7 @@ func (s *hostedStore) replayQueue(ctx context.Context, env string, discard bool)
 
 // replayOne replays a single queued promotion and drops it once the control
 // plane holds it. A non-empty refusal means the server judged it and said no.
-func (s *hostedStore) replayOne(ctx context.Context, q ledgerfile.QueuedPromotion) (done bool, refusal string, err error) {
+func (s *hostedStore) replayOne(ctx context.Context, q ledgerfile.QueuedPromotion, landed map[string]string) (done bool, refusal string, err error) {
 	guard := appendGuard{ExpectedCurrentID: q.ExpectedPromotionID, ExpectUnbound: q.ExpectedPromotionID == ""}
 	note := fmt.Sprintf("replayed from an offline deploy made %s", q.QueuedAt.Format(time.RFC3339))
 	if q.Note != "" {
@@ -204,6 +297,10 @@ func (s *hostedStore) replayOne(ctx context.Context, q ledgerfile.QueuedPromotio
 				return false, "", err
 			}
 		}
+	}
+	landed[q.Key] = got.ID
+	if err := s.mirror.store.RebaseQueued(q.Env, q.Key, got.ID); err != nil {
+		return false, "", err
 	}
 	return true, "", s.mirror.store.DropQueuedPromotion(q.Env, q.Key)
 }

@@ -417,10 +417,17 @@ func TestDeployCmd_DeclaresEveryReleaseFlag(t *testing.T) {
 	// means. (`--wait` was retired with it and came back with ONE new
 	// meaning — wait through a queue on billing, which the default does not
 	// — so it no longer asks for what a deploy already has.)
-	for _, gone := range []string{"deploy", "to"} {
+	for _, gone := range []string{"deploy"} {
 		if cmd.Flags().Lookup(gone) != nil {
 			t.Errorf("--%s must not exist on `forge env deploy`", gone)
 		}
+	}
+	// `promote --to` is gone too. `--to` exists again with ONE meaning —
+	// the break-glass rollback target of --offline-ledger — and is refused
+	// on its own, so the retired online spelling still does nothing.
+	if err := dispatchDeployCmd(context.Background(), "prod", deployCmdFlags{offlineTo: "previous"}); err == nil ||
+		!strings.Contains(err.Error(), "belongs to --offline-ledger") {
+		t.Errorf("--to without --offline-ledger must be refused, got %v", err)
 	}
 	cmd.SetArgs([]string{"prod", "v1", "--expect-current", "x", "--expect-unbound"})
 	cmd.SetOut(&strings.Builder{})

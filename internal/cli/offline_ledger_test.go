@@ -265,8 +265,8 @@ func TestOfflineBindings_AppendQueuesAndRefusesAMove(t *testing.T) {
 	}
 
 	if _, err := l.Bindings.Append(ctx, release.Promotion{Env: "prod", Release: "v2", Kind: release.KindPromote}, guard); err == nil ||
-		!strings.Contains(err.Error(), "only redeploy") {
-		t.Fatalf("a move must be refused, got %v", err)
+		!strings.Contains(err.Error(), "not in the offline copy") {
+		t.Fatalf("an uncached release must be refused, got %v", err)
 	}
 	if q, _ := f.store(t).QueuedPromotions("prod"); len(q) != 1 {
 		t.Fatalf("a refused append must queue nothing; queue = %d", len(q))
@@ -331,7 +331,7 @@ func TestOfflineReplay_IsIdempotent(t *testing.T) {
 		q = c
 	}
 	for i := 0; i < 2; i++ {
-		if _, _, err := hs.replayOne(context.Background(), q); err != nil {
+		if _, _, err := hs.replayOne(context.Background(), q, map[string]string{}); err != nil {
 			t.Fatalf("replay attempt %d: %v", i, err)
 		}
 	}
@@ -391,7 +391,7 @@ func TestOfflineBanner_PrintsAgeAndReplay(t *testing.T) {
 	l := f.offline(t)
 	l.Offline.now = func() time.Time { return l.Offline.snap.RefreshedAt.Add(9 * 24 * time.Hour) }
 	var out bytes.Buffer
-	offlineBanner(&out, "prod", l)
+	offlineBanner(&out, "prod", "v1", l)
 	for _, want := range []string{"NOT being consulted", "216h0m0s ago", "v1", f.current.ID, "WARNING", "queues 1 promotion record", "replayed idempotently"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("banner missing %q:\n%s", want, out.String())
@@ -535,8 +535,8 @@ func TestDeployOfflineLedger_UnreachableControlPlane(t *testing.T) {
 
 	// Moving to another release is not an offline decision.
 	if _, err := runForge(t, "env", "deploy", "prod", "v2", "--offline-ledger", "--yes"); err == nil ||
-		!strings.Contains(err.Error(), "cached current release") {
-		t.Fatalf("a move offline must be refused, got %v", err)
+		!strings.Contains(err.Error(), "not in this machine's offline copy") {
+		t.Fatalf("an uncached release must be refused, got %v", err)
 	}
 
 	// Recovery: same address, same control plane, next contact replays.
@@ -567,4 +567,436 @@ func TestDeployOfflineLedger_UnreachableControlPlane(t *testing.T) {
 	if g := cp.fake.gates[promoted.ID]; len(g) != 1 || g[0].Name != applyGateName {
 		t.Fatalf("the apply's verdict must reach the ledger once, got %+v", g)
 	}
+}
+
+// ─── rollback: the window, --to previous, replay ─────────────────────────────
+
+// promoteChain cuts and promotes versions in order on the fixture's control
+// plane, so the env has a history of len(versions)+1 promotions (v1 first).
+func (f *offlineFixture) promoteChain(t *testing.T, versions ...string) {
+	t.Helper()
+	ctx := context.Background()
+	hs := f.ledger.Bindings.(*hostedStore)
+	for i, v := range versions {
+		if _, err := hs.Cut(ctx, ociRelease(v, map[string]string{offlineTestImage: sha(string(rune('3' + i)))})); err != nil {
+			t.Fatalf("cut %s: %v", v, err)
+		}
+		cur, _, err := hs.Current(ctx, "prod")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.current, err = hs.Append(ctx, release.Promotion{Env: "prod", Release: v, Kind: release.KindPromote}, appendGuard{ExpectedCurrentID: cur.ID}); err != nil {
+			t.Fatalf("promote %s: %v", v, err)
+		}
+	}
+}
+
+// newProcess makes hs behave as a fresh `forge` invocation: the once-per-
+// process replay has not run yet.
+func newProcess(hs *hostedStore) {
+	hs.mu.Lock()
+	hs.replayed = nil
+	hs.mu.Unlock()
+}
+
+func cachedVersions(snap *ledgerfile.HostedSnapshot) []string {
+	out := []string{snap.Current.Release}
+	for _, h := range snap.History {
+		out = append(out, h.Promotion.Release)
+	}
+	return out
+}
+
+// The window keeps the last N promotions, newest first, each WITH the release
+// (its digests) — and trims older ones as the env moves on.
+func TestHostedCache_WindowTrimsToN(t *testing.T) {
+	t.Setenv(offlineWindowEnv, "3")
+	f := newOfflineFixture(t)
+	f.promoteChain(t, "v2", "v3", "v4", "v5")
+	snap, err := f.store(t).HostedSnapshot("prod")
+	if err != nil || snap == nil {
+		t.Fatalf("snapshot: %v %v", snap, err)
+	}
+	if got := strings.Join(cachedVersions(snap), ","); got != "v5,v4,v3" {
+		t.Fatalf("a window of 3 must hold the last three promotions newest first, got %s", got)
+	}
+	if snap.Window != 3 {
+		t.Fatalf("window = %d, want 3", snap.Window)
+	}
+	for _, h := range snap.History {
+		if h.Release == nil || len(h.Release.SharedDigests()) == 0 {
+			t.Fatalf("every cached promotion must carry its release digests, got %+v", h)
+		}
+	}
+}
+
+func TestOfflineWindow_DefaultAndBounds(t *testing.T) {
+	for in, want := range map[string]int{"": defaultOfflineWindow, "junk": defaultOfflineWindow, "0": defaultOfflineWindow, "-2": defaultOfflineWindow, "2": 2, "9999": maxOfflineWindow} {
+		t.Setenv(offlineWindowEnv, in)
+		if got := offlineWindow(); got != want {
+			t.Errorf("%s=%q -> %d, want %d", offlineWindowEnv, in, got, want)
+		}
+	}
+}
+
+// A repeated read of the same promotion refreshes the timestamp only: it does
+// not re-fetch the history or the releases.
+func TestHostedCache_RefreshOfUnchangedPromotionCostsNoExtraReads(t *testing.T) {
+	f := newOfflineFixture(t)
+	f.promoteChain(t, "v2")
+	hs := f.ledger.Bindings.(*hostedStore)
+	if _, _, err := hs.Current(context.Background(), "prod"); err != nil {
+		t.Fatal(err)
+	}
+	f.cp.fake.mu.Lock()
+	f.cp.fake.calls = nil
+	f.cp.fake.mu.Unlock()
+	if _, _, err := hs.Current(context.Background(), "prod"); err != nil {
+		t.Fatal(err)
+	}
+	f.cp.fake.mu.Lock()
+	defer f.cp.fake.mu.Unlock()
+	for _, c := range f.cp.fake.calls {
+		if strings.HasSuffix(c, "/GetRelease") {
+			t.Fatalf("an unchanged promotion must not refetch releases; calls = %v", f.cp.fake.calls)
+		}
+	}
+}
+
+// The break-glass: v3 is the bad release that took the control plane down;
+// `--to previous` deploys v2 by ITS cached digests with the server dead.
+func TestOfflineRollback_ToPreviousUsesTheCachedDigest(t *testing.T) {
+	f := newOfflineFixture(t)
+	f.promoteChain(t, "v2", "v3")
+	f.srv.Close()
+	ctx := withOfflineLedger(context.Background())
+	l := f.offline(t)
+
+	if cur, _, _ := l.Bindings.Current(ctx, "prod"); cur.Release != "v3" {
+		t.Fatalf("precondition: current = %s", cur.Release)
+	}
+	target, err := l.Offline.resolveTarget("prod", "previous")
+	if err != nil || target != "v2" {
+		t.Fatalf("previous = %q, %v; want v2", target, err)
+	}
+	if byID, err := l.Offline.resolveTarget("prod", f.current.ID); err != nil || byID != "v3" {
+		t.Fatalf("a cached promotion id resolves to its release: %q %v", byID, err)
+	}
+
+	plan, err := computePromotePlan(ctx, promotePlanOptions{Env: "prod", Version: "v2", ProjectDir: f.dir, Bindings: l.Bindings, Releases: l.Releases, Git: allCommitsPresent()})
+	if err != nil {
+		t.Fatalf("offline plan: %v", err)
+	}
+	if plan.Direction != promoteDirectionBehind {
+		t.Fatalf("a rollback must plan as a move BACK, got %v", plan.Direction)
+	}
+	if got := plan.targetResolved[offlineTestImage]; got != sha("3") {
+		t.Fatalf("rollback pins %q, want v2's digest %s", got, sha("3"))
+	}
+
+	got, err := l.Bindings.Append(ctx, release.Promotion{Env: "prod", Release: "v2", Kind: release.KindPromote, Note: "bad v3"},
+		appendGuard{ExpectedCurrentID: f.current.ID})
+	if err != nil || got.Release != "v2" || !strings.HasPrefix(got.ID, queuedPromotionPrefix) {
+		t.Fatalf("rollback append = %+v %v; want a queued v2 promotion", got, err)
+	}
+	q, _ := f.store(t).QueuedPromotions("prod")
+	if len(q) != 1 || q[0].Release != "v2" || q[0].ExpectedPromotionID != f.current.ID || q[0].AfterKey != "" {
+		t.Fatalf("queue = %+v; want one v2 record expecting the cached v3 promotion", q)
+	}
+	// After the rollback the effective current is v2, so "previous" is now v1.
+	if cur, _, _ := l.Bindings.Current(ctx, "prod"); cur.Release != "v2" {
+		t.Fatalf("after the rollback the offline env runs v2, got %s", cur.Release)
+	}
+}
+
+// A release the copy has never held cannot be pinned to digests: refused with
+// the list of what can be deployed.
+func TestOfflineRollback_UncachedReleaseIsRefused(t *testing.T) {
+	t.Setenv(offlineWindowEnv, "2")
+	f := newOfflineFixture(t)
+	f.promoteChain(t, "v2", "v3") // window 2 keeps v3, v2 — v1 fell out
+	l := f.offline(t)
+
+	for _, to := range []string{"v1", "v99", "no-such-promotion-id"} {
+		_, err := l.Offline.resolveTarget("prod", to)
+		if err == nil || !strings.Contains(err.Error(), "not in this machine's offline copy") ||
+			!strings.Contains(err.Error(), "v3 (current), v2") || strings.Contains(err.Error(), "v1,") {
+			t.Fatalf("--to %s: want a refusal naming what IS cached, got %v", to, err)
+		}
+	}
+	if _, err := l.Offline.resolveTarget("prod", "v2"); err != nil {
+		t.Fatalf("a cached release is accepted: %v", err)
+	}
+	// And Append backstops it, so a caller that skips resolveTarget still cannot.
+	if _, err := l.Bindings.Append(withOfflineLedger(context.Background()), release.Promotion{Env: "prod", Release: "v1", Kind: release.KindPromote},
+		appendGuard{ExpectedCurrentID: f.current.ID}); err == nil {
+		t.Fatal("Append of an uncached release must be refused")
+	}
+	if q, _ := f.store(t).QueuedPromotions("prod"); len(q) != 0 {
+		t.Fatalf("a refused rollback queues nothing, got %d", len(q))
+	}
+}
+
+func TestOfflineRollback_PreviousWithNothingBefore(t *testing.T) {
+	f := newOfflineFixture(t) // only v1
+	l := f.offline(t)
+	if _, err := l.Offline.resolveTarget("prod", "previous"); err == nil || !strings.Contains(err.Error(), "no release before v1") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+// A cached release whose digests could not be read at refresh time is listed
+// but not deployable.
+func TestOfflineRollback_UndigestedReleaseIsNotDeployable(t *testing.T) {
+	f := newOfflineFixture(t)
+	f.promoteChain(t, "v2")
+	store := f.store(t)
+	snap, _ := store.HostedSnapshot("prod")
+	snap.History[0].Release = nil
+	if err := store.PutHostedSnapshot(*snap); err != nil {
+		t.Fatal(err)
+	}
+	l := f.offline(t)
+	if _, err := l.Offline.resolveTarget("prod", "previous"); err == nil || !strings.Contains(err.Error(), "digests were not cached") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+// The replay of a rollback promotes the older release on the control plane as
+// a NEW promotion, compare-and-set against the promotion the copy named, with
+// the apply verdict riding on it — and a second replay changes nothing.
+func TestOfflineReplay_Rollback(t *testing.T) {
+	f := newOfflineFixture(t)
+	f.promoteChain(t, "v2", "v3")
+	badID := f.current.ID
+	f.cp.down.Store(true)
+	l := f.offline(t)
+	if _, err := l.Bindings.Append(withOfflineLedger(context.Background()), release.Promotion{Env: "prod", Release: "v2", Kind: release.KindPromote, Note: "rollback"},
+		appendGuard{ExpectedCurrentID: badID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Offline.attachGate("prod", applyOutcomeGate(time.Now().Add(-time.Minute), time.Now(), nil, "", "")); err != nil {
+		t.Fatal(err)
+	}
+	var notices bytes.Buffer
+	prev := hostedCacheNotices
+	hostedCacheNotices = &notices
+	t.Cleanup(func() { hostedCacheNotices = prev })
+
+	f.cp.down.Store(false)
+	hs := f.ledger.Bindings.(*hostedStore)
+	newProcess(hs)
+	before := len(f.cp.fake.promotions["env-prod-uuid"])
+	cur, _, err := hs.Current(context.Background(), "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur.Release != "v2" || cur.ID == badID {
+		t.Fatalf("after the replay the control plane runs v2 under a NEW promotion, got %s/%s", cur.Release, cur.ID)
+	}
+	if got := len(f.cp.fake.promotions["env-prod-uuid"]); got != before+1 {
+		t.Fatalf("a rollback is one new promotion: %d -> %d", before, got)
+	}
+	if g := f.cp.fake.gates[cur.ID]; len(g) != 1 || g[0].Name != applyGateName {
+		t.Fatalf("the apply verdict must ride on the rollback promotion, got %+v", g)
+	}
+	if q, _ := f.store(t).QueuedPromotions("prod"); len(q) != 0 {
+		t.Fatalf("queue = %d after replay", len(q))
+	}
+	if !strings.Contains(notices.String(), "Replayed 1 offline deploy record") {
+		t.Fatalf("got %q", notices.String())
+	}
+	// Idempotent: another contact is a no-op.
+	newProcess(hs)
+	if _, _, err := hs.Current(context.Background(), "prod"); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(f.cp.fake.promotions["env-prod-uuid"]); got != before+1 {
+		t.Fatalf("a second replay added promotions: %d", got)
+	}
+}
+
+// The moved-env refusal still applies to a rollback: if someone promoted v4
+// meanwhile, the rollback is refused and v4 stays.
+func TestOfflineReplay_RollbackRefusedWhenTheEnvMoved(t *testing.T) {
+	f := newOfflineFixture(t)
+	f.promoteChain(t, "v2", "v3")
+	badID := f.current.ID
+	f.cp.down.Store(true)
+	l := f.offline(t)
+	if _, err := l.Bindings.Append(withOfflineLedger(context.Background()), release.Promotion{Env: "prod", Release: "v2", Kind: release.KindPromote},
+		appendGuard{ExpectedCurrentID: badID}); err != nil {
+		t.Fatal(err)
+	}
+	f.cp.down.Store(false)
+	hs := f.ledger.Bindings.(*hostedStore)
+	other := hostedLedger(hs.client, f.srv.URL, "acme", hs.kind).Bindings.(*hostedStore)
+	if _, err := other.Cut(context.Background(), ociRelease("v4", map[string]string{offlineTestImage: sha("9")})); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.Append(context.Background(), release.Promotion{Env: "prod", Release: "v4", Kind: release.KindPromote}, appendGuard{ExpectedCurrentID: badID}); err != nil {
+		t.Fatal(err)
+	}
+	var notices bytes.Buffer
+	prev := hostedCacheNotices
+	hostedCacheNotices = &notices
+	t.Cleanup(func() { hostedCacheNotices = prev })
+	newProcess(hs)
+	cur, _, err := hs.Current(context.Background(), "prod")
+	if err != nil || cur.Release != "v4" {
+		t.Fatalf("v4 must stay current: %+v %v", cur, err)
+	}
+	if q, _ := f.store(t).QueuedPromotions("prod"); len(q) != 1 || !strings.Contains(notices.String(), "was refused") {
+		t.Fatalf("a refused rollback stays queued and is reported: queue=%d notices=%q", len(q), notices.String())
+	}
+}
+
+// Two rollbacks in one outage chain: the second is queued on top of the first
+// and replays only after it, against the promotion the first created.
+func TestOfflineReplay_ChainedRollbacks(t *testing.T) {
+	f := newOfflineFixture(t)
+	f.promoteChain(t, "v2", "v3")
+	f.cp.down.Store(true)
+	ctx := withOfflineLedger(context.Background())
+	l := f.offline(t)
+	if _, err := l.Bindings.Append(ctx, release.Promotion{Env: "prod", Release: "v2", Kind: release.KindPromote}, appendGuard{ExpectedCurrentID: f.current.ID}); err != nil {
+		t.Fatal(err)
+	}
+	l2 := f.offline(t) // a second `forge` invocation in the same outage
+	cur, _, _ := l2.Bindings.Current(ctx, "prod")
+	if cur.Release != "v2" || !strings.HasPrefix(cur.ID, queuedPromotionPrefix) {
+		t.Fatalf("a second offline deploy must see the first one's queued promotion as current, got %+v", cur)
+	}
+	if _, err := l2.Bindings.Append(ctx, release.Promotion{Env: "prod", Release: "v1", Kind: release.KindPromote}, appendGuard{ExpectedCurrentID: cur.ID}); err != nil {
+		t.Fatal(err)
+	}
+	q, _ := f.store(t).QueuedPromotions("prod")
+	if len(q) != 2 || q[1].AfterKey != q[0].Key || q[1].ExpectedPromotionID != "" {
+		t.Fatalf("second record must stand on the first: %+v", q)
+	}
+
+	f.cp.down.Store(false)
+	hs := f.ledger.Bindings.(*hostedStore)
+	newProcess(hs)
+	if got, _, err := hs.Current(context.Background(), "prod"); err != nil || got.Release != "v1" {
+		t.Fatalf("both rollbacks must replay in order, control plane runs %+v %v", got, err)
+	}
+	if q, _ := f.store(t).QueuedPromotions("prod"); len(q) != 0 {
+		t.Fatalf("queue = %d", len(q))
+	}
+}
+
+// `forge env status` shows the break-glass options in advance.
+func TestOfflineCacheReport_ListsWhatIsDeployable(t *testing.T) {
+	f := newOfflineFixture(t)
+	f.promoteChain(t, "v2", "v3")
+	rep := collectOfflineCache(f.ledger.Bindings, "prod")
+	if rep == nil || !rep.Warm || len(rep.Releases) != 3 || !rep.Releases[0].Current || rep.Releases[0].Release != "v3" || rep.Releases[2].Release != "v1" {
+		t.Fatalf("report = %+v", rep)
+	}
+	var out bytes.Buffer
+	writeOfflineCache(&out, "prod", rep)
+	for _, want := range []string{"--offline-ledger", "--to previous", "v3", "(current)", "v2", "v1"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("status block missing %q:\n%s", want, out.String())
+		}
+	}
+	if collectOfflineCache(emptyBindings{}, "prod") != nil {
+		t.Fatal("an env whose ledger is not a control plane has no offline copy to show")
+	}
+}
+
+// The break-glass rollback as an operator runs it: v2 is a bad release that
+// took the control plane down (its server is CLOSED); `--to previous` deploys
+// v1 by its cached digest through the real command, behind the same gate.
+func TestDeployOfflineLedger_RollbackToPrevious(t *testing.T) {
+	if testing.Short() {
+		t.Skip("renders KCL and drives the whole CLI; runs in task test")
+	}
+	cp := &switchableCP{fake: newFakeDeployService(map[string]string{"prod": "env-prod-uuid"})}
+	srv := httptest.NewServer(cp)
+	dir := writeOfflineProject(t, srv.URL)
+	useLedgerHome(t, t.TempDir())
+	t.Chdir(dir)
+	t.Setenv("ACME_CP_TOKEN", "rlat_e2e")
+	t.Setenv("FORGE_HOME", t.TempDir())
+	prevName := hostedProjectName
+	hostedProjectName = func() string { return "acme" }
+	t.Cleanup(func() { hostedProjectName = prevName })
+
+	ctx := context.Background()
+	l, err := ledgerFor(ctx, dir, "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := l.Bindings.(*hostedStore)
+	var good, bad release.Promotion
+	for i, v := range []string{"v1", "v2"} {
+		if _, err := hs.Cut(ctx, ociRelease(v, map[string]string{offlineTestImage: sha(string(rune('1' + i)))})); err != nil {
+			t.Fatal(err)
+		}
+		cur, _, _ := hs.Current(ctx, "prod")
+		p, err := hs.Append(ctx, release.Promotion{Env: "prod", Release: v, Kind: release.KindPromote}, appendGuard{ExpectedCurrentID: cur.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v == "v1" {
+			good = p
+		} else {
+			bad = p
+		}
+	}
+	// The warm-up an operator does once: `forge env status prod` while the
+	// control plane is up (the hosted rollout read itself fails here — the fake
+	// serves none — which must not stop the ledger read that warms the cache).
+	_, _, _ = hs.Current(ctx, "prod")
+
+	var apply capturedClientDeploy
+	apply.install(t)
+	prevWait := runPromoteWait
+	runPromoteWait = func(context.Context, string, envWaitOptions) error { return nil }
+	t.Cleanup(func() { runPromoteWait = prevWait })
+
+	srv.Close()
+
+	// Without --yes the same gate holds: nothing is applied or queued.
+	if out, err := runForge(t, "env", "deploy", "prod", "--offline-ledger", "--to", "previous"); err == nil {
+		t.Fatalf("the confirmation gate must hold offline too, got success:\n%s", out)
+	}
+	if len(apply.calls) != 0 {
+		t.Fatal("an unconfirmed offline rollback applied something")
+	}
+	if q, _ := (func() ([]ledgerfile.QueuedPromotion, error) {
+		s, _ := openMachineLedger(dir)
+		return s.QueuedPromotions("prod")
+	})(); len(q) != 0 {
+		t.Fatalf("an unconfirmed rollback queued %d record(s)", len(q))
+	}
+
+	out, err := runForge(t, "env", "deploy", "prod", "--offline-ledger", "--to", "previous", "--yes")
+	if err != nil {
+		t.Fatalf("offline rollback: %v\n%s", err, out)
+	}
+	for _, want := range []string{"ROLLING prod from v2 to v1", "deployable offline: v2 (current), v1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+	if len(apply.calls) != 1 {
+		t.Fatalf("the rollback must be applied exactly once, got %d", len(apply.calls))
+	}
+	s, _ := openMachineLedger(dir)
+	q, _ := s.QueuedPromotions("prod")
+	if len(q) != 1 || q[0].Release != "v1" || q[0].ExpectedPromotionID != bad.ID || len(q[0].Gates) != 1 {
+		t.Fatalf("queue = %+v; want a v1 record expecting the bad promotion %s, carrying the verdict", q, bad.ID)
+	}
+
+	if _, err := runForge(t, "env", "deploy", "prod", "--offline-ledger", "--to", "v0.1", "--yes"); err == nil ||
+		!strings.Contains(err.Error(), "not in this machine's offline copy") {
+		t.Fatalf("an uncached release must be refused, got %v", err)
+	}
+	if _, err := runForge(t, "env", "deploy", "prod", "--to", "previous", "--yes"); err == nil || !strings.Contains(err.Error(), "belongs to --offline-ledger") {
+		t.Fatalf("--to alone must be refused, got %v", err)
+	}
+	_ = good
 }

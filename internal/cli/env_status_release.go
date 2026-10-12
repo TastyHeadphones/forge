@@ -142,6 +142,10 @@ type envStatusDocument struct {
 	//
 	// Nil when the records were not read.
 	Records *envStatusRecords `json:"records,omitempty"`
+	// OfflineCache lists the releases this machine could deploy with the
+	// control plane down (`--offline-ledger`). Only for an env whose ledger is
+	// a control plane. Never affects the verdict.
+	OfflineCache *offlineCacheReport `json:"offline_cache,omitempty"`
 }
 
 // envTarget is WHERE an environment runs: the kubectl context and the
@@ -291,9 +295,10 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 	// into the document (collectEnvRecords) is what keeps this read off the
 	// verdict path.
 	records := collectEnvRecords(ctx, opts.Records, projectDir, envName, time.Now().UTC())
+	offline := collectOfflineCache(opts.Bindings, envName)
 
 	if !bound {
-		return reportUnboundEnv(declaredLifecycle(ctx, opts.Resolver, projectDir, envName), envName, opts.JSON, opts.Runtime, ledger, staleErr, records)
+		return reportUnboundEnv(declaredLifecycle(ctx, opts.Resolver, projectDir, envName), envName, opts.JSON, opts.Runtime, ledger, staleErr, records, offline)
 	}
 	if len(binding.Resolved) == 0 {
 		// A binding with no resolved digests is a defective binding: it
@@ -368,6 +373,8 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 			Runtime:     opts.Runtime,
 			Ledger:      ledger,
 			Records:     &records,
+
+			OfflineCache: offline,
 		}
 		if queued != nil {
 			report.Queued = queued.document()
@@ -399,6 +406,7 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 	// bad release, and printing the records only on success would withhold
 	// that distinction in precisely the case a reader needs it.
 	writeEnvStatusRecords(os.Stdout, records)
+	writeOfflineCache(os.Stdout, envName, offline)
 
 	if failure != nil {
 		return failure
@@ -529,7 +537,7 @@ func verifyCluster(ctx context.Context, projectDir, envName string, resolved map
 // not use releases, and a permanently-red gate is a deleted gate. Say plainly
 // what the state is and exit 0 — unless this checkout's copy of the ledger is
 // stale (staleErr), in which case "never promoted" is not known either.
-func reportUnboundEnv(lifecycle, envName string, jsonOut bool, runtime *upServicesReport, ledger *ledgerFreshnessReport, staleErr error, records envStatusRecords) error {
+func reportUnboundEnv(lifecycle, envName string, jsonOut bool, runtime *upServicesReport, ledger *ledgerFreshnessReport, staleErr error, records envStatusRecords, offline *offlineCacheReport) error {
 	const unboundDetail = "no release binding — the environment has never been promoted, so nothing is declared and there is nothing to verify"
 	if jsonOut {
 		// Still a complete, valid report. `bound: false` is the
@@ -545,6 +553,8 @@ func reportUnboundEnv(lifecycle, envName string, jsonOut bool, runtime *upServic
 			Runtime:   runtime,
 			Ledger:    ledger,
 			Records:   &records,
+
+			OfflineCache: offline,
 		}
 		if staleErr != nil {
 			report.Detail = staleErr.Error()
@@ -565,6 +575,7 @@ func reportUnboundEnv(lifecycle, envName string, jsonOut bool, runtime *upServic
 	// the normal state of a dev env, and reading it as "nothing is
 	// happening" is what the records block prevents.
 	writeEnvStatusRecords(os.Stdout, records)
+	writeOfflineCache(os.Stdout, envName, offline)
 	return nil
 }
 

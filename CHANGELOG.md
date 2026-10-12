@@ -28,6 +28,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (every `render_contract` golden gains `"control_plane_secrets": []`). See
   `deploy/control-plane-secret` and `migrations/v0.1.45` section 7.
 
+- **`forge env deploy <env> --offline-ledger --to <release|previous>`: roll back
+  with the control plane unreachable.** The realistic outage is a bad release
+  that takes the control plane down, where redeploying the current release
+  does not help. The offline copy of a hosted env's ledger now keeps its last N
+  promotions (default 5, `FORGE_OFFLINE_LEDGER_WINDOW`, max 50) with each
+  release's recorded digests, refreshed on every successful ledger read or
+  write. `--to previous` (or a cached release version or promotion id) deploys
+  one of them by digest behind the usual confirmation gate; a release not in the
+  copy is refused with the list of what is. The rollback is queued and replayed
+  on the next ledger contact with the existing moved-env refusal; several
+  offline deploys in one outage chain and replay in order. `forge env status`
+  lists the releases the copy can deploy (`offline_cache` in `--json`), so the
+  break-glass options are visible before the outage; each operator machine needs
+  one successful `forge env status` to warm its copy.
 - **`forge env deploy <env> --offline-ledger`: a break-glass for a hosted ledger
   whose control plane is down.** With the control plane unreachable, a
   `forge.ControlPlane` env could not resolve its current release, and
