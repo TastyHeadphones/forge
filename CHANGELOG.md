@@ -55,6 +55,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   re-running is an idempotent upsert; `--dry-run` prints every object;
   `disconnect` removes the grant.
 
+- **`pkg/lease` and `lifecyclekit.Singleton`: run a background worker on any
+  number of replicas and have exactly one do the work.** A Postgres
+  advisory-lock lease (`lease.New(db, opts).Run(ctx, name, fn)`): one replica
+  leads, the others stand by and take over within `RetryInterval` of the holder
+  exiting, or at once when its database session dies, with a heartbeat that
+  cancels a leader whose session was swapped or dropped (overlap after a
+  partition is bounded by `HeartbeatInterval`). `lifecyclekit.Singleton(l, w)`
+  wraps a `serverkit.Worker` in a named lease. It needs no schema, no
+  Kubernetes RBAC and no new infrastructure, and behaves the same under
+  `forge env up`, compose and a cluster. The `workers` skill says which workers
+  need one (and which must not take one). Tested against real Postgres,
+  including backend termination.
+
 ### Fixed
 
 - **`forge env deploy <env> --dry-run` now predicts the real run's release

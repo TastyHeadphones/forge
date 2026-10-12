@@ -164,6 +164,37 @@ func NewComponents(infra *Infra) (*Components, error) {
 
 Because `Queue` is an interface, swapping a mock (in a test) or a Connect client (when the producer moves to its own binary) is a one-line change in `NewComponents` with the worker untouched. There is no name-matched `*App` field, no typed-zero-with-TODO fallback, and no `wire_gen.go` — a collaborator that doesn't satisfy the interface fails to compile rather than being silently dropped.
 
+## Running on more than one replica
+
+A worker pod scaled to two runs every worker twice. Decide per worker, and write the verdict in its package doc:
+
+| The worker is... | Do this |
+|---|---|
+| a queue consumer (`SELECT ... FOR UPDATE SKIP LOCKED`, a durable JetStream consumer, a Temporal worker) | nothing: it is meant to run on every replica |
+| an idempotent set-based sweep (`UPDATE ... WHERE stopped_at IS NULL`, deleting rows already past retention) | nothing: a second replica matches no rows |
+| anything that reads a value and writes a derived one, calls a provider that bills or mails, or otherwise must not overlap | make it a **singleton** |
+
+A singleton takes a Postgres advisory-lock lease (`forge/pkg/lease`): one replica runs it, the rest stand by and take over within seconds of the holder exiting, crashing or losing its database session. No Kubernetes RBAC, no schema, the same behaviour in `forge env up`, compose and a cluster.
+
+```go
+// internal/app/lifecycle.go
+func (c *Components) WorkerDaemonReaper() serverkit.Worker {
+    return lifecyclekit.Singleton(c.Lease, lifecyclekit.WrapWorker("daemon_reaper", c.DaemonReaper))
+}
+```
+
+```go
+// internal/app/providers.go: ONE locker per process, on a session-capable connection
+infra.Lease = lease.New(leaseDB, lease.Options{Logger: logger})
+```
+
+Rules the primitive cannot enforce for you:
+
+- The `*sql.DB` handed to `lease.New` must keep one server session per connection. A transaction-pooling PgBouncer does not (the lock is taken on a backend the client stops using); use the direct URL or a session-mode pooler entry, and give the lease its own pool.
+- A singleton's `Start` is called again each time the replica re-wins the lease, so it must be restartable and must return when its context is cancelled.
+- The overlap after a network partition is bounded by `HeartbeatInterval` (default 5s). Keep the work correct, if wasteful, across that window; for money, still key the write on an idempotency key.
+- Do not wrap a worker that is already concurrency-safe. A lease makes one replica do all the work and the others idle.
+
 ## Late-bound dependencies between workers
 
 When worker A produces a value worker B needs (snapshot saver, registry, event sink), you can't pass it through B's constructor — both workers are constructed in the same pass, so a constructor-only graph would deadlock. **Two-phase wiring is the answer, and it's just plain Go:** construct both ends and inject with a setter, by hand inside `NewComponents`. No disown needed — `compose.go` is yours, and reconciliation only adds missing components and Deps keys; it never rewrites what you wrote.
