@@ -16,7 +16,7 @@ without forge ever touching your additions.
 
 | File | Tier | What it gates |
 |------|------|---------------|
-| `.github/workflows/ci.yml` | Tier-1 | Lint (golangci-lint, buf lint, frontend lint+typecheck, migration safety), test (`go test -race -count=1 ./...`, frontend vitest), build (Go binaries with `-trimpath -buildvcs=true`, frontend `next build`), `forge ci verify-generated`, KCL validation, vuln scan (govulncheck, npm audit, Trivy), license check (go-licenses), Docker build, optional E2E |
+| `.github/workflows/ci.yml` | yours (scaffold-once) | A thin wrapper around the local gate. Jobs: `changes` (docs-only skips the rest), `checks` (ONE setup, then `task ci:checks`: verify-generated, golangci-lint, buf lint, migration safety, frontend lint/typecheck/build, `go build`, govulncheck, npm audit, go-licenses, KCL validation, deployability), `test` (`task test`), `integration-test` (`task test:integration`, PRs only, only when the repo has `//go:build integration` files), and where the project has them `docker-build` and `e2e`. Every job has `timeout-minutes`. See "The local gate" below and `ci/gate` |
 | `.github/workflows/proto-breaking.yml` | Tier-1 | `buf breaking` (and nothing else — no lint, format, push or PR comment) against the PR's base branch on PRs that touch `proto/**`, `buf.yaml`, or `buf.gen.yaml`. Passes with a notice when the base has no protos yet (the PR introducing the first ones). See the `proto-breaking` skill for the full deprecation flow. |
 | `.github/workflows/build-images.yml` | Tier-1 | The project image: build + push, cosign signature, SBOM, and SLSA provenance (skipped on private repositories, which GitHub's attestation store refuses outside Enterprise Cloud). Frontend images are per-env and built by `deploy.yml` |
 | `.github/workflows/deploy.yml` | Tier-1 | Per-environment `forge env build <env> --push` + `forge env deploy <env> --yes`, one matrix entry per declared `deploy/kcl/<env>/main.k` (dev excluded) |
@@ -42,6 +42,8 @@ ci:
   test:
     race: true
     coverage: false
+  gate:
+    extra_checks: []          # project-owned checks for `forge ci gate` — see `ci/gate`
   vuln_scan:                  # zero-value = "all enabled"
     go: true
     docker: true
@@ -51,7 +53,6 @@ ci:
     runtime: docker-compose   # or "k3d"
   permissions:
     contents: read            # default
-  extra_jobs: []              # see "Extending ci.yml" below
 ```
 
 ### Which forge CI installs
@@ -92,7 +93,7 @@ verifying its generated code with an older forge than the one that wrote it
 - It needs `jq` (preinstalled on GitHub-hosted runners). No C toolchain is
   needed.
 
-The verify-generated job also installs the codegen toolchain at go.mod's
+The `checks` job also installs, before `task ci:checks` runs verify-generated, the codegen toolchain at go.mod's
 versions — `forge tools install --force` (protoc-gen-go, protoc-gen-connect-go,
 goimports) — and runs `npm ci` in each frontend, because it regenerates the
 tree and demands identical bytes. `npm ci` is what installs
@@ -202,6 +203,24 @@ generated files regenerate byte-identically, so a formatter that rewrote one
 would fail it on every commit. forge also emits those files already clean
 (single trailing newline, no trailing whitespace, `buf format`-clean protos).
 
+## The local gate: `task ci`
+
+CI is a thin wrapper around a gate you run on your own machine. The workflow
+prepares an environment and calls ONE task per job, so the same command gives the
+same verdict locally:
+
+| Command | What it runs | CI job |
+|---|---|---|
+| `task ci` | `ci:checks`, then `test`, then `test:integration`, one summary table | none: run this instead of CI |
+| `task ci:checks` | verify-generated, lint, build, vuln-scan, license, KCL, deployability, plus your `ci.gate.extra_checks` | `checks` |
+| `task test` | unit tests + every frontend's | `test` |
+| `task test:integration` | the `integration`-tagged suite | `integration-test` |
+
+Every check runs even after one fails; a check that could not run is `SKIPPED`
+and fails the gate unless named in `CI_SKIP`; tools run at the versions CI pins.
+**Load `ci/gate` for the rules, the check list, `CI_SKIP`, adding your own checks
+(`ci.gate.extra_checks`) and why the workflow has few jobs.**
+
 ## Tier-1 vs Tier-2 boundary
 
 The forge-generated workflows are Tier-1: they carry the
@@ -229,8 +248,9 @@ exposes, the right answer is almost always one of:
 
 1. Add a knob to forge.yaml (and a forge issue / PR if forge can't
    express it yet). This is a forge improvement; surface it.
-2. Use `extra_jobs:` in forge.yaml — forge appends them at the bottom
-   of the generated `ci.yml` with their own steps and `needs:`.
+2. Add the check to the gate with `ci.gate.extra_checks` in forge.yaml
+   (see `ci/gate`), or edit `ci.yml` itself: it is
+   scaffold-once, so it is yours.
 3. Add a parallel Tier-2 workflow file. Keep the file name distinct
    from any Tier-1 name so forge never tries to regenerate it.
 
@@ -271,36 +291,20 @@ jobs:
 `forge lint --banners` ignores user-owned files (the banner check only
 fires on forge templates).
 
-## Extending `ci.yml` from forge.yaml
+## Extending `ci.yml`
 
-Use `extra_jobs:` when the addition belongs in the same workflow as
-the generated jobs (so it shares the `concurrency:` group, runs on the
-same `pull_request` trigger, etc.):
+`ci.yml` is scaffold-once: it is yours, `forge generate` never rewrites it, and
+there is no forge.yaml key that appends jobs to it (the `ci:` block only feeds
+the one-time render). Pick the seam by what you are adding:
 
-```yaml
-# forge.yaml
-ci:
-  extra_jobs:
-    - name: docs
-      runs_on: ubuntu-latest
-      needs: [build]
-      steps:
-        - name: Checkout
-          uses: actions/checkout@v4
-        - name: Build docs
-          run: make docs
-```
-
-Forge appends each `extra_jobs:` entry to the generated `ci.yml`. The
-job sees the same `actions/checkout@v4` ergonomics as forge's own
-jobs. Use this for jobs that:
-
-- Need to gate on `[lint, test, build]` from the generated workflow.
-- Should run on every PR alongside the generated jobs.
-- Don't need their own trigger, schedule, or concurrency rules.
-
-For anything that wants its own `on:` trigger (cron, workflow_dispatch,
-release tags), use a parallel Tier-2 workflow file instead.
+- **A check** (a codegen drift check, a custom linter, a policy script): add it to
+  the gate with `ci.gate.extra_checks` (`ci/gate`). It then runs in `task ci` and in
+  the CI `checks` job, with no workflow edit and no extra runner.
+- **A job that needs its own runner** (a service container, another OS): edit
+  `ci.yml` and add the job, gated on `needs: changes` like the others, with
+  `timeout-minutes`.
+- **Anything with its own trigger** (cron, workflow_dispatch, release tags): a
+  parallel Tier-2 workflow file.
 
 ## Common extensions
 
@@ -316,18 +320,18 @@ release tags), use a parallel Tier-2 workflow file instead.
   `workflow_run: completed` of `CI` — keeps notification logic out of
   the generated chain.
 - **Codecov / coverage upload.** Set `ci.test.coverage: true` in
-  `forge.yaml` to have the generated `test` job upload a coverage
+  `forge.yaml` to have the `test` job upload a coverage
   artifact, then add a Tier-2 workflow that downloads + uploads to
   Codecov on `workflow_run`.
 - **Custom security scanners (Snyk, Semgrep).** Tier-2 workflow
-  triggered on schedule + PR; the generated `vuln-scan` job covers
-  govulncheck/npm audit/Trivy and is opinionated, so add scanners
-  alongside rather than try to extend the generated job.
+  triggered on schedule + PR; the gate's `vuln-go`/`vuln-npm` rows (and the
+  `docker-build` job's Trivy step) cover govulncheck/npm audit/Trivy and are
+  opinionated, so add scanners alongside rather than try to extend them.
 
 ## `forge ci` helper subcommands
 
-The generated `ci.yml` calls into a `forge ci` subcommand group rather
-than inlining shell logic, so the same checks are runnable locally:
+`forge ci gate` runs these as rows of the gate (you rarely call them directly),
+and each is runnable on its own:
 
 | Command | What it does |
 |---------|--------------|
@@ -338,7 +342,7 @@ than inlining shell logic, so the same checks are runnable locally:
 | `forge ci vuln-scan --npm` | Runs `npm audit` in each frontend |
 | `forge ci migration-safety` | Runs `forge lint --migration-safety` against `db/migrations/` |
 
-Run any of them locally before pushing to reproduce the CI gate.
+Run `task ci` locally before pushing to reproduce the whole CI gate.
 
 ## Linting the workflows themselves
 
@@ -395,9 +399,12 @@ or add a Tier-2 workflow that runs `actionlint` and friends against
 - The generated workflows install the forge go.mod resolves, at run
   time. Bumping forge in go.mod is the whole upgrade; there is no pin in
   a workflow to re-stamp.
-- `extra_jobs:` in forge.yaml is the right escape hatch for jobs that
-  belong in `ci.yml`. A standalone trigger (cron, tag, dispatch) means
-  a Tier-2 file.
+- `ci.gate.extra_checks` in forge.yaml is the right home for a new CHECK:
+  it runs in `task ci` and the CI `checks` job with no extra runner. A job
+  that needs its own runner is an edit to `ci.yml`; a standalone trigger
+  (cron, tag, dispatch) means a Tier-2 file.
+- Adding a job per check is the shape this scaffold moved away from: see
+  `ci/gate` ("Why the workflow has few jobs").
 - `forge ci verify-generated` is the canonical drift gate. Run it
   locally before pushing if `forge generate` touched anything.
 

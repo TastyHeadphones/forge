@@ -42,6 +42,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Lean scaffolded CI over a local gate: `task ci`, `task ci:checks`,
+  `forge ci gate`.** The scaffolded `ci.yml` was nine jobs (lint, test, build,
+  verify-generated, deployability, vuln-scan, license-check, docker-build, e2e),
+  each repeating checkout, setup-go, cache restore and the forge install, and
+  GitHub rounds every job up to the whole minute: the one project generated from
+  it cost about $850/month at its October pace. It is now `changes`, `checks`
+  (one setup, then `task ci:checks`), `test` (`task test`) and `integration-test`
+  (`task test:integration`, PRs only, only when the repo has `//go:build
+  integration` files), plus `docker-build` and `e2e` where the project has them;
+  `changes` skips the heavy jobs for a docs-only change, every job (in every
+  scaffolded workflow) has `timeout-minutes`, and the workflow is a thin wrapper:
+  run `task ci` locally for the same verdict. `forge ci gate [checks|test|
+  integration|all]` is the runner, and forge owns the check list and the tool
+  pins (golangci-lint, buf, govulncheck, go-licenses, built into forge's tool
+  cache; a copy on PATH at another version, or a golangci-lint built with an
+  older Go than `go.mod`, is not used). Every check runs even after one fails,
+  a summary table is printed and appended to `$GITHUB_STEP_SUMMARY`, and the
+  exit status is non-zero if anything failed. A check that could not run is
+  `SKIPPED`, not a pass, and fails the gate unless named in `CI_SKIP`. Add your
+  own checks under `ci.gate.extra_checks` in forge.yaml. `ci.yml` is scaffold-once,
+  so existing projects adopt this through the new section in
+  `migrations/v0.1.45` (`forge project upgrade list`).
 - **A database that is not up yet no longer crash-loops the server.** The
   startup connect (`serverkit.AutoMigrateContext`, the scaffolded
   `openDatabase` via `serverkit.OpenDB`) retries with capped exponential
