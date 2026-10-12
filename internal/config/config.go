@@ -812,6 +812,37 @@ type CIConfig struct {
 	// shipped defaults; the block exists so a project can declare the
 	// packages whose heavy skipping is legitimate.
 	TestSkips CITestSkipsConfig `yaml:"test_skips,omitempty"`
+	// Gate extends `forge ci gate` — the local gate behind `task ci` and
+	// `task ci:checks` — with the project's own checks.
+	Gate CIGateConfig `yaml:"gate,omitempty"`
+}
+
+// CIGateConfig is what a project adds to the checks forge owns in
+// `forge ci gate`. Forge's own step list (verify-generated, lint, build,
+// vuln-scan, license-check, validate-kcl, deployability) and the versions it
+// pins are not configurable here: a project that wants one of them off sets
+// CI_SKIP for it, which the summary still lists.
+type CIGateConfig struct {
+	// ExtraChecks run after forge's own checks, in the `checks` lane, so the
+	// scaffolded CI job (`task ci:checks`) and a developer's `task ci` run the
+	// same ones.
+	ExtraChecks []CIGateCheck `yaml:"extra_checks,omitempty"`
+}
+
+// CIGateCheck is one project-owned check in `forge ci gate`.
+type CIGateCheck struct {
+	// Name is the row in the summary table and the name CI_SKIP matches.
+	// Unique, and not the name of a check forge owns.
+	Name string `yaml:"name"`
+	// Command is the argv to run (no shell), from the project root unless
+	// Dir is set. Exit 0 is PASS.
+	Command []string `yaml:"command"`
+	// Dir is the working directory, project-relative.
+	Dir string `yaml:"dir,omitempty"`
+	// Requires lists binaries that must be on PATH. A missing one makes the
+	// check SKIPPED — which fails the gate unless CI_SKIP names it — rather
+	// than a PASS for work that never ran.
+	Requires []string `yaml:"requires,omitempty"`
 }
 
 // CILintConfig controls which linters run in CI.

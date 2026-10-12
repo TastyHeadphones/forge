@@ -50,10 +50,23 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			// (internal/cli/ci_test_run.go -> testreport.Policy) to
 			// tune the silent-mass-skip gate and to hold the declared
 			// per-package exemptions.
+			//
+			// gate: read by `forge ci gate` (internal/cli/ci_gate.go) for
+			// the project's extra_checks.
 			want: []string{
-				"e2e", "lint", "permissions", "provider",
+				"e2e", "gate", "lint", "permissions", "provider",
 				"test", "test_skips", "vuln_scan",
 			},
+		},
+		{
+			name: "CIGateConfig",
+			typ:  reflect.TypeFor[CIGateConfig](),
+			want: []string{"extra_checks"},
+		},
+		{
+			name: "CIGateCheck",
+			typ:  reflect.TypeFor[CIGateCheck](),
+			want: []string{"command", "dir", "name", "requires"},
 		},
 		{
 			// Only migration_safety is authored. The driver and migrations
