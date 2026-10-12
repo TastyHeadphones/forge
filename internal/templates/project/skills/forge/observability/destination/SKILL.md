@@ -59,7 +59,7 @@ An author's own `OTEL_EXPORTER_OTLP_*` (endpoint or protocol, for any signal) wi
 
 ## The node agent
 
-Apps **push** traces, metrics and profiles over OTLP. The agent pulls only what cannot push: container stdout (`filelog`) and kubelet/node metrics (`kubeletstats`). It scrapes nothing in tenant namespaces. `k8sattributes` **enriches** (pod, namespace, node, workload labels); it decides nothing about whose data it is. Authentication is the destination's headers, read from the Secret into `FORGE_OTLP_HEADERS`. Tenant identity is the receiving platform's rule, never forge's.
+Apps **push** traces, metrics and profiles over OTLP. The agent pulls only what cannot push: container stdout (`filelog`) and kubelet/node metrics (`kubeletstats`). It scrapes no application endpoints. `k8sattributes` **enriches** (pod, namespace, node, workload labels); it decides nothing about whose data it is. Authentication is the destination's headers, read from the Secret into `FORGE_OTLP_HEADERS`. Attributing records to an owner is the receiving platform's rule, never forge's.
 
 What `filelog` costs: a **read-only hostPath on `/var/log/pods`** (container logs are root-readable on the node), a hostPath for checkpoints and the exporter's persistent queue, root with every capability dropped and a read-only root filesystem. hostPath is forbidden by pod-security `baseline`, so the agent gets its **own namespace labelled `privileged`**. That is why it is never rendered by the Restricted (hosted) profile: its kinds (DaemonSet, ClusterRole) are outside `RestrictedKinds` on purpose.
 

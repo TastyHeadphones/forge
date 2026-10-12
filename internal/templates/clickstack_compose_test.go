@@ -292,7 +292,7 @@ func TestComposeRunsAProfilesCollectorAndItsSchemaJob(t *testing.T) {
 			t.Errorf("%s pushes profiles to %q", name, got)
 		}
 	}
-	// Profiles are PUSHED. The collector never scrapes tenant pprof endpoints.
+	// Profiles are PUSHED. The collector never scrapes application pprof endpoints.
 	for _, banned := range []string{"pprofreceiver", "pyroscope"} {
 		if strings.Contains(raw, banned) {
 			t.Errorf("the compose file mentions %q: profiles are pushed in-process over OTLP", banned)

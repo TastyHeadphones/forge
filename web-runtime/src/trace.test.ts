@@ -69,7 +69,10 @@ describe("traceparent propagation", () => {
 
 describe("traceInterceptor and browser telemetry startup", () => {
   type Req = { header: Headers };
-  const run = async (): Promise<{ calledAfterMs: number; traceparent: string | null }> => {
+  const run = async (): Promise<{
+    calledAfterMs: number;
+    traceparent: string | null;
+  }> => {
     const req: Req = { header: new Headers() };
     const t0 = Date.now();
     let calledAfterMs = -1;

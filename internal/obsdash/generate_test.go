@@ -28,7 +28,7 @@ func TestWriteIsIdempotentHonoursOverridesAndRetiresStaleFiles(t *testing.T) {
 	if want == "" {
 		t.Fatal("overview not written")
 	}
-	for _, rel := range []string{SpecFile, SavedSearchesFile, AlertsFile} {
+	for _, rel := range []string{SpecFile, SavedSearchesFile} {
 		if read(rel) == "" {
 			t.Errorf("%s not written", rel)
 		}

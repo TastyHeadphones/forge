@@ -203,20 +203,20 @@ type golangciMemo struct {
 	mu       sync.Mutex
 	resolved bool
 	res      golangciResolution
-	// tc is the outside world; nil means productionGolangciToolchain().
-	tc *golangciToolchain
+	// tc is the outside world, injected by newGolangciMemo: production
+	// passes productionGolangciToolchain(), tests pass a fake.
+	tc golangciToolchain
 }
 
-func (m *golangciMemo) toolchain() golangciToolchain {
-	if m.tc != nil {
-		return *m.tc
-	}
-	return productionGolangciToolchain()
+func newGolangciMemo(tc golangciToolchain) *golangciMemo {
+	return &golangciMemo{tc: tc}
 }
+
+func (m *golangciMemo) toolchain() golangciToolchain { return m.tc }
 
 func (rc *lintRunCtx) memo() *golangciMemo {
 	if rc.golangciMemo == nil {
-		rc.golangciMemo = &golangciMemo{}
+		rc.golangciMemo = newGolangciMemo(productionGolangciToolchain())
 	}
 	return rc.golangciMemo
 }

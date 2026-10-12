@@ -248,7 +248,8 @@ type Input struct {
 	Project   string
 	Services  []Service
 	Frontends []string
-	// HasDatabase adds the database panels.
+	// HasDatabase adds the database panels: true once the project has a
+	// migration, since the panels read spans the ORM's query hook emits.
 	HasDatabase bool
 }
 

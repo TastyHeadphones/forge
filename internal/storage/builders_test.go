@@ -319,7 +319,12 @@ func TestBuildSpaceChecksScratchAndNewOutputDirectories(t *testing.T) {
 		t.Setenv(name, filepath.Join(root, name, "new"))
 	}
 	output := filepath.Join(root, "new", "bin")
-	got, err := CheckBuildSpace(DefaultPolicy(), output)
+	// This test asserts WHICH filesystems are measured, not how full the host
+	// is, so the reserve is the policy minimum: a real runner disk below the
+	// 20 GiB default must not fail it.
+	policy := DefaultPolicy()
+	policy.HostReserveGiB = 1
+	got, err := CheckBuildSpace(policy, output)
 	if err != nil {
 		t.Fatal(err)
 	}

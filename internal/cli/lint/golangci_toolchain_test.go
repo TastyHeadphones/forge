@@ -112,7 +112,7 @@ func (f *fakeToolchain) toolchainFor() golangciToolchain {
 // only this fake.
 func (f *fakeToolchain) runCtx(dir string) *lintRunCtx {
 	tc := f.toolchainFor()
-	return &lintRunCtx{ctx: context.Background(), cwd: dir, paths: []string{"./..."}, golangciMemo: &golangciMemo{tc: &tc}}
+	return &lintRunCtx{ctx: context.Background(), cwd: dir, paths: []string{"./..."}, golangciMemo: newGolangciMemo(tc)}
 }
 
 // moduleDir writes a go.mod with the given go directive.

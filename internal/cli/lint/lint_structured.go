@@ -490,7 +490,7 @@ func runLintStructured(ctx context.Context, flags lintFlags, paths []string) err
 			cfg:           cfg,
 			cwd:           cwd,
 			scope:         scope,
-			golangciMemo:  &golangciMemo{},
+			golangciMemo:  newGolangciMemo(productionGolangciToolchain()),
 		})
 	}
 	os.Stdout = realStdout

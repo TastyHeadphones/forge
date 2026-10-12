@@ -139,19 +139,19 @@ data:
         log_statements:
         - context: resource
           statements:
-          - delete_matching_keys(resource.attributes, "^(k8s|reliant|tenant|org)\\..*")
+          - delete_matching_keys(resource.attributes, "^(k8s|reliant)\\..*")
         metric_statements:
         - context: resource
           statements:
-          - delete_matching_keys(resource.attributes, "^(k8s|reliant|tenant|org)\\..*")
+          - delete_matching_keys(resource.attributes, "^(k8s|reliant)\\..*")
         profile_statements:
         - context: resource
           statements:
-          - delete_matching_keys(resource.attributes, "^(k8s|reliant|tenant|org)\\..*")
+          - delete_matching_keys(resource.attributes, "^(k8s|reliant)\\..*")
         trace_statements:
         - context: resource
           statements:
-          - delete_matching_keys(resource.attributes, "^(k8s|reliant|tenant|org)\\..*")
+          - delete_matching_keys(resource.attributes, "^(k8s|reliant)\\..*")
     receivers:
       filelog:
         exclude:

@@ -29,10 +29,10 @@ import (
 //     ClickStack. It tails the files `forge env up` already writes.
 //     ForwarderConfig.
 //
-// Neither learns who the tenant is. k8sattributes ENRICHES (pod, namespace,
-// node, workload labels); authentication is the destination's headers, read
-// from a Secret. Deciding which tenant a record belongs to is the receiving
-// platform's job, never this renderer's.
+// Neither learns whose data a record is. k8sattributes ENRICHES (pod,
+// namespace, node, workload labels); authentication is the destination's
+// headers, read from a Secret. Attributing a record to an owner is the
+// receiving platform's job, never this renderer's.
 //
 // This is NOT a workload and never passes through RenderWorkloads, so the
 // Restricted profile's kind allowlist (RestrictedKinds) is untouched: the
@@ -40,11 +40,11 @@ import (
 // contract for hosted workloads.
 
 // ClientIdentityKeyPattern matches the resource attributes a client must not
-// be allowed to set on the node agent's OTLP input: everything Kubernetes
-// identity (k8s.*) and the tenant-ish namespaces a platform stamps (reliant.*,
-// tenant.*, org.*). The node agent deletes them before k8sattributes runs.
+// be allowed to set on the node agent's OTLP input: Kubernetes identity
+// (k8s.*), which the node supplies, and the hosting platform's own namespace
+// (reliant.*). The node agent deletes them before k8sattributes runs.
 // service.* and deployment.* are the app's own and are kept.
-const ClientIdentityKeyPattern = `^(k8s|reliant|tenant|org)\..*`
+const ClientIdentityKeyPattern = `^(k8s|reliant)\..*`
 
 // stripIdentityStatement is the OTTL form: a string literal, so the regex's
 // backslash is doubled.

@@ -108,8 +108,8 @@ so existing projects adopt this through the new section in`migrations/v0.1.45` (
   declaration. Clusters (k3d or any `ClusterTarget`): a node-agent DaemonSet
   (OTLP receiver, filelog of container stdout, kubeletstats, k8sattributes for
   enrichment only, the pinned contrib 0.162 image) with a node-local Service
-  (`internalTrafficPolicy: Local`); client-supplied `k8s.*`/`reliant.*`/`tenant.*`/
-  `org.*` resource attributes are deleted before enrichment. `forge.OnHosted`:
+  (`internalTrafficPolicy: Local`); client-supplied `k8s.*`/`reliant.*` resource
+  attributes are deleted before enrichment. `forge.OnHosted`:
   forge renders no agent and emits only the `OTEL_*` contract. A headers secret
   nothing supplies, a workload that also exports OTLP logs, and a host process
   with no local port are refused at render. `forge.OTEL_ENV` no longer points at
@@ -270,8 +270,8 @@ generate` scaffolds nothing service-scoped for it: no `internal/handlers/<svc>/`
   `deploy/observability/dashboard-spec_gen.json`) that HyperDX JSON is rendered
   from, so another renderer can draw the same dashboards. Tiles name their
   source (`Logs`/`Traces`/`Metrics`); the compose entrypoint binds the names to
-  this database's source ids. Alert definitions (error rate, p99, no data) go to
-  `alerts-pending_gen.json` as `pending`, because HyperDX 2.40 never evaluates an
+  this database's source ids. Alert definitions (error rate, p99, no data) are recorded in the spec's
+  `alerts` as `pending`, because HyperDX 2.40 never evaluates an
   alert declared in a provisioned file (hyperdx PR #3233). See skill
   `observability/dashboards`.
 - **Frontend builds are told what they were built from.** Every frontend build
