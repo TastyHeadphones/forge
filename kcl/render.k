@@ -505,20 +505,29 @@ _cluster_targets = lambda workloads: [any] -> [any] {
     [w.runtime.target for w in workloads if w.runtime and w.runtime.type == "cluster" and w.kind != "tool"]
 }
 
-# The headers Secret must be supplied wherever the agent will read it, or the
+# The destination's credential reference: a bearer token file wins over a
+# headers blob (the two are mutually exclusive in ObservabilityDestination).
+_destination_secret = lambda o: any -> any {
+    (o.destination.token_secret or o.destination.headers_secret) if o and o.destination else None
+}
+
+# The credential Secret must be supplied wherever the agent will read it, or the
 # DaemonSet never starts. Nothing to check without a cluster workload (no
-# agent) or without a headers secret.
+# agent) or without a credential secret.
 _headers_secret_supplied = lambda workloads: [any], o: any, required: [any], rendered: [any] -> bool {
-    _need = bool(o and o.enabled and o.destination and o.destination.headers_secret and len(_cluster_targets(workloads)) > 0)
-    (not _need) or any s in required { s.name == o.destination.headers_secret.name and s.namespace == o.agent.namespace and o.destination.headers_secret.key in s.keys } \
-        or any s in rendered { s.name == o.destination.headers_secret.name and s.namespace == o.agent.namespace and o.destination.headers_secret.key in s.keys }
+    _ref = _destination_secret(o)
+    _need = bool(o and o.enabled and _ref and len(_cluster_targets(workloads)) > 0)
+    (not _need) or any s in required { s.name == _ref.name and s.namespace == o.agent.namespace and _ref.key in s.keys } \
+        or any s in rendered { s.name == _ref.name and s.namespace == o.agent.namespace and _ref.key in s.keys }
 }
 
 # The refusal text, built only when the rule fires: a Bundle message is
 # interpolated even when its condition holds, and an unset observability has
 # no destination to name.
 _headers_secret_msg = lambda o: any -> str {
-    ("Bundle.observability.destination.headers_secret '${o.destination.headers_secret.name}' (key '${o.destination.headers_secret.key}') is not supplied for the node agent in namespace '${o.agent.namespace}'. Declare it so the deploy can check it: `required_secrets = [forge.ExternalSecret {name = \"${o.destination.headers_secret.name}\", namespace = \"${o.agent.namespace}\", keys = [\"${o.destination.headers_secret.key}\"]}]` for a Secret you provision out of band, or a `rendered_secrets` entry in that namespace for a local env") if o and o.destination and o.destination.headers_secret else ""
+    _ref = _destination_secret(o)
+    _field = "token_secret" if o and o.destination and o.destination.token_secret else "headers_secret"
+    ("Bundle.observability.destination.${_field} '${_ref.name}' (key '${_ref.key}') is not supplied for the node agent in namespace '${o.agent.namespace}'. Declare it so the deploy can check it: `required_secrets = [forge.ExternalSecret {name = \"${_ref.name}\", namespace = \"${o.agent.namespace}\", keys = [\"${_ref.key}\"]}]` for a Secret you provision out of band, or a `rendered_secrets` entry in that namespace for a local env") if _ref else ""
 }
 
 # Host processes need a loopback port to export to.
@@ -990,6 +999,10 @@ _obs_agent_records = lambda b: Bundle, part_of: str -> [any] {
                 "name": _o.destination.headers_secret.name
                 "key": _o.destination.headers_secret.key
             } if _o.destination.headers_secret else None
+            "tokenSecret": {
+                "name": _o.destination.token_secret.name
+                "key": _o.destination.token_secret.key
+            } if _o.destination.token_secret else None
             "signals": {
                 "traces": _o.signals.traces
                 "metrics": _o.signals.metrics
@@ -1017,6 +1030,10 @@ _render_observability = lambda b: Bundle -> any {
                 "name": _o.destination.headers_secret.name
                 "key": _o.destination.headers_secret.key
             } if _o.destination.headers_secret else None
+            "token_secret": {
+                "name": _o.destination.token_secret.name
+                "key": _o.destination.token_secret.key
+            } if _o.destination.token_secret else None
         } if _o.destination else None
         "signals": {
             "traces": _o.signals.traces

@@ -1145,6 +1145,11 @@ type ObservabilityDestEntity struct {
 		Name string `json:"name"`
 		Key  string `json:"key"`
 	} `json:"headers_secret,omitempty"`
+	// TokenSecret is a bearer token the node agent re-reads from a mounted file.
+	TokenSecret *struct {
+		Name string `json:"name"`
+		Key  string `json:"key"`
+	} `json:"token_secret,omitempty"`
 }
 
 // ObservabilitySignalsEntity is Observability.signals.
