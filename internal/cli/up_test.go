@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -764,8 +765,17 @@ func TestRunUpServices_EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer ln.Close()
 	port := ln.Addr().(*net.TCPAddr).Port
+	// Serve HTTP on it like the host service it stands in for. A bare
+	// accept-and-ignore socket made the App Health runtime check wait out its
+	// 3s client timeout on both runUpServices calls and print a red
+	// "healthz failed" — nothing asserts on it, but it read as the failure.
+	srv := &http.Server{
+		Handler:           http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) }),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer srv.Close()
 
 	dir := t.TempDir()
 	writeForgeYAML(t, dir, `name: demo

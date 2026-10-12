@@ -209,7 +209,7 @@ func forgeOwnerOfPID(pid int, projectID, envName string, f procFacts) (service s
 // classifyPortConflicts splits the pre-flight port conflicts into the ones
 // held by a forge-owned process for env (OURS — reclaimable) and the ones
 // held by anything else (FOREIGN — never touched). The holder pid is
-// resolved via resolvePID (lsof); a holder that can't be resolved, or whose
+// resolved via resolvePID (portListenerPID); a holder that can't be resolved, or whose
 // ancestry carries no marker, lands in foreign — the conservative default
 // that preserves the "never reclaim an unidentifiable process" safety
 // property.

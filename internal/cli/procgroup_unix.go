@@ -137,31 +137,6 @@ func ppidMap() map[int]int {
 	return m
 }
 
-// portListenerPID returns the pid LISTENing on 127.0.0.1:<port>, or 0 when
-// none is found / the lookup tool is unavailable. Uses lsof (present by
-// default on macOS; commonly on Linux). A 0 return classifies the holder as
-// unidentifiable → foreign, so a missing lsof degrades to today's safe
-// "never reclaim an unknown process" behaviour rather than a misfire.
-func portListenerPID(port int) int {
-	if port <= 0 {
-		return 0
-	}
-	out, err := exec.CommandContext(context.Background(),
-		"lsof", "-nP", "-tiTCP:"+strconv.Itoa(port), "-sTCP:LISTEN").Output()
-	if err != nil {
-		return 0
-	}
-	// lsof -t prints one pid per line; take the first.
-	for _, line := range strings.Split(string(out), "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			if pid, e := strconv.Atoi(line); e == nil {
-				return pid
-			}
-		}
-	}
-	return 0
-}
-
 // procStartTimes returns the wall-clock start time of each requested pid, read
 // from `ps -o lstart=` (works on macOS and Linux without /proc) in ONE call so
 // the whole set costs a single fork. Used by `forge env status` build-freshness
