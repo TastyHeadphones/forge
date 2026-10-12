@@ -187,46 +187,35 @@ func OpenInfra(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*I
 	return infra, nil
 }
 {{if .HasDatabase}}
-// dbConnectTimeout bounds the boot-time connectivity check. Long enough to
-// ride out a slow cold start, short enough that a wedged host produces a
-// visible failure instead of a process that never finishes booting.
-const dbConnectTimeout = 10 * time.Second
-
+// openDatabase opens the serving pool and waits for the database to answer,
+// retrying with capped exponential backoff and jitter for up to
+// DB_CONNECT_TIMEOUT (serverkit.OpenDB). A dependency that is merely not up
+// YET — a pooler or primary starting beside this pod — is a wait, not a
+// crash: the process stays alive, and because ctx carries the boot probes
+// (serverkit.StartBootProbes) /healthz passes while /readyz fails naming the
+// database. Only a database still unreachable at the deadline is an error,
+// and that exits the process non-zero with the error class and attempt count.
+//
+// The deadline matters in the other direction too: a BLACKHOLED host (a
+// security group that drops instead of refusing) never returns an error, so
+// each attempt is individually bounded and the total is bounded, turning a
+// hang that no probe could see into a failure an operator can.
 func openDatabase(ctx context.Context, cfg *config.Config) (*sql.DB, error) {
 	dsn := cfg.DatabaseUrl
 	if dsn == "" {
 		slog.Warn("DATABASE_URL is not set, skipping database setup")
 		return nil, nil
 	}
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("sql.Open: %w", err)
-	}
 	// Pool sizing comes from the DB_* config knobs (db_max_open_conns and
 	// friends in pkg/config), NOT from literals baked in at scaffold time —
 	// the same knobs the generated `cmd serve` applies to its migration
 	// connection, so one setting tunes both pools. A zero/unset knob leaves
 	// the corresponding database/sql default in place.
-	serverkit.ApplyDBPoolTuning(db, serverkit.DBPoolTuning{
+	return serverkit.OpenDB(ctx, "pgx", dsn, serverkit.DBPoolTuning{
 		MaxOpenConns:    int(cfg.DbMaxOpenConns),
 		MaxIdleConns:    int(cfg.DbMaxIdleConns),
 		ConnMaxIdleTime: cfg.DbConnMaxIdleTime.AsDuration(),
 		ConnMaxLifetime: cfg.DbConnMaxLifetime.AsDuration(),
-	})
-	// Bound the boot ping. The ctx threaded in from the command tree is
-	// context.Background() with no deadline, and a BLACKHOLED database host
-	// (a security group that drops instead of refusing, a DNS name pointing
-	// at nothing) never returns an error — it just never returns. The process
-	// then hangs before binding a listener, so there is no /healthz to fail,
-	// no log line after "connecting", and nothing for a platform probe to
-	// notice: the pod sits in Running forever. A deadline turns that into a
-	// crash loop, which is a state operators can actually see.
-	pingCtx, cancel := context.WithTimeout(ctx, dbConnectTimeout)
-	defer cancel()
-	if err := db.PingContext(pingCtx); err != nil {
-		_ = db.Close() // best-effort cleanup; the ping failure is the actionable error
-		return nil, fmt.Errorf("db.PingContext: %w", err)
-	}
-	return db, nil
+	}, serverkit.ConnectPolicy{Timeout: cfg.DbConnectTimeout.AsDuration(), Logger: slog.Default()})
 }
 {{end}}

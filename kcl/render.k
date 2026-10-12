@@ -246,6 +246,11 @@ _primary_target = lambda b: Bundle -> any {
 # ---------------------------------------------------------------------------
 _default_probes = lambda w: any -> any {
     w.probes if w.probes else (_TProbes {
+        # startupPath = /readyz holds liveness off until the server is ready,
+        # for the whole startup-dependency wait (the database connect retries
+        # for up to DB_CONNECT_TIMEOUT). The window is v1alpha1's
+        # DefaultStartupFailureThreshold.
+        startupPath = "/readyz"
         readinessPath = "/readyz"
         livenessPath = "/healthz"
         port = _http_port(w)

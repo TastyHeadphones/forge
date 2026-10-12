@@ -190,3 +190,27 @@ func TestAdapterAndClientTemplates_InjectableHTTPClient(t *testing.T) {
 		t.Fatalf("rendered adapter.go is not gofmt-valid: %v\n%s", ferr, adapterOut)
 	}
 }
+
+// TestScaffold_DatabaseStartupRetries pins the wiring that stops a database
+// which is not up YET from crash-looping the process. A prod rollout once
+// restarted three services because the scaffold's boot ping was a single
+// attempt whose failure was fatal.
+func TestScaffold_DatabaseStartupRetries(t *testing.T) {
+	providers, err := ProjectTemplates().Render("providers.go.tmpl", struct {
+		Module      string
+		HasDatabase bool
+		OrmEnabled  bool
+	}{Module: "example.com/proj", HasDatabase: true})
+	if err != nil {
+		t.Fatalf("render providers.go.tmpl: %v", err)
+	}
+	src := string(providers)
+	for _, want := range []string{"serverkit.OpenDB(ctx,", "cfg.DbConnectTimeout.AsDuration()"} {
+		if !strings.Contains(src, want) {
+			t.Errorf("providers.go does not open the database through the retrying helper: missing %q", want)
+		}
+	}
+	if strings.Contains(src, "db.PingContext") || strings.Contains(src, "dbConnectTimeout") {
+		t.Errorf("providers.go still has the one-shot fatal ping:\n%s", src)
+	}
+}

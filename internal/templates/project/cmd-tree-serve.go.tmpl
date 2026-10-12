@@ -141,6 +141,20 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 	// two agree; serverkit also owns OTel setup from skCfg.OTLPEndpoint +
 	// skCfg.ServiceName and mounts /metrics on its own edge.
 	logger, mux := serverkit.Boot(skCfg)
+
+	// BOOT PROBES. Bind the listener NOW, before any dependency is touched.
+	// The database connect below retries for up to DB_CONNECT_TIMEOUT instead
+	// of failing the process on the first refused dial (a pooler or primary
+	// that comes up seconds after its clients is routine in a rollout), and a
+	// process that is waiting must not look crashed: until serverkit.Run takes
+	// the address over, /healthz answers 200 and /readyz answers 503 naming
+	// the dependency being waited on. Everything that takes ctx from here on
+	// reports into it.
+	ctx, bootProbes, err := serverkit.StartBootProbes(ctx, skCfg, logger)
+	if err != nil {
+		return err
+	}
+	defer bootProbes.Close()
 {{- if index .ConfigFields "AutoMigrate"}}
 
 	// Migrate BEFORE constructing components and mounting: a service that
@@ -152,7 +166,7 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 	// boot); the migration LOGIC is migratekit's, so improvements to it arrive
 	// through a forge/pkg bump rather than a re-scaffold of this file, which
 	// is yours.
-	if merr := serverkit.AutoMigrate(skCfg, logger,
+	if merr := serverkit.AutoMigrateContext(ctx, skCfg, logger,
 		migratekit.AutoMigrate(forgedb.Source(), forgedb.SourceDir)); merr != nil {
 		return merr
 	}
@@ -449,6 +463,9 @@ func serverkitConfig(cfg *config.Config) (serverkit.Config, error) {
 {{- end}}
 {{- if index .ConfigFields "DbConnMaxLifetime"}}
 	skCfg.DBPoolTuning.ConnMaxLifetime = cfg.DbConnMaxLifetime.AsDuration()
+{{- end}}
+{{- if index .ConfigFields "DbConnectTimeout"}}
+	skCfg.DBConnectTimeout = cfg.DbConnectTimeout.AsDuration()
 {{- end}}
 
 	// Normalize LAST, so nothing downstream can observe a zero-valued

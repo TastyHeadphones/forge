@@ -638,7 +638,7 @@ func TestNativeSidecar(t *testing.T) {
 	if get(init, "name") != "proxy" || get(init, "restartPolicy") != "Always" {
 		t.Fatalf("native sidecar must be an Always initContainer, got %v", init)
 	}
-	if get(init, "startupProbe", "httpGet", "path") != "/startup" || get(init, "startupProbe", "failureThreshold") != float64(60) {
+	if get(init, "startupProbe", "httpGet", "path") != "/startup" || get(init, "startupProbe", "failureThreshold") != float64(360) {
 		t.Errorf("startupProbe = %v", get(init, "startupProbe"))
 	}
 	if get(pod, "containers", 1, "name") != "plain" || get(pod, "containers", 1, "restartPolicy") != nil {

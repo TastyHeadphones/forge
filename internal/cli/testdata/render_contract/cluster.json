@@ -118,6 +118,7 @@
             "periodSeconds": 5,
             "port": 8080,
             "readinessPath": "/readyz",
+            "startupPath": "/readyz",
             "timeoutSeconds": 3
           },
           "replicas": 2,
@@ -449,6 +450,7 @@
             "periodSeconds": 5,
             "port": 8080,
             "readinessPath": "/readyz",
+            "startupPath": "/readyz",
             "timeoutSeconds": 3
           },
           "replicas": 2,

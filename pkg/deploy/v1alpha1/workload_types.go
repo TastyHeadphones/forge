@@ -551,10 +551,17 @@ const (
 	DefaultProbeFailureThreshold    int32 = 3
 
 	// A startup probe polls every DefaultStartupPeriodSeconds for up to
-	// DefaultStartupPeriodSeconds*DefaultStartupFailureThreshold (60s)
+	// DefaultStartupPeriodSeconds*DefaultStartupFailureThreshold (360s)
 	// before the kubelet restarts the container.
+	//
+	// The window must cover the process's startup dependency wait: a forge
+	// server retries its database connect for serverkit.DefaultDBConnectTimeout
+	// (5m, DB_CONNECT_TIMEOUT) while reporting not-ready, and the kubelet
+	// must not kill it inside that wait. 360s = 300s + 60s for the rest of
+	// boot. TestStartupWindowCoversDBConnectTimeout pins the relation; a
+	// deployment that raises DB_CONNECT_TIMEOUT past it must widen this too.
 	DefaultStartupPeriodSeconds    int32 = 1
-	DefaultStartupFailureThreshold int32 = 60
+	DefaultStartupFailureThreshold int32 = 360
 
 	DefaultReadinessPath = "/readyz"
 	DefaultLivenessPath  = "/healthz"

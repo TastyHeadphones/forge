@@ -232,6 +232,13 @@ message AppConfig {
     description: "Maximum amount of time a connection may be reused before being closed (Go duration, e.g. 30m)."
   }];
 
+  google.protobuf.Duration db_connect_timeout = 40 [(forge.v1.config) = {
+    env_var: "DB_CONNECT_TIMEOUT"
+    flag: "db-connect-timeout"
+    default_value: "5m"
+    description: "Total time to keep retrying the database connection at startup (capped exponential backoff with jitter) before the process exits non-zero. While retrying, the process stays up: /healthz passes and /readyz fails naming the database. The rendered startup probe window covers the 5m default; raise this only together with the probe window."
+  }];
+
   // The pprof side-listener, ON BY DEFAULT.
   //
   // A process that is being OOMKilled can tell you HOW MUCH it is holding

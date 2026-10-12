@@ -60,7 +60,7 @@ func TestLowerContainerMatchesForgeLowering(t *testing.T) {
 		t.Errorf("plain container must not carry restartPolicy: %v", got.Plain)
 	}
 	startup, _ := got.Native["startupProbe"].(map[string]any)
-	if startup["periodSeconds"] != float64(1) || startup["failureThreshold"] != float64(60) || startup["timeoutSeconds"] != float64(3) {
+	if startup["periodSeconds"] != float64(1) || startup["failureThreshold"] != float64(360) || startup["timeoutSeconds"] != float64(3) {
 		t.Errorf("startupProbe timings are not forge's defaults: %v", startup)
 	}
 	if hg, _ := startup["httpGet"].(map[string]any); hg["path"] != "/startup" || hg["port"] != float64(9801) {

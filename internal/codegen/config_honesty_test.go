@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"strings"
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/templates"
@@ -30,6 +31,7 @@ func durationMessages() []ConfigMessage {
 			dur("shutdown_timeout", "ShutdownTimeout", "SHUTDOWN_TIMEOUT", "shutdown-timeout", "30s", "drain budget (Go duration)"),
 			dur("db_conn_max_idle_time", "DbConnMaxIdleTime", "DB_CONN_MAX_IDLE_TIME", "db-conn-max-idle-time", "5m", "idle cap (Go duration)"),
 			dur("db_conn_max_lifetime", "DbConnMaxLifetime", "DB_CONN_MAX_LIFETIME", "db-conn-max-lifetime", "30m", "lifetime cap (Go duration)"),
+			dur("db_connect_timeout", "DbConnectTimeout", "DB_CONNECT_TIMEOUT", "db-connect-timeout", "5m", "startup connect budget (Go duration)"),
 		},
 	}}
 }
@@ -198,4 +200,36 @@ func callsFreeFuncWithArg(file *ast.File, name, arg string) bool {
 		return true
 	})
 	return found
+}
+
+// TestCmdServer_DatabaseStartupRetries pins the order that stops a database
+// which is not up YET from crash-looping the process: the boot probes bind
+// the listener before anything dials, the migrate connect and OpenInfra take
+// the boot ctx (so they retry and report into /readyz), and Run takes the
+// address over. A prod rollout once restarted three services because the
+// boot ping was a single attempt whose failure was fatal.
+func TestCmdServer_DatabaseStartupRetries(t *testing.T) {
+	out, err := templates.ProjectTemplates().Render("cmd-tree-serve.go.tmpl", CmdServerTemplateData{
+		Module:       "example.com/proj",
+		ConfigFields: DefaultConfigFieldNames(),
+	})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	src := string(out)
+	last := -1
+	order := []string{"serverkit.StartBootProbes(", "serverkit.AutoMigrateContext(ctx,", "app.OpenInfra(ctx,", "serverkit.Run(ctx,"}
+	for _, want := range order {
+		i := strings.Index(src, want)
+		if i < 0 {
+			t.Fatalf("serve scaffold is missing %q\n%s", want, src)
+		}
+		if i < last {
+			t.Errorf("%q must come after the previous step in %v", want, order)
+		}
+		last = i
+	}
+	if !strings.Contains(src, "skCfg.DBConnectTimeout = cfg.DbConnectTimeout.AsDuration()") {
+		t.Error("DB_CONNECT_TIMEOUT is declared but never projected onto serverkit.Config")
+	}
 }
