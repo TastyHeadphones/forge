@@ -2762,8 +2762,8 @@ func prewarmInfra(ctx context.Context, env string, entities *KCLEntities) error 
 		return fmt.Errorf("group infrastructure services: %w", err)
 	}
 	projectDir := projectDirForKCL()
-	if err := ensureClickstackLogDir(projectDir, entities); err != nil {
-		return fmt.Errorf("create .forge/logs for the clickstack log mount: %w", err)
+	if err := prepareLocalCollector(projectDir, entities); err != nil {
+		return fmt.Errorf("prepare the local collector (.forge/logs mount, forwarder config): %w", err)
 	}
 	// APPLICATION providers are deliberately absent from this map —
 	// k8s-cluster, external, firebase and static-site are all things the
@@ -2851,7 +2851,6 @@ func upHostServices(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntiti
 	// external/none. buildHostServiceCmd layers this map (or the legacy
 	// per-service secrets_file fallback) onto each service's env.
 	secretsLayer := prov.All()
-	otlpDefaults := clickstackHostOTLPEnv(e)
 	failures := 0
 	for _, w := range e.WorkloadsOn(RuntimeHost) {
 		if !w.LongRunning() {
@@ -2873,9 +2872,6 @@ func upHostServices(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntiti
 			failures++
 			continue
 		}
-		// Traces and metrics reach the local ClickStack with nothing to
-		// configure: the standard OTLP variables, unless already set.
-		cmd.Env = withDefaultOTLPEnv(cmd.Env, otlpDefaults)
 		if err := procs.start(name, cmd, background); err != nil {
 			fmt.Printf("[up] host %s: %v\n", w.Name, err)
 			failures++
@@ -2932,7 +2928,7 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, w Workl
 	// workload receives only the keys it names via a secretRef. An
 	// undeclared secret reaches nothing.
 	secretVals := scopeSecretsToService(secretsLayer, &w)
-	envVars := w.HostEnv()
+	envVars := withoutDerivedOTLPIfShellSet(w.HostEnv(), os.Environ())
 	// projectConfig layer: forge.yaml environments[<env>].config projected
 	// to env-var strings. Same source the cluster ConfigMap projection
 	// uses; layering it here keeps `forge env up` host workloads in sync

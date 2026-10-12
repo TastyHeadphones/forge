@@ -110,33 +110,53 @@ _database_url = "postgres://postgres:postgres@localhost:${_postgres_port}/{{.Pro
 _secret_store = forge.FileSecrets {path = "secrets/{{.EnvName}}.yaml"}
 
 # ── OBSERVABILITY — ON BY DEFAULT ───────────────────────────────────────────
-# True runs docker-compose.yml's `clickstack` beside the stack: ClickHouse, the
-# HyperDX UI and an OTLP collector in ONE container (HyperDX's no-auth local
-# mode, ~0.8 GB resident). `forge env up` then
+# Where this env's telemetry goes is DECLARED here, once, and forge renders the
+# plumbing. Apps never learn the backend: they export OTLP to a local endpoint
+# (`forge env up` gives every host process the standard OTEL_EXPORTER_OTLP_*
+# variables) and the collector behind it decides where the data lands.
 #
-#   * exports OTEL_EXPORTER_OTLP_ENDPOINT / _PROTOCOL to every host process
-#     (traces + metrics), unless you set them yourself, and
-#   * has the collector tail .forge/logs/{{.EnvName}}/*.log (logs),
+#   * no destination (the default) runs docker-compose.yml's `clickstack`
+#     beside the stack: ClickHouse, the HyperDX UI and a collector in ONE
+#     container (HyperDX's no-auth local mode, ~0.8 GB resident). Traces and
+#     metrics arrive over OTLP; the collector tails .forge/logs/{{.EnvName}}/*.log
+#     for logs. `forge env up` lists the HyperDX URL with the other services.
+#   * a destination swaps ClickStack for a small forwarder (`otel-forwarder`)
+#     that sends all of it to YOUR OTLP endpoint instead. Its headers come from
+#     the secret store, never from this file:
 #
-# so traces, metrics and logs reach HyperDX with nothing to register or copy,
-# and `forge env up` lists the HyperDX URL with the other services.
+#         _destination = forge.ObservabilityDestination {
+#             endpoint = "https://otlp.example.com"
+#             headers_secret = forge.ObservabilitySecretRef {name = "otlp", key = "OTLP_HEADERS"}
+#         }
 #
-# TO TURN IT OFF set this to False: no container starts and no endpoint is
-# exported, so processes run exactly as they did before observability. The
-# runtime still propagates trace context; it just has nowhere to send spans.
+#     then `forge secret set --env {{.EnvName}} OTLP_HEADERS` with
+#     {"authorization": "<key>"} on stdin.
 #
-# One switch because three things must agree: the compose service has to RUN,
-# it has to PUBLISH its OTLP and UI ports to this machine (the API is a host
-# process, not on the compose network), and every process has to EXPORT to
-# the port it published. All three read the ports below.
+# TO TURN IT OFF set `_observability = False`: no container starts and no
+# endpoint is exported, so processes run exactly as they did before
+# observability. The runtime still propagates trace context; it just has
+# nowhere to send spans.
+#
+# Everything the declaration controls (signals, sampling, retention) is on
+# `forge.Observability` below; see the `observability` skill.
 _observability = True
+_destination = None
 
 # The ports compose publishes on loopback and host processes export to.
 # resolve_port steps off a busy preferred port, so two worktrees never fight
-# over 4318.
+# over 4318. The declaration below reads them back, so the exported endpoint
+# cannot drift from the published port.
 _otlp_http_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-otlp-http", 4318) if _observability else 0
 _otlp_grpc_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-otlp-grpc", 4317) if _observability else 0
-_hyperdx_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-hyperdx", 8180) if _observability else 0
+_hyperdx_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-hyperdx", 8180) if _observability and not _destination else 0
+
+_observability_decl = forge.Observability {
+    local_port = _otlp_http_port
+    destination = _destination
+    # Retention hints (days), e.g. `retention = forge.ObservabilityRetention {logs_days = 7}`,
+    # become ClickStack's table TTL below. Sampling and signals live here too.
+} if _observability else None
+_ttl = forge.observability_ttl(_observability_decl) if _observability_decl else ""
 
 # ---------------------------------------------------------------------------
 # Each workload's env here.
@@ -280,11 +300,19 @@ _workloads = [
 {{.Bindings}}
 ]
 
-# The observability stack, when `_observability` (above) is on: compose owns
-# the container, and this hands it the ports to publish. Rebind or drop this
-# one workload to point at a different backend; the processes only ever see
-# the standard OTEL_EXPORTER_OTLP_* variables.
-_telemetry_workloads = [fw.Workload {
+# The local collector, when `_observability` (above) is on: compose owns the
+# container, and this hands it the ports to publish. ClickStack stores what it
+# receives; with a destination the forwarder sends it on instead.
+_telemetry_workloads = ([fw.Workload {
+    name = "otel-forwarder"
+    runtime = forge.OnCompose {
+        service = "otel-forwarder"
+        env = {
+            "OTEL_FORWARDER_HTTP_PORT" = str(_otlp_http_port)
+            "OTEL_FORWARDER_GRPC_PORT" = str(_otlp_grpc_port)
+        }
+    }
+}] if _destination else [fw.Workload {
     name = "clickstack"
     runtime = forge.OnCompose {
         service = "clickstack"
@@ -292,9 +320,9 @@ _telemetry_workloads = [fw.Workload {
             "CLICKSTACK_UI_PORT" = str(_hyperdx_port)
             "CLICKSTACK_OTLP_HTTP_PORT" = str(_otlp_http_port)
             "CLICKSTACK_OTLP_GRPC_PORT" = str(_otlp_grpc_port)
-        }
+        } | ({"CLICKSTACK_TABLES_TTL" = _ttl} if _ttl else {})
     }
-}] if _observability else []
+}]) if _observability else []
 
 _bundle = forge.Bundle {
     project = "{{.ProjectName}}"
@@ -315,6 +343,7 @@ _bundle = forge.Bundle {
     # Where the env's support objects (Namespace, gateways, routes) land.
     cluster_target = _k3d
     workloads = _workloads + _telemetry_workloads
+    observability = _observability_decl
     # ── THIS ENVIRONMENT'S INFRASTRUCTURE ─────────────────────────────────
     #
     # The servers the app DIALS but does not build, as HOST PROCESSES: forge

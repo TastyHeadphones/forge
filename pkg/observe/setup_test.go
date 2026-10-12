@@ -8,6 +8,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func TestResourceFromConfig(t *testing.T) {
@@ -118,4 +119,49 @@ func TestSetup_DevVersionTreatedAsUnset(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	_ = shutdown(ctx)
+}
+
+// forge renders the trace ratio as OTEL_TRACES_SAMPLER=parentbased_traceidratio
+// + OTEL_TRACES_SAMPLER_ARG (head sampling, so a trace is whole or absent across
+// services). The OTel SDK reads those only while the provider sets no sampler of
+// its own, so this drives the real Setup path: ratio 0 must drop a root span, ratio
+// 1 must keep it, and a sampled parent must be followed whatever the ratio.
+func TestSetup_HonoursTheSamplerEnvironment(t *testing.T) {
+	sampled := func(t *testing.T, arg string, parent bool) bool {
+		t.Helper()
+		clearOTelEnv(t)
+		snapshotGlobals(t)
+		t.Setenv("OTEL_TRACES_SAMPLER", "parentbased_traceidratio")
+		t.Setenv("OTEL_TRACES_SAMPLER_ARG", arg)
+		shutdown, _, err := Setup(context.Background(), Config{ServiceName: "svc", OTLPEndpoint: "http://127.0.0.1:1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			defer cancel()
+			_ = shutdown(ctx)
+		}()
+		ctx := context.Background()
+		if parent {
+			ctx = trace.ContextWithRemoteSpanContext(ctx, trace.NewSpanContext(trace.SpanContextConfig{
+				TraceID:    trace.TraceID{1},
+				SpanID:     trace.SpanID{1},
+				TraceFlags: trace.FlagsSampled,
+				Remote:     true,
+			}))
+		}
+		_, span := otel.Tracer("t").Start(ctx, "op")
+		defer span.End()
+		return span.SpanContext().IsSampled()
+	}
+	if sampled(t, "0", false) {
+		t.Error("ratio 0 kept a root span: the environment's sampler was ignored")
+	}
+	if !sampled(t, "1", false) {
+		t.Error("ratio 1 dropped a root span")
+	}
+	if !sampled(t, "0", true) {
+		t.Error("a sampled parent was dropped: the services of one trace would disagree and split it")
+	}
 }

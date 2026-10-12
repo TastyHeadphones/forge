@@ -38,7 +38,7 @@ import (
 // evaluation (that is where the published ports are decided), brings up the
 // GENERATED docker-compose.yml's clickstack service exactly as `forge env up`
 // would, then plays a host process: it takes the endpoint from the same
-// function `forge env up` uses (clickstack.HostOTLPEnv), sends one known
+// render `forge env up` uses (the typed observability declaration), sends one known
 // trace, three metric families and a log over OTLP/HTTP with no credentials,
 // and writes one JSON line to .forge/logs/dev/<service>.log. Every assertion is
 // on an EXACT service name, trace id, metric name and value read back from
@@ -130,10 +130,17 @@ func TestGeneratedProjectDeliversTelemetryToClickStack(t *testing.T) {
 	}
 
 	// ── What a host process is handed ────────────────────────────────────
-	env := clickstack.HostOTLPEnv(httpPort)
+	// The same render `forge env up` hands every host process: the API's
+	// OTEL_EXPORTER_OTLP_* as the typed observability declaration derives
+	// them. Reading it from the render, not rebuilding it here, is what makes
+	// this gate prove the env a user gets delivers data.
+	env := map[string]string{}
+	for _, m := range regexp.MustCompile(`"name":"(OTEL_EXPORTER_OTLP_[A-Z]+)","value":"([^"]*)"`).FindAllStringSubmatch(w["api"], -1) {
+		env[m[1]] = m[2]
+	}
 	endpoint := env["OTEL_EXPORTER_OTLP_ENDPOINT"]
 	if env["OTEL_EXPORTER_OTLP_PROTOCOL"] != "http/protobuf" || endpoint != "http://127.0.0.1:"+httpPort {
-		t.Fatalf("host OTLP env = %v", env)
+		t.Fatalf("host OTLP env = %v (rendered api: %s)", env, w["api"])
 	}
 
 	run := fmt.Sprintf("%d", time.Now().UnixNano())

@@ -3411,6 +3411,141 @@ schema DNSRecord:
 # Bundle — the project-level container forge.render() consumes.
 # ---------------------------------------------------------------------------
 
+schema ObservabilitySecretRef:
+    """One key of a secret that holds the destination's request headers.
+
+    On a cluster it names a Kubernetes Secret in the node agent's namespace
+    (`Observability.agent.namespace`); the DaemonSet reads `key` through a
+    secretKeyRef. On a developer machine it names the entry in the env's
+    gitignored secret store (`forge secret set --env <env> <key>`), which
+    `forge env up` hands to the local forwarder. Never an inline value.
+
+    The VALUE is a JSON object of header names to header values, e.g.
+    `{"authorization": "<ingestion key>"}`: the collector reads it as a map.
+    """
+    name: str
+    key: str
+
+    check:
+        len(name) > 0, "ObservabilitySecretRef.name is required"
+        len(key) > 0, "ObservabilitySecretRef.key is required"
+
+schema ObservabilityDestination:
+    """Where an environment's telemetry goes: an OTLP endpoint, the protocol
+    it speaks, and the secret holding the headers it wants. Apps never see
+    it. They push to a collector forge generates for the runtime, and that
+    collector exports here.
+
+        destination = forge.ObservabilityDestination {
+            endpoint = "https://otlp.example.com"
+            headers_secret = forge.ObservabilitySecretRef {name = "otlp-auth", key = "headers"}
+        }
+    """
+    endpoint: str
+    protocol: "http/protobuf" | "grpc" = "http/protobuf"
+    headers_secret?: ObservabilitySecretRef
+
+    check:
+        regex.match(endpoint, r"^https?://[^/ ]+(:[0-9]+)?(/[^ ]*)?$"), \
+            "ObservabilityDestination.endpoint '${endpoint}' must be an absolute http(s) OTLP URL (e.g. https://otlp.example.com)"
+
+schema ObservabilitySignals:
+    """Which signals the env ships. A disabled signal is switched off at the
+    app (`OTEL_<SIGNAL>_EXPORTER=none`) and left out of the collector's
+    pipelines. Profiles are off until the backend can store them."""
+    traces: bool = True
+    metrics: bool = True
+    logs: bool = True
+    profiles: bool = False
+
+schema ObservabilitySampling:
+    """Trace sampling. The ratio is HEAD sampling in the SDK: every workload
+    gets `OTEL_TRACES_SAMPLER=parentbased_traceidratio` and
+    `OTEL_TRACES_SAMPLER_ARG=<traces_ratio>`, so each service follows the root
+    span's decision and a trace is whole or absent, whatever nodes it crosses.
+    Collectors never sample traces (a per-node decision splits a trace).
+
+    Keeping every ERROR trace is a TAIL decision: it needs the whole trace in
+    one place. Forge renders no gateway, so `errors_always` is a statement
+    about the destination, not something forge can do, and forge refuses to
+    accept it silently:
+
+      * `traces_ratio < 1` with `errors_always = True` is refused unless
+        `destination_tail_samples = True` ("the destination keeps error
+        traces itself", e.g. the hosted platform's gateway).
+      * Otherwise `errors_always` is False and a ratio below 1 drops errors
+        like everything else, which is stated rather than hidden.
+
+    A ratio below 1 needs a destination: local ClickStack stores everything.
+    """
+    traces_ratio: float = 1.0
+    errors_always: bool = False
+    destination_tail_samples: bool = False
+
+    check:
+        traces_ratio >= 0.0 and traces_ratio <= 1.0, "ObservabilitySampling.traces_ratio must be between 0.0 and 1.0"
+        traces_ratio >= 1.0 or not errors_always or destination_tail_samples, \
+            "ObservabilitySampling: traces_ratio < 1 with errors_always = True needs tail sampling, which forge does not render (head sampling in the SDK cannot know a trace will fail). Either set errors_always = False (errors are sampled like everything else), or, if the destination's gateway keeps error traces itself, say so with destination_tail_samples = True"
+        not destination_tail_samples or errors_always, "ObservabilitySampling.destination_tail_samples only qualifies errors_always = True"
+
+schema ObservabilityRetention:
+    """Retention hints in days; 0 = the backend's default. Passed through
+    only where the runtime can apply them: local ClickStack takes ONE table
+    TTL (the longest hint). A node agent has no storage and ignores them; the
+    hint is carried in `output.observability.retention` for whatever runs the
+    backend."""
+    traces_days: int = 0
+    metrics_days: int = 0
+    logs_days: int = 0
+
+    check:
+        traces_days >= 0 and metrics_days >= 0 and logs_days >= 0, "ObservabilityRetention days must be >= 0"
+
+schema ObservabilityAgent:
+    """The per-node collector forge renders on cluster runtimes (a
+    DaemonSet plus a node-local Service). Not rendered for forge.OnHosted:
+    the platform runs its own."""
+    namespace: str = "forge-observability"
+    image: str = OTEL_COLLECTOR_IMAGE
+    memory_limit_mib: int = 256
+
+    check:
+        regex.match(namespace, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "ObservabilityAgent.namespace must be an RFC-1123 label"
+        memory_limit_mib >= 64, "ObservabilityAgent.memory_limit_mib must be >= 64"
+
+schema Observability:
+    """Where this environment's telemetry goes. Set on `Bundle.observability`.
+
+    UNSET = telemetry off, cleanly: no endpoint is injected and nothing is
+    rendered. `enabled = False` is the same, spelled where it can be flipped.
+
+    Apps keep emitting OTLP to a local endpoint and never learn the backend:
+
+      * host processes   -> the local collector on 127.0.0.1:`local_port`
+      * cluster runtimes -> a node-local agent Service forge renders
+      * forge.OnHosted   -> nothing from forge; the platform owns the endpoint
+
+    `destination` unset means "the local ClickStack stores it": host
+    processes export to `local_port` (the loopback port the env's collector
+    publishes), and a cluster workload exports nothing, because loopback is
+    unreachable from a cluster. With a destination, the collector in front of
+    the app forwards there, and cluster workloads export to the node agent.
+
+        observability = forge.Observability {local_port = _otlp_http_port}
+    """
+    enabled: bool = True
+    destination?: ObservabilityDestination
+    local_port: int = 0
+    signals: ObservabilitySignals = ObservabilitySignals {}
+    sampling: ObservabilitySampling = ObservabilitySampling {}
+    retention: ObservabilityRetention = ObservabilityRetention {}
+    agent: ObservabilityAgent = ObservabilityAgent {}
+
+    check:
+        local_port >= 0 and local_port < 65536, "Observability.local_port must be 0..65535"
+        not enabled or sampling.traces_ratio >= 1.0 or destination, \
+            "Observability.sampling.traces_ratio < 1.0 needs a destination: sampling runs in the collector that forwards, and the local ClickStack stores everything"
+
 schema Manifests:
     """Raw Kubernetes objects forge applies with the env: the ONE home for
     anything that is not a typed entity (a CRD, a ClusterIssuer, a vendored
@@ -3773,6 +3908,11 @@ schema Bundle:
     # See the `deploy/overrides` skill. Empty => forge's objects render as
     # forge renders them.
     overrides: {str: any} = {}
+    # Where this env's telemetry goes (see Observability). UNSET = telemetry
+    # off: no endpoint is injected into any workload and no collector is
+    # rendered. The dev env scaffolds the local ClickStack; a real env
+    # declares a destination.
+    observability?: Observability
 
     check:
         # The key grammar, checked at load so a typo'd key is a KCL error
@@ -3884,5 +4024,22 @@ schema Bundle:
                 cluster_target, gateways, http_routes, grpc_routes, helm_charts, \
                 manifests, generated, rendered_secrets)) == 0, \
             "a '${lifecycle}' env may only target clusters forge creates (Bundle.clusters); ${', '.join(_unmanaged_contexts(clusters, workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets))} is not one"
+        # THE DESTINATION'S HEADERS MUST RESOLVE. The node agent reads them
+        # through a secretKeyRef in its own namespace, and a Secret nothing
+        # supplies leaves the DaemonSet in CreateContainerConfigError with
+        # no telemetry and no explanation. Resolving means the Bundle states
+        # who provides it: a required_secrets entry (an out-of-band Secret,
+        # checked live by the deploy preflight) or a rendered_secrets entry.
+        # A local env without cluster workloads uses the secret store instead,
+        # which `forge env up` checks before it starts anything.
+        _headers_secret_supplied(workloads, observability, required_secrets, rendered_secrets), \
+            _headers_secret_msg(observability)
+        # ONE LOG SHIPPING PATH. The node agent (cluster) and the local
+        # collector (host) already ship container/process logs; a workload that
+        # also exports OTLP logs would store every line twice.
+        len(_logs_double_shipped(workloads, observability)) == 0, \
+            "${_logs_double_shipped(workloads, observability)} set OTEL_LOGS_EXPORTER=otlp, but this env's collector already ships their logs (Observability.signals.logs), so every line would be stored twice. Unset OTEL_LOGS_EXPORTER, or set signals.logs = False to ship logs from the app instead"
+        len(_host_without_local_port(workloads, observability)) == 0, \
+            "${_host_without_local_port(workloads, observability)} run as host processes, which export OTLP to the local collector's loopback port: set Bundle.observability.local_port (the port the env's compose collector publishes)"
         all w in workloads { not _cloud_build_without_platform(w) }, \
             "ClusterTarget.platform is required for ${[w.name for w in workloads if _cloud_build_without_platform(w)]}: it deploys to a cloud target (a non-local registry) AND has a real external image build (DockerBuild / non-no-op ShellBuild), but its target states no build platform. Set platform (e.g. 'amd64') on the ClusterTarget so the build cross-compiles for the cloud node arch instead of silently falling through to the dev host arch (the arm64-image-on-amd64-node ImagePullBackOff/exec-format-error class)."

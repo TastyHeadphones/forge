@@ -456,9 +456,9 @@ func TestDevSignInReachesTheAPI(t *testing.T) {
 // that must agree for any data to arrive from a FRESH project with no edits:
 // the clickstack compose service runs, it is handed the ports to publish, and
 // the compose file publishes exactly those variables on loopback. The endpoint
-// host processes export to is `forge env up`'s job (clickstackHostOTLPEnv),
-// which reads the same port from this workload; the env must not also bake a
-// second copy into the process env, or the two could disagree.
+// host processes export to is DERIVED by the typed observability declaration
+// (Bundle.observability.local_port, the same variable that is the published
+// port), so the two cannot disagree.
 func TestDevObservabilityIsOnByDefaultAndDeliversTelemetry(t *testing.T) {
 	root := scaffoldForRender(t, "shop", []string{"orders"}, "web")
 	w := devWorkloadJSON(t, root)
@@ -472,8 +472,15 @@ func TestDevObservabilityIsOnByDefaultAndDeliversTelemetry(t *testing.T) {
 			t.Errorf("clickstack is not handed a real %s to publish:\n%s", v, stack)
 		}
 	}
-	if strings.Contains(w["api"], `"OTEL_EXPORTER_OTLP_ENDPOINT"`) {
-		t.Errorf("the API env carries its own OTLP endpoint; forge env up owns it:\n%s", w["api"])
+	// The API's endpoint is the declaration's derivation of the SAME port the
+	// clickstack service publishes, as a pair with its protocol.
+	port := regexp.MustCompile(`"CLICKSTACK_OTLP_HTTP_PORT":"(\d+)"`).FindStringSubmatch(stack)[1]
+	if !strings.Contains(w["api"], `"name":"OTEL_EXPORTER_OTLP_ENDPOINT","value":"http://127.0.0.1:`+port+`"`) ||
+		!strings.Contains(w["api"], `"name":"OTEL_EXPORTER_OTLP_PROTOCOL","value":"http/protobuf"`) {
+		t.Errorf("the API does not export to the port clickstack publishes (%s):\n%s", port, w["api"])
+	}
+	if strings.Contains(w["api"], "OTEL_LOGS_EXPORTER") {
+		t.Errorf("the local collector tails the log files; OTLP logs must stay off:\n%s", w["api"])
 	}
 
 	compose, err := os.ReadFile(filepath.Join(root, "docker-compose.yml"))
@@ -503,8 +510,12 @@ func TestDevObservabilityIsOnByDefaultAndDeliversTelemetry(t *testing.T) {
 	if err := os.WriteFile(mainK, []byte(off), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := devWorkloadJSON(t, root)["clickstack"]; ok {
+	offW := devWorkloadJSON(t, root)
+	if _, ok := offW["clickstack"]; ok {
 		t.Errorf("_observability = False still runs clickstack")
+	}
+	if strings.Contains(offW["api"], "OTEL_EXPORTER_OTLP") {
+		t.Errorf("_observability = False still exports OTLP (a dangling endpoint):\n%s", offW["api"])
 	}
 }
 

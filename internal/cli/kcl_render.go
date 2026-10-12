@@ -125,6 +125,9 @@ type KCLEntities struct {
 	// (WHERE secret values come from for this env). Nil when the bundle
 	// declares no provider.
 	SecretProvider *SecretProviderEntity `json:"secret_provider,omitempty"`
+	// Observability is the env's typed observability declaration. Nil =
+	// telemetry off. See ObservabilityEntity.
+	Observability *ObservabilityEntity `json:"observability,omitempty"`
 	// RenderedSecrets are the Bundle-level forge.RenderedSecret
 	// declarations (Bundle.rendered_secrets): Secrets forge renders and
 	// applies itself, INDEPENDENT of SecretProvider, each at the
@@ -1105,6 +1108,50 @@ type KCLEnvVar struct {
 	SecretOptional bool `json:"secret_optional,omitempty"`
 }
 
+// ObservabilityEntity is the env's typed observability declaration
+// (Bundle.observability) as `output.observability`. Nil when the env declares
+// none: telemetry is off and nothing is injected.
+type ObservabilityEntity struct {
+	Enabled       bool                       `json:"enabled"`
+	LocalPort     int                        `json:"local_port,omitempty"`
+	LocalEndpoint string                     `json:"local_endpoint,omitempty"`
+	Destination   *ObservabilityDestEntity   `json:"destination,omitempty"`
+	Signals       ObservabilitySignalsEntity `json:"signals"`
+	Sampling      struct {
+		TracesRatio            float64 `json:"traces_ratio"`
+		ErrorsAlways           bool    `json:"errors_always"`
+		DestinationTailSamples bool    `json:"destination_tail_samples"`
+	} `json:"sampling"`
+	Retention struct {
+		TracesDays  int `json:"traces_days"`
+		MetricsDays int `json:"metrics_days"`
+		LogsDays    int `json:"logs_days"`
+	} `json:"retention"`
+	Agent struct {
+		Namespace      string `json:"namespace"`
+		Image          string `json:"image"`
+		MemoryLimitMiB int    `json:"memory_limit_mib"`
+	} `json:"agent"`
+}
+
+// ObservabilityDestEntity is Observability.destination.
+type ObservabilityDestEntity struct {
+	Endpoint      string `json:"endpoint"`
+	Protocol      string `json:"protocol"`
+	HeadersSecret *struct {
+		Name string `json:"name"`
+		Key  string `json:"key"`
+	} `json:"headers_secret,omitempty"`
+}
+
+// ObservabilitySignalsEntity is Observability.signals.
+type ObservabilitySignalsEntity struct {
+	Traces   bool `json:"traces"`
+	Metrics  bool `json:"metrics"`
+	Logs     bool `json:"logs"`
+	Profiles bool `json:"profiles"`
+}
+
 // kclRenderRaw is the JSON shape of `output` (P2 map §9.1). Workloads are
 // decoded in a second step (kclWorkloadRaw) because their build and runtime
 // are tagged unions and their spec is decoded strictly.
@@ -1118,6 +1165,7 @@ type kclRenderRaw struct {
 	KubeconfigSecrets []KubeconfigSecretEntity `json:"kubeconfig_secrets,omitempty"`
 	ConnectedClusters map[string]string        `json:"connected_clusters,omitempty"`
 	Workloads         []kclWorkloadRaw         `json:"workloads,omitempty"`
+	Observability     *ObservabilityEntity     `json:"observability,omitempty"`
 	Infra             []HostInfraEntity        `json:"infra,omitempty"`
 	Frontends         []FrontendEntity         `json:"frontends,omitempty"`
 	Gateways          []GatewayEntity          `json:"gateways,omitempty"`
@@ -1406,6 +1454,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		HelmCharts:           raw.HelmCharts,
 		Databases:            raw.Databases,
 		SecretProvider:       raw.SecretProvider,
+		Observability:        raw.Observability,
 		RenderedSecrets:      raw.RenderedSecrets,
 		ControlPlane:         raw.ControlPlane,
 		RequiredSecrets:      raw.RequiredSecrets,

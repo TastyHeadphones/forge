@@ -151,8 +151,11 @@ func TestDevStack_ObservabilityIsOnByDefault(t *testing.T) {
 			if !regexp.MustCompile(`(?m)^_observability = True$`).MatchString(src) {
 				t.Errorf("dev/main.k must declare the observability switch, defaulting on")
 			}
-			if !regexp.MustCompile(`(?s)_telemetry_workloads = \[fw\.Workload \{\s*name = "clickstack".*\}\] if _observability else \[\]`).MatchString(src) {
-				t.Errorf("the clickstack workload must be declared, and gated on _observability")
+			if !regexp.MustCompile(`(?s)_telemetry_workloads = \(\[fw\.Workload \{\s*name = "otel-forwarder".*name = "clickstack".*\}\]\) if _observability else \[\]`).MatchString(src) {
+				t.Errorf("the clickstack workload (or the forwarder, with a destination) must be declared, and gated on _observability")
+			}
+			if !regexp.MustCompile(`(?m)^    observability = _observability_decl$`).MatchString(src) {
+				t.Errorf("the Bundle must carry the typed observability declaration")
 			}
 			for _, gone := range []string{"lgtm", "alloy"} {
 				if regexp.MustCompile(`(?m)^[^#\n]*name\s*=\s*"` + gone + `"`).MatchString(src) {
