@@ -1050,6 +1050,15 @@ func containerSecurityContext(o *v1alpha1.PodSecurity) *corev1.SecurityContext {
 	}
 }
 
+// optionalPtr renders an unset optional as absent, so a Secret volume that
+// never asked for it renders byte-identically to before the field existed.
+func optionalPtr(optional bool) *bool {
+	if !optional {
+		return nil
+	}
+	return &optional
+}
+
 func volumeSource(src v1alpha1.VolumeSource) corev1.VolumeSource {
 	items := func(in []v1alpha1.KeyToPath) []corev1.KeyToPath {
 		var out []corev1.KeyToPath
@@ -1060,7 +1069,7 @@ func volumeSource(src v1alpha1.VolumeSource) corev1.VolumeSource {
 	}
 	switch {
 	case src.Secret != nil:
-		return corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: src.Secret.Name, Items: items(src.Secret.Items)}}
+		return corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: src.Secret.Name, Items: items(src.Secret.Items), Optional: optionalPtr(src.Secret.Optional)}}
 	case src.ConfigMap != nil:
 		return corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
 			LocalObjectReference: corev1.LocalObjectReference{Name: src.ConfigMap.Name}, Items: items(src.ConfigMap.Items),

@@ -335,6 +335,8 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		Manifests:         stream,
 		Images:            digests,
 		StatefulWorkloads: shapeStatefulWorkloadsOf(entities),
+
+		ControlPlaneSecrets: shapeControlPlaneSecretsOf(entities),
 	})
 	if err != nil {
 		return envShapeDoc{}, fmt.Errorf("project env %q: %w", envName, err)
@@ -493,6 +495,32 @@ func shapeSecretsOf(e *KCLEntities) []release.ShapeSecret {
 		}
 		sort.Strings(declaredBy)
 		out = append(out, release.ShapeSecret{Name: name, Provider: provider, DeclaredBy: declaredBy})
+	}
+	return out
+}
+
+// shapeControlPlaneSecretsOf projects the Secrets the env's control plane
+// supplies and renews: a destination and a kind per Secret, and the keys the
+// control plane writes. No value exists on forge's side to project.
+//
+// They are NOT part of shapeSecretsOf, deliberately. That list is "what a
+// person must provide", and drives the set-secret form and the plan's presence
+// check; a Secret the control plane delivers would show up there as one nobody
+// has set. Its own list says what it is.
+func shapeControlPlaneSecretsOf(e *KCLEntities) []release.ShapeControlPlaneSecret {
+	if e == nil || len(e.ControlPlaneSecrets) == 0 {
+		return nil
+	}
+	out := make([]release.ShapeControlPlaneSecret, 0, len(e.ControlPlaneSecrets))
+	for _, c := range e.ControlPlaneSecrets {
+		out = append(out, release.ShapeControlPlaneSecret{
+			Name:             c.Name,
+			Namespace:        c.Namespace,
+			Cluster:          c.Cluster,
+			ConnectedCluster: c.ConnectedCluster,
+			Kind:             c.Kind,
+			Keys:             c.Keys,
+		})
 	}
 	return out
 }
@@ -681,6 +709,12 @@ func writeShapeSummary(w io.Writer, doc envShapeDoc) {
 				line += " ← " + strings.Join(secret.DeclaredBy, ", ")
 			}
 			fmt.Fprintf(w, "    %s\n", line)
+		}
+	}
+	if len(doc.Shape.ControlPlaneSecrets) > 0 {
+		fmt.Fprintf(w, "  delivered by the control plane: %d (names only; the control plane mints and renews them)\n", len(doc.Shape.ControlPlaneSecrets))
+		for _, c := range doc.Shape.ControlPlaneSecrets {
+			fmt.Fprintf(w, "    %s/%s [%s] on %s via %s\n", c.Namespace, c.Name, c.Kind, c.Cluster, c.ConnectedCluster)
 		}
 	}
 	if len(doc.Shape.Domains) > 0 {

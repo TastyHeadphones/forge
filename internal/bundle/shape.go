@@ -53,6 +53,11 @@ type ShapeInput struct {
 	// are recognised by pkg/release without being listed here; this is for
 	// the objects whose kind alone does not say so.
 	StatefulWorkloads []string
+
+	// ControlPlaneSecrets are the Secrets the env's control plane supplies and
+	// renews (forge.ControlPlaneSecret), already in shape vocabulary. Names and
+	// destinations; a value never reaches forge.
+	ControlPlaneSecrets []release.ShapeControlPlaneSecret
 }
 
 // ProjectShape projects one env's render into the shape a ledger indexes.
@@ -82,6 +87,8 @@ func ProjectShape(in ShapeInput) (release.Shape, error) {
 		Domains:   in.Domains,
 		Clusters:  in.Clusters,
 		Objects:   objects,
+
+		ControlPlaneSecrets: in.ControlPlaneSecrets,
 	}.Canonical()
 	if err := shape.Validate(); err != nil {
 		return release.Shape{}, err

@@ -150,6 +150,11 @@ type KCLEntities struct {
 	// (forge.DNSRecord) — surfaced as a render-time checklist note (forge
 	// can't authoritatively verify external DNS). Empty => none.
 	RequiredDNS []DNSRecordEntity `json:"required_dns,omitempty"`
+	// ControlPlaneSecrets are the Secrets the env's control plane supplies and
+	// renews (forge.ControlPlaneSecret), including the ones forge derives for a
+	// control-plane Observability destination. Recorded in the env shape; never
+	// a deploy precondition.
+	ControlPlaneSecrets []ControlPlaneSecretEntity `json:"control_plane_secrets,omitempty"`
 
 	// ManifestNamespace is the namespace that dominates the rendered
 	// `output.manifests` stream. It is the fallback for the declared
@@ -592,6 +597,28 @@ type ExternalSecretEntity struct {
 	// that must carry the same logical value (cross-secret byte-match).
 	// Empty => a standalone prereq (no byte-match group).
 	ValueGroup string `json:"value_group,omitempty"`
+}
+
+// ControlPlaneSecretEntity mirrors the kcl/schema.k ControlPlaneSecret — a
+// Secret the env's declared control plane supplies and renews. It carries a
+// destination and a kind, never a value.
+//
+// Unlike an ExternalSecret it is NOT a precondition of a deploy: the control
+// plane delivers it after one, so the preflight neither checks that it exists
+// nor blocks on it. Recorded in the env shape so the control plane knows what
+// to deliver where.
+type ControlPlaneSecretEntity struct {
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+	// Cluster is the kube context it lands in; ConnectedCluster is the name
+	// `forge cluster connect` registered, the credential it is delivered with.
+	Cluster          string `json:"cluster"`
+	ConnectedCluster string `json:"connected_cluster,omitempty"`
+	// Kind says what the control plane mints into it ("telemetry_token").
+	Kind string `json:"kind"`
+	// Keys are the data keys the control plane writes.
+	Keys   []string `json:"keys,omitempty"`
+	Reason string   `json:"reason,omitempty"`
 }
 
 // DNSRecordEntity mirrors the kcl/schema.k DNSRecord — a DNS record a
@@ -1150,6 +1177,10 @@ type ObservabilityDestEntity struct {
 		Name string `json:"name"`
 		Key  string `json:"key"`
 	} `json:"token_secret,omitempty"`
+	// TokenFromControlPlane is true when the token is the one the control
+	// plane delivers (a ControlPlaneSecret forge declared); TokenSecret then
+	// names where it lands.
+	TokenFromControlPlane bool `json:"token_from_control_plane,omitempty"`
 }
 
 // ObservabilitySignalsEntity is Observability.signals.
@@ -1164,28 +1195,29 @@ type ObservabilitySignalsEntity struct {
 // decoded in a second step (kclWorkloadRaw) because their build and runtime
 // are tagged unions and their spec is decoded strictly.
 type kclRenderRaw struct {
-	Project           string                   `json:"project,omitempty"`
-	Env               string                   `json:"env,omitempty"`
-	ImageTag          string                   `json:"image_tag,omitempty"`
-	Lifecycle         string                   `json:"lifecycle,omitempty"`
-	Clusters          []ClusterEntity          `json:"clusters,omitempty"`
-	ClusterTarget     *ClusterTargetEntity     `json:"cluster_target,omitempty"`
-	KubeconfigSecrets []KubeconfigSecretEntity `json:"kubeconfig_secrets,omitempty"`
-	ConnectedClusters map[string]string        `json:"connected_clusters,omitempty"`
-	Workloads         []kclWorkloadRaw         `json:"workloads,omitempty"`
-	Observability     *ObservabilityEntity     `json:"observability,omitempty"`
-	Infra             []HostInfraEntity        `json:"infra,omitempty"`
-	Frontends         []FrontendEntity         `json:"frontends,omitempty"`
-	Gateways          []GatewayEntity          `json:"gateways,omitempty"`
-	HTTPRoutes        []HTTPRouteEntity        `json:"http_routes,omitempty"`
-	GRPCRoutes        []GRPCRouteEntity        `json:"grpc_routes,omitempty"`
-	Databases         []DatabaseEntity         `json:"databases,omitempty"`
-	HelmCharts        []HelmChartEntity        `json:"helm_charts,omitempty"`
-	SecretProvider    *SecretProviderEntity    `json:"secret_provider,omitempty"`
-	RenderedSecrets   []RenderedSecretEntity   `json:"rendered_secrets,omitempty"`
-	ControlPlane      *ControlPlaneEntity      `json:"control_plane,omitempty"`
-	RequiredSecrets   []ExternalSecretEntity   `json:"required_secrets,omitempty"`
-	RequiredDNS       []DNSRecordEntity        `json:"required_dns,omitempty"`
+	Project             string                     `json:"project,omitempty"`
+	Env                 string                     `json:"env,omitempty"`
+	ImageTag            string                     `json:"image_tag,omitempty"`
+	Lifecycle           string                     `json:"lifecycle,omitempty"`
+	Clusters            []ClusterEntity            `json:"clusters,omitempty"`
+	ClusterTarget       *ClusterTargetEntity       `json:"cluster_target,omitempty"`
+	KubeconfigSecrets   []KubeconfigSecretEntity   `json:"kubeconfig_secrets,omitempty"`
+	ConnectedClusters   map[string]string          `json:"connected_clusters,omitempty"`
+	Workloads           []kclWorkloadRaw           `json:"workloads,omitempty"`
+	Observability       *ObservabilityEntity       `json:"observability,omitempty"`
+	Infra               []HostInfraEntity          `json:"infra,omitempty"`
+	Frontends           []FrontendEntity           `json:"frontends,omitempty"`
+	Gateways            []GatewayEntity            `json:"gateways,omitempty"`
+	HTTPRoutes          []HTTPRouteEntity          `json:"http_routes,omitempty"`
+	GRPCRoutes          []GRPCRouteEntity          `json:"grpc_routes,omitempty"`
+	Databases           []DatabaseEntity           `json:"databases,omitempty"`
+	HelmCharts          []HelmChartEntity          `json:"helm_charts,omitempty"`
+	SecretProvider      *SecretProviderEntity      `json:"secret_provider,omitempty"`
+	RenderedSecrets     []RenderedSecretEntity     `json:"rendered_secrets,omitempty"`
+	ControlPlane        *ControlPlaneEntity        `json:"control_plane,omitempty"`
+	RequiredSecrets     []ExternalSecretEntity     `json:"required_secrets,omitempty"`
+	RequiredDNS         []DNSRecordEntity          `json:"required_dns,omitempty"`
+	ControlPlaneSecrets []ControlPlaneSecretEntity `json:"control_plane_secrets,omitempty"`
 	// Manifests is the applyable stream. Parsed loosely: only kind, name
 	// and namespace are read here (see rawManifest).
 	Manifests []rawManifest `json:"manifests,omitempty"`
@@ -1467,6 +1499,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		ControlPlane:         raw.ControlPlane,
 		RequiredSecrets:      raw.RequiredSecrets,
 		RequiredDNS:          raw.RequiredDNS,
+		ControlPlaneSecrets:  raw.ControlPlaneSecrets,
 		ManifestNamespace:    manifestNamespace(raw.Manifests),
 		ManifestServiceNames: manifestServiceNames(raw.Manifests),
 		ManifestClusters:     manifestClusters(raw.Manifests),

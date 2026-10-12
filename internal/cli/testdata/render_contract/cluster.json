@@ -11,6 +11,7 @@
     "clusters": [],
     "config_maps": [],
     "connected_clusters": null,
+    "control_plane_secrets": [],
     "databases": [
       {
         "cluster": "k3d-acme",

@@ -508,17 +508,28 @@ _cluster_targets = lambda workloads: [any] -> [any] {
 # The destination's credential reference: a bearer token file wins over a
 # headers blob (the two are mutually exclusive in ObservabilityDestination).
 _destination_secret = lambda o: any -> any {
-    (o.destination.token_secret or o.destination.headers_secret) if o and o.destination else None
+    (_obs_token_secret(o) or o.destination.headers_secret) if o and o.destination else None
+}
+
+# The bearer-token Secret the node agent reads: the one the author named, else
+# the one forge declares as a ControlPlaneSecret for a control-plane
+# destination.
+_obs_token_secret = lambda o: any -> any {
+    (o.destination.token_secret or (ObservabilitySecretRef {
+        name = OTEL_AGENT_TOKEN_SECRET
+        key = CONTROL_PLANE_SECRET_KINDS["telemetry_token"][1]
+    } if o.destination.token_from_control_plane else Undefined)) if o and o.destination else Undefined
 }
 
 # The credential Secret must be supplied wherever the agent will read it, or the
 # DaemonSet never starts. Nothing to check without a cluster workload (no
 # agent) or without a credential secret.
-_headers_secret_supplied = lambda workloads: [any], o: any, required: [any], rendered: [any] -> bool {
+_headers_secret_supplied = lambda workloads: [any], o: any, required: [any], rendered: [any], delivered: [any] -> bool {
     _ref = _destination_secret(o)
     _need = bool(o and o.enabled and _ref and len(_cluster_targets(workloads)) > 0)
     (not _need) or any s in required { s.name == _ref.name and s.namespace == o.agent.namespace and _ref.key in s.keys } \
-        or any s in rendered { s.name == _ref.name and s.namespace == o.agent.namespace and _ref.key in s.keys }
+        or any s in rendered { s.name == _ref.name and s.namespace == o.agent.namespace and _ref.key in s.keys } \
+        or any s in delivered { s.name == _ref.name and _cps_ns(s) == o.agent.namespace and _ref.key in CONTROL_PLANE_SECRET_KINDS[s.kind] }
 }
 
 # The refusal text, built only when the rule fires: a Bundle message is
@@ -527,7 +538,108 @@ _headers_secret_supplied = lambda workloads: [any], o: any, required: [any], ren
 _headers_secret_msg = lambda o: any -> str {
     _ref = _destination_secret(o)
     _field = "token_secret" if o and o.destination and o.destination.token_secret else "headers_secret"
-    ("Bundle.observability.destination.${_field} '${_ref.name}' (key '${_ref.key}') is not supplied for the node agent in namespace '${o.agent.namespace}'. Declare it so the deploy can check it: `required_secrets = [forge.ExternalSecret {name = \"${_ref.name}\", namespace = \"${o.agent.namespace}\", keys = [\"${_ref.key}\"]}]` for a Secret you provision out of band, or a `rendered_secrets` entry in that namespace for a local env") if _ref else ""
+    ("Bundle.observability.destination.${_field} '${_ref.name}' (key '${_ref.key}') is not supplied for the node agent in namespace '${o.agent.namespace}'. Declare it so the deploy can check it: `required_secrets = [forge.ExternalSecret {name = \"${_ref.name}\", namespace = \"${o.agent.namespace}\", keys = [\"${_ref.key}\"]}]` for a Secret you provision out of band, a `rendered_secrets` entry in that namespace for a local env, or (for a token the control plane renews) `control_plane_secrets = [forge.ControlPlaneSecret {name = \"${_ref.name}\", namespace = \"${o.agent.namespace}\", cluster = <target>}]`") if _ref else ""
+}
+
+# ---------------------------------------------------------------------------
+# forge.ControlPlaneSecret: a Secret the declared control plane supplies and
+# renews. The author's declarations plus the ones forge derives.
+# ---------------------------------------------------------------------------
+
+_cps_ns = lambda s: ControlPlaneSecret -> str {
+    s.namespace or s.cluster.namespace
+}
+
+# One per cluster that runs the node agent when the destination is the control
+# plane's ingest: that is the Secret the agent reads its token from.
+_cps_derived = lambda workloads: [any], o: any -> [ControlPlaneSecret] {
+    _on = bool(o and o.enabled and o.destination and o.destination.token_from_control_plane)
+    _targets = {t.cluster: t for t in _cluster_targets(workloads)} if _on else {}
+    [ControlPlaneSecret {
+        name = OTEL_AGENT_TOKEN_SECRET
+        cluster = t
+        namespace = o.agent.namespace
+        reason = "node agent OTLP credential (Observability.destination.token_from_control_plane)"
+    } for _, t in _targets]
+}
+
+_cps_all = lambda workloads: [any], o: any, declared: [ControlPlaneSecret] -> [ControlPlaneSecret] {
+    declared + _cps_derived(workloads, o)
+}
+
+_cps_key = lambda s: ControlPlaneSecret -> str {
+    "${s.cluster.cluster}/${_cps_ns(s)}/${s.name}"
+}
+
+# The connected cluster a context is bound to, by any of the places an env
+# names one (the same set the Go side merges: the secret's own cluster, the
+# primary target, a workload's target, Bundle.connected_clusters). "" = none.
+_cps_connected = lambda ctx: str, own: any, workloads: [any], cluster_target: any, connected_clusters: {str:str} -> str {
+    _from_workloads = [w.runtime.target.connected_cluster for w in workloads if w.runtime and w.runtime.type == "cluster" and w.runtime.target.cluster == ctx and w.runtime.target.connected_cluster]
+    (own.connected_cluster if own.connected_cluster else \
+        (connected_clusters[ctx] if ctx in connected_clusters and connected_clusters[ctx] else \
+            (cluster_target.connected_cluster if cluster_target and cluster_target.cluster == ctx and cluster_target.connected_cluster else \
+                (_from_workloads[0] if len(_from_workloads) > 0 else ""))))
+}
+
+_cps_unbound = lambda workloads: [any], o: any, declared: [ControlPlaneSecret], cluster_target: any, connected_clusters: {str:str} -> [ControlPlaneSecret] {
+    [s for s in _cps_all(workloads, o, declared) if not _cps_connected(s.cluster.cluster, s.cluster, workloads, cluster_target, connected_clusters)]
+}
+
+_cps_unbound_msg = lambda workloads: [any], o: any, declared: [ControlPlaneSecret], cluster_target: any, connected_clusters: {str:str} -> str {
+    _bad = _cps_unbound(workloads, o, declared, cluster_target, connected_clusters)
+    _ctxs = sorted({s.cluster.cluster: 0 for s in _bad})
+    "Bundle.control_plane_secrets ${[s.name for s in _bad]} target cluster ${_ctxs}, which names no connected cluster. The control plane can only write a Secret into a cluster it holds a credential for, so there is nothing to deliver it with. Register the cluster once with `forge cluster connect <name> --context ${_ctxs[0] if len(_ctxs) > 0 else '<context>'} --env ${option('env') or '<env>'}`, then name it on the target (`forge.ClusterTarget {connected_cluster = \"<name>\"}`) or at cluster level (`connected_clusters = {\"${_ctxs[0] if len(_ctxs) > 0 else '<context>'}\": \"<name>\"}` on the Bundle). A k3d cluster is not exempt: delivery needs the control plane to reach the cluster"
+}
+
+_cps_duplicates = lambda workloads: [any], o: any, declared: [ControlPlaneSecret] -> [str] {
+    _all = _cps_all(workloads, o, declared)
+    sorted({_cps_key(s): 0 for s in _all if len([x for x in _all if _cps_key(x) == _cps_key(s)]) > 1})
+}
+
+_cps_second_telemetry_token = lambda workloads: [any], o: any, declared: [ControlPlaneSecret] -> [str] {
+    _all = [s for s in _cps_all(workloads, o, declared) if s.kind == "telemetry_token"]
+    sorted({"${s.cluster.cluster}/${_cps_ns(s)}": 0 for s in _all if len([x for x in _all if x.cluster.cluster == s.cluster.cluster and _cps_ns(x) == _cps_ns(s) and x.name != s.name]) > 0})
+}
+
+# A control-plane Secret that something else ALSO provides. One Secret has one
+# provider.
+_cps_also_provided = lambda workloads: [any], o: any, declared: [ControlPlaneSecret], required: [any], rendered: [any], cluster_target: any -> [str] {
+    sorted({_cps_key(s): 0 for s in _cps_all(workloads, o, declared) if \
+        any r in required { r.name == s.name and r.namespace == _cps_ns(s) } \
+        or any r in rendered { r.name == s.name and (r.namespace or (cluster_target.namespace if cluster_target else "")) == _cps_ns(s) }})
+}
+
+# The telemetry_token a cluster workload reads, if one is delivered to its
+# cluster and namespace. Empty when none, or when the workload does not run on a
+# cluster.
+_cps_token_for = lambda w: any, rt: any, bundle: Bundle -> [ControlPlaneSecret] {
+    [s for s in _cps_all(bundle.workloads, bundle.observability, bundle.control_plane_secrets) if rt.type == "cluster" and s.kind == "telemetry_token" and s.cluster.cluster == rt.target.cluster and _cps_ns(s) == rt.target.namespace]
+}
+
+# Whether forge wires the credential into w: it does unless the author set the
+# headers themselves (an author's value always wins).
+_cps_wires = lambda w: any, rt: any, bundle: Bundle -> bool {
+    _env = w.env if w.env else {}
+    _runs = rt.type == "cluster" and w.kind != "tool"
+    _taken = len([v for v in (w.volumes if w.volumes else []) if v.name == CONTROL_PLANE_OTLP_VOLUME]) > 0
+    _runs and len(_cps_token_for(w, rt, bundle)) > 0 and not _env_set(_env, "OTEL_EXPORTER_OTLP_HEADERS") and not _env_set(_env, "OTEL_EXPORTER_OTLP_HEADERS_FILE") and not _taken
+}
+
+# The optional Secret volume a wired workload mounts. Optional, so its pods
+# start before the control plane has delivered the Secret; a whole-directory
+# mount, so the kubelet refreshes the file when the Secret is rewritten.
+_cps_volume = lambda w: any, rt: any, bundle: Bundle -> [tiers.Volume] {
+    [tiers.Volume {
+        name = CONTROL_PLANE_OTLP_VOLUME
+        mountPath = CONTROL_PLANE_OTLP_DIR
+        readOnly = True
+        source = tiers.VolumeSource {secret = tiers.SecretVolumeSource {
+            name = s.name
+            optional = True
+            items = [tiers.KeyToPath {key = CONTROL_PLANE_SECRET_KINDS["telemetry_token"][0], path = CONTROL_PLANE_OTLP_FILE}]
+        }}
+    } for s in _cps_token_for(w, rt, bundle)] if _cps_wires(w, rt, bundle) else []
 }
 
 # Host processes need a loopback port to export to.
@@ -550,6 +662,7 @@ _derived_env = lambda w: any, rt: any, bundle: Bundle -> {str:str} {
     ({OTEL_SERVICE_NAME = w.name} if _runs and not _env_set(_env, "OTEL_SERVICE_NAME") else {}) \
         | ({OTEL_RESOURCE_ATTRIBUTES = _otel_resource_attributes(bundle)} if _runs and not _env_set(_env, "OTEL_RESOURCE_ATTRIBUTES") else {}) \
         | (_obs_env(rt, bundle, _env) if _runs else {}) \
+        | ({OTEL_EXPORTER_OTLP_HEADERS_FILE = CONTROL_PLANE_OTLP_DIR + "/" + CONTROL_PLANE_OTLP_FILE} if _cps_wires(w, rt, bundle) else {}) \
         | ({GOMEMLIMIT = _gml} if _gml else {})
 }
 
@@ -706,7 +819,7 @@ _spec = lambda w: any, rt: any, bundle: Bundle -> any {
         serviceAccount = w.serviceAccount
         serviceAccountAnnotations = w.serviceAccountAnnotations
         sidecars = w.sidecars
-        volumes = w.volumes
+        volumes = ((w.volumes if w.volumes else []) + _cps_volume(w, rt, bundle)) or Undefined
         nodeSelector = w.nodeSelector
         tolerations = w.tolerations
         podAnnotations = w.podAnnotations
@@ -1000,9 +1113,9 @@ _obs_agent_records = lambda b: Bundle, part_of: str -> [any] {
                 "key": _o.destination.headers_secret.key
             } if _o.destination.headers_secret else None
             "tokenSecret": {
-                "name": _o.destination.token_secret.name
-                "key": _o.destination.token_secret.key
-            } if _o.destination.token_secret else None
+                "name": _obs_token_secret(_o).name
+                "key": _obs_token_secret(_o).key
+            } if _obs_token_secret(_o) else None
             "signals": {
                 "traces": _o.signals.traces
                 "metrics": _o.signals.metrics
@@ -1031,9 +1144,10 @@ _render_observability = lambda b: Bundle -> any {
                 "key": _o.destination.headers_secret.key
             } if _o.destination.headers_secret else None
             "token_secret": {
-                "name": _o.destination.token_secret.name
-                "key": _o.destination.token_secret.key
-            } if _o.destination.token_secret else None
+                "name": _obs_token_secret(_o).name
+                "key": _obs_token_secret(_o).key
+            } if _obs_token_secret(_o) else None
+            "token_from_control_plane": _o.destination.token_from_control_plane
         } if _o.destination else None
         "signals": {
             "traces": _o.signals.traces
@@ -1202,6 +1316,7 @@ render = lambda bundle: Bundle -> any {
         # checklist, and the preflight BLOCK on a required-but-absent Secret.
         "required_secrets": [_render_external_secret(s) for s in bundle.required_secrets]
         "required_dns": [_render_dns_record(r) for r in bundle.required_dns]
+        "control_plane_secrets": [_render_control_plane_secret(s, bundle) for s in _cps_all(bundle.workloads, bundle.observability, bundle.control_plane_secrets)]
         # WHERE secret values come from. A declaration only: no secret VALUE
         # ever enters this output.
         if bundle.secret_provider:
@@ -1852,6 +1967,21 @@ _render_external_secret = lambda s: ExternalSecret -> any {
         "keys": s.keys
         "reason": s.reason if s.reason else None
         "value_group": s.value_group if s.value_group else None
+    }
+}
+
+# Render a ControlPlaneSecret: where it lands, what the control plane mints into
+# it, and which connected cluster to deliver it through. Never a value.
+_render_control_plane_secret = lambda s: ControlPlaneSecret, bundle: Bundle -> any {
+    {
+        "type": "control_plane_secret"
+        "name": s.name
+        "namespace": _cps_ns(s)
+        "cluster": s.cluster.cluster
+        "connected_cluster": _cps_connected(s.cluster.cluster, s.cluster, bundle.workloads, bundle.cluster_target, bundle.connected_clusters) or None
+        "kind": s.kind
+        "keys": CONTROL_PLANE_SECRET_KINDS[s.kind]
+        "reason": s.reason if s.reason else None
     }
 }
 

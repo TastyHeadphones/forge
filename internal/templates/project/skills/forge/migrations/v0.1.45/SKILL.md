@@ -1,6 +1,6 @@
 ---
 name: v0.1.45
-description: Upgrade a project to forge v0.1.45. One section per change — (1) the typed `forge.Observability` declaration replaces the bare `_observability` toggle; (2) continuous profiles, on by default beside the local ClickStack (`profiles_port`, the `otel-profiles` collector); (3) `gen/go.mod` requiring the retired `github.com/reliant-labs/forge/pkg` module, which `forge generate` now rewrites (the root `go.mod` is yours to fix); (4) the gitignored `.npmrc` (`legacy-peer-deps`) that stops `npm install` crashing in a `--link-forge` project; (5) `serve.go` opens the otelconnect span OUTSIDE auth (`chainDeps.Trace`), so rejected calls have spans and request logs carry `trace_id`; (6) lean CI over a local gate — `task ci` / `task ci:checks`, a consolidated `.github/workflows/ci.yml`. Use when deploy/kcl/<env>/main.k has `_observability` but no `observability =` on its forge.Bundle or no `profiles_port`, when `grep forge/pkg gen/go.mod go.mod` matches or `forge env up` reports "go module graph is stale" on every start, when a bridged frontend's `npm install` dies with "Cannot read properties of null (reading 'edgesOut')", or when `grep -n 'Extras = append(\[\]connect.Interceptor{otelInt}' cmd/*/cmd/serve.go` matches, or when Taskfile.yml has no `ci:checks` task or `.github/workflows/ci.yml` runs one job per check instead of calling `task ci:checks`.
+description: Upgrade a project to forge v0.1.45. One section per change — (1) the typed `forge.Observability` declaration replaces the bare `_observability` toggle; (2) continuous profiles, on by default beside the local ClickStack (`profiles_port`, the `otel-profiles` collector); (3) `gen/go.mod` requiring the retired `github.com/reliant-labs/forge/pkg` module, which `forge generate` now rewrites (the root `go.mod` is yours to fix); (4) the gitignored `.npmrc` (`legacy-peer-deps`) that stops `npm install` crashing in a `--link-forge` project; (5) `serve.go` opens the otelconnect span OUTSIDE auth (`chainDeps.Trace`), so rejected calls have spans and request logs carry `trace_id`; (6) lean CI over a local gate — `task ci` / `task ci:checks`, a consolidated `.github/workflows/ci.yml`; (7) `forge.ControlPlaneSecret`, a Secret the control plane delivers and renews, replacing a `secret_optional` env var or a hand-minted Secret for a control-plane OTLP token. Use when deploy/kcl/<env>/main.k has `_observability` but no `observability =` on its forge.Bundle or no `profiles_port`, when `grep forge/pkg gen/go.mod go.mod` matches or `forge env up` reports "go module graph is stale" on every start, when a bridged frontend's `npm install` dies with "Cannot read properties of null (reading 'edgesOut')", or when `grep -n 'Extras = append(\[\]connect.Interceptor{otelInt}' cmd/*/cmd/serve.go` matches, or when Taskfile.yml has no `ci:checks` task or `.github/workflows/ci.yml` runs one job per check instead of calling `task ci:checks`, or when `deploy/kcl/<env>/main.k` mounts an OTLP token Secret a control plane writes after the deploy (`secret_optional = True` on a `SecretRef`, or a `required_secrets` entry for a Secret the control plane mints).
 version: v0.1.45
 detection: grep -qs 'Extras = append(\[\]connect.Interceptor{otelInt}' cmd/*/cmd/serve.go || (grep -qs '^_observability = ' deploy/kcl/*/main.k && ! grep -qs '^    observability = ' deploy/kcl/*/main.k) || (grep -qs '^_observability = ' deploy/kcl/dev/main.k && ! grep -qs 'profiles_port' deploy/kcl/dev/main.k) || grep -qsE '^[[:space:]]*(require[[:space:]]+)?github\.com/reliant-labs/forge/pkg[[:space:]]+v' go.mod gen/go.mod || (test -f Taskfile.yml && ! grep -qs '^  ci:checks:' Taskfile.yml) || (test -f .github/workflows/ci.yml && ! grep -qs 'task ci:checks' .github/workflows/ci.yml)
 ---
@@ -274,3 +274,35 @@ Use when `Taskfile.yml` has no `ci:checks` task, or `.github/workflows/ci.yml` h
 ### Verify
 
 `forge ci gate --list` names every check and its lane. `task ci:checks` prints a summary table whose last line is `PASS` or `FAIL`. `.github/workflows/ci.yml` has jobs `changes`, `checks`, `test`, `integration-test` and each one has `timeout-minutes`; each calls exactly one `task`. `actionlint .github/workflows/ci.yml` is clean.
+
+## 7. Secrets the control plane delivers: `forge.ControlPlaneSecret`
+
+Use when an env declares a control plane (`control_plane = forge.ControlPlane {}`) that mints and renews a Secret your workloads read, and that Secret is modelled today as an env var with `secret_optional = True` (to dodge the first-deploy block), as a `required_secrets` `ExternalSecret` you then provision by hand, or as a Secret someone mints on a calendar.
+
+### What changed
+
+- New primitive `forge.ControlPlaneSecret` on `Bundle.control_plane_secrets`. It declares a Secret whose value the control plane supplies and renews. It is **recorded in the env shape** (`shape.control_plane_secrets`: name, namespace, cluster, connected cluster, kind, keys; never a value), **never blocks a first deploy**, and is **refused without a connected-cluster binding** (and without `control_plane`). There is no k3d exemption: delivery is the control plane dialing the cluster.
+- A cluster workload in the same cluster and namespace as a `telemetry_token` gets, automatically, an **optional** Secret volume `forge-otlp-auth` at `/var/run/secrets/forge/otlp` and `OTEL_EXPORTER_OTLP_HEADERS_FILE=/var/run/secrets/forge/otlp/headers`. `pkg/observe` re-reads that file, so a renewal needs **no restart**.
+- `forge.ObservabilityDestination` gained `token_from_control_plane = True`: for a destination that is the control plane's OTLP ingest, forge declares the node agent's `ControlPlaneSecret` (`forge-otlp-token` in `agent.namespace`, key `token`) on every cluster that runs the agent. Exclusive with `headers_secret` / `token_secret`.
+- The Secret volume source gained `optional` (`v1alpha1.SecretVolumeSource.Optional`, `tiers.SecretVolumeSource.optional`), which an author can also set on a volume of their own.
+- `output.control_plane_secrets[]` is a new key in the render contract (an empty list when none). Every `render_contract` golden gained `"control_plane_secrets": []`.
+
+### Steps
+
+1. Delete the workaround. Remove `secret_optional = True` from the `SecretRef` that read the delivered token, and remove the `required_secrets` `ExternalSecret` for it if there is one. Declaring the same Secret as both is refused ("one Secret has one provider").
+2. Declare the Secret, on a cluster that names its connected cluster:
+
+   ```python
+   control_plane_secrets = [
+       forge.ControlPlaneSecret {name = "reliant-otel-auth", cluster = _prod}
+   ]
+   ```
+
+   `_prod` needs `connected_cluster = "<name>"` (or `connected_clusters = {"<context>": "<name>"}` on the Bundle); register the cluster once with `forge cluster connect <name> --context <ctx> --env <env>`.
+3. Drop the env var that carried the headers (`OTEL_EXPORTER_OTLP_HEADERS` from a `SecretRef`). forge wires the file mount for you; a workload that still sets `OTEL_EXPORTER_OTLP_HEADERS` or `OTEL_EXPORTER_OTLP_HEADERS_FILE` itself is left alone, and gets no volume.
+4. For a node agent that exports to the control plane's ingest, replace `headers_secret` / `token_secret` plus the `required_secrets` entry with `token_from_control_plane = True` on the destination.
+5. `forge env render <env>`, then `forge env deploy <env> --dry-run`: the preflight no longer asks for the Secret, and the pod spec gains the `forge-otlp-auth` volume (one rolling restart on the deploy that adds it).
+
+### Verify
+
+`forge env shape <env> --json | jq .shape.control_plane_secrets` lists the Secret with its `connected_cluster`. `forge env render <env> | grep -A6 forge-otlp-auth` shows `optional: true`. A first `forge env deploy` against a cluster where the Secret does not exist yet passes the preflight.

@@ -253,28 +253,7 @@ renders or imports a real env sets **`FORGE_LEDGER=machine`**: every forge it
 starts stays off the declared control plane, and `forge ledger where <env>
 --json` reports `"override": "FORGE_LEDGER=machine"` to assert it.
 `$FORGE_LEDGER_HOME` alone only relocates the machine ledger — a declared env
-still reads and writes its control plane.
-
-**Break-glass: the control plane is down (`--offline-ledger`).** An env whose
-ledger is a control plane cannot resolve its current release when that control
-plane is unreachable, and `FORGE_LEDGER=machine` is no substitute (it holds none
-of the live history and trips the unimported-ledger refusal). Every successful
-ledger read or write refreshes a local copy of the env's current promotion and
-release (under `$FORGE_LEDGER_HOME`, per project and env), so:
-
-```
-forge env deploy prod --offline-ledger     # redeploy the cached CURRENT release by its digests; builds nothing
-```
-
-It prints the copy's age and what it will replay, applies from this machine,
-and queues the promotion record (with the apply's verdict). The next successful
-ledger contact replays it, idempotently — and as a compare-and-set against the
-promotion the copy named, so a colleague's promotion made meanwhile is never
-overwritten (the record is refused, reported, and stays queued). It never
-builds, cuts or moves to another release, refuses an env whose hosted tiers or
-hub-converged clusters the control plane applies, and is the only thing that
-bypasses the unimported-ledger refusal. A machine with no copy is told so:
-rehearse it once while the control plane is up (`forge env status <env>`).
+still reads and writes its control plane. Control plane down: `deploy/offline-ledger`.
 
 Each workload deploys through its runtime: cluster workloads are applied to
 the kubectl context the ClusterTarget names (forge refuses when it is
@@ -492,5 +471,4 @@ No `features:` block; subsystems turn on from the repo: service →
 
 ## k3d local-registry mirror
 
-Load `deploy/k3d-registry` for the `localhost:5050` ↔
-`registry.localhost:5000` containerd mirror.
+`deploy/k3d-registry`: the `localhost:5050`↔`registry.localhost:5000` mirror.

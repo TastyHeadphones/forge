@@ -68,6 +68,10 @@ const (
 	// provisioned, generated). The catch-all the caller uses for supply that
 	// isn't one of the first-class kinds.
 	SupplyGenerated SecretSupplyKind = "generated/known Secret"
+	// SupplyControlPlaneSecret — a forge.ControlPlaneSecret: the env's control
+	// plane writes and renews it AFTER the deploy, so it is promised, never
+	// preconditioned.
+	SupplyControlPlaneSecret SecretSupplyKind = "ControlPlaneSecret"
 	// SupplyCertManagerCertificate — a cert-manager Certificate in the stream,
 	// which materialises the Secret its spec.secretName names.
 	SupplyCertManagerCertificate SecretSupplyKind = "cert-manager Certificate"

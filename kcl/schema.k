@@ -3407,6 +3407,80 @@ schema DNSRecord:
         host, "DNSRecord.host is required (e.g. 'api.example.com' or '*.workspaces.example.com')"
         type in ["A", "AAAA", "CNAME"], "DNSRecord.type must be 'A' | 'AAAA' | 'CNAME'"
 
+schema ControlPlaneSecret:
+    """A Kubernetes Secret whose VALUE the env's declared control plane
+    supplies and renews. forge records that it exists and never sees a value.
+
+    It is a third thing, distinct from the two secrets forge already models:
+
+      * `ExternalSecret` is provisioned OUT OF BAND by a person or a pipeline,
+        and the deploy preflight BLOCKS until it exists;
+      * a synced store secret is a value forge reads from the env's secret
+        store and applies itself.
+
+    A ControlPlaneSecret is neither. The control plane mints it, writes it into
+    the cluster through the connected-cluster credential, and renews it before
+    it expires. Because something else delivers it AFTER a deploy, it can never
+    be a precondition of one:
+
+      * the deploy preflight does not check that it exists, so a FIRST deploy
+        is never blocked on it;
+      * a workload mounts it as an OPTIONAL Secret volume, so its pods start
+        before the first delivery and pick the value up when it lands.
+
+        wl.api | {runtime = forge.OnCluster {target = _prod}}
+
+        control_plane_secrets = [
+            forge.ControlPlaneSecret {
+                name = "reliant-otel-auth"
+                cluster = _prod
+            }
+        ]
+
+    `forge env shape` records `{name, namespace, cluster, kind}` and no value;
+    the control plane reads that list to know what to deliver.
+
+    REQUIRES A CONNECTED CLUSTER. The control plane can only write into a
+    cluster it holds a credential for, so `cluster` must name a connected
+    cluster (`forge cluster connect`), by `ClusterTarget.connected_cluster` or
+    `Bundle.connected_clusters`. An unbound one is refused at render, naming the
+    fix. There is no k3d exemption: delivery needs the control plane to reach
+    the cluster, which a developer's k3d cluster is not unless it is connected.
+    It also requires `control_plane = forge.ControlPlane {}` on the Bundle.
+
+    Fields:
+      * `name`      — the Secret's metadata.name.
+      * `cluster`   — the ClusterTarget it lands on.
+      * `namespace` — its namespace. Defaults to `cluster.namespace`.
+      * `kind`      — what the control plane mints into it. `telemetry_token`
+                      is the per-environment OTLP ingest token; it writes the
+                      keys CONTROL_PLANE_SECRET_KINDS names.
+      * `reason`    — a short human note for the checklist.
+
+    A cluster workload in the SAME cluster and namespace as a `telemetry_token`
+    reads it with no further declaration: forge adds the Secret volume at
+    CONTROL_PLANE_OTLP_DIR and sets `OTEL_EXPORTER_OTLP_HEADERS_FILE`, which
+    pkg/observe re-reads when it changes. A workload that sets
+    `OTEL_EXPORTER_OTLP_HEADERS` or `OTEL_EXPORTER_OTLP_HEADERS_FILE` itself
+    owns its auth and gets neither.
+
+    `Observability.destination.token_from_control_plane = True` declares one of
+    these for the node agent automatically.
+    """
+    type: str = "control_plane_secret"
+    name: str
+    cluster: ClusterTarget
+    namespace: str = ""
+    kind: "telemetry_token" = "telemetry_token"
+    reason: str = ""
+
+    check:
+        type == "control_plane_secret", "ControlPlaneSecret.type must be 'control_plane_secret'"
+        regex.match(name, r"^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$") and len(name) <= 253, \
+            "ControlPlaneSecret.name '${name}' must be a Kubernetes Secret name (lowercase alphanumerics, '-' and '.')"
+        not namespace or regex.match(namespace, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), \
+            "ControlPlaneSecret '${name}': namespace '${namespace}' must be an RFC-1123 label"
+
 # ---------------------------------------------------------------------------
 # Bundle — the project-level container forge.render() consumes.
 # ---------------------------------------------------------------------------
@@ -3453,10 +3527,27 @@ schema ObservabilityDestination:
     protocol: "http/protobuf" | "grpc" = "http/protobuf"
     headers_secret?: ObservabilitySecretRef
     token_secret?: ObservabilitySecretRef
+    # This destination is the control plane's OTLP ingest and authenticates with
+    # the per-environment token the control plane delivers and renews. forge
+    # declares a ControlPlaneSecret for it on every cluster that runs the node
+    # agent (Secret `forge-otlp-token` in `Observability.agent.namespace`, key
+    # `token`) and points the agent at it, so nothing else is written:
+    #
+    #     destination = forge.ObservabilityDestination {
+    #         endpoint = "https://otlp.reliantapi.com"
+    #         token_from_control_plane = True
+    #     }
+    #
+    # Needs `control_plane` on the Bundle and a connected cluster for each
+    # cluster running a workload. Mutually exclusive with headers_secret and
+    # token_secret, which name a Secret the author provides.
+    token_from_control_plane: bool = False
 
     check:
         regex.match(endpoint, r"^https?://[^/ ]+(:[0-9]+)?(/[^ ]*)?$"), \
             "ObservabilityDestination.endpoint '${endpoint}' must be an absolute http(s) OTLP URL (e.g. https://otlp.example.com)"
+        not (token_from_control_plane and (headers_secret or token_secret)), \
+            "ObservabilityDestination.token_from_control_plane = True supplies the credential itself (a ControlPlaneSecret the control plane renews), so it cannot also name headers_secret or token_secret. Drop one"
         not (headers_secret and token_secret), \
             "ObservabilityDestination sets both headers_secret and token_secret; both write the Authorization header. Use token_secret for a bearer token that is renewed in place (no restart), headers_secret for headers that never change"
 
@@ -3863,6 +3954,12 @@ schema Bundle:
     # verify external DNS). Empty => no declared prereqs (today's behavior).
     required_secrets: [ExternalSecret] = []
     required_dns: [DNSRecord] = []
+    # Secrets the declared control plane SUPPLIES AND RENEWS (see
+    # ControlPlaneSecret). The deploy never waits on them, and forge records
+    # them in the env shape so the control plane knows what to deliver where.
+    # `Observability.destination.token_from_control_plane` adds one for the
+    # node agent on top of these.
+    control_plane_secrets: [ControlPlaneSecret] = []
     # WHO APPLIES this env: forge directly, or a reconciler reading a bundle.
     #
     # This is about the APPLY PATH, and it is the one fact nothing else in
@@ -4050,6 +4147,22 @@ schema Bundle:
                 cluster_target, gateways, http_routes, grpc_routes, helm_charts, \
                 manifests, generated, rendered_secrets)) == 0, \
             "a '${lifecycle}' env may only target clusters forge creates (Bundle.clusters); ${', '.join(_unmanaged_contexts(clusters, workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets))} is not one"
+        # A CONTROL-PLANE SECRET NEEDS A CONTROL PLANE TO DELIVER IT, AND A
+        # CONNECTED CLUSTER TO DELIVER IT TO. Both are declared facts, so both
+        # are refused here, while the author is looking at the KCL, rather than
+        # as a deploy that is accepted and never delivers.
+        len(_cps_all(workloads, observability, control_plane_secrets)) == 0 or control_plane, \
+            "Bundle.control_plane_secrets ${[s.name for s in _cps_all(workloads, observability, control_plane_secrets)]} need control_plane = forge.ControlPlane {} on the same Bundle: the control plane is what mints, delivers and renews them"
+        len(_cps_unbound(workloads, observability, control_plane_secrets, cluster_target, connected_clusters)) == 0, \
+            _cps_unbound_msg(workloads, observability, control_plane_secrets, cluster_target, connected_clusters)
+        not (observability and observability.enabled and observability.destination and observability.destination.token_from_control_plane) or len(_cluster_targets(workloads)) > 0, \
+            "Bundle.observability.destination.token_from_control_plane = True needs a cluster workload: the credential is delivered to the node agent, which forge renders only on a cluster the env deploys to"
+        len(_cps_duplicates(workloads, observability, control_plane_secrets)) == 0, \
+            "Bundle.control_plane_secrets: ${_cps_duplicates(workloads, observability, control_plane_secrets)} declared twice for the same cluster and namespace — the control plane would write one Secret from two declarations"
+        len(_cps_second_telemetry_token(workloads, observability, control_plane_secrets)) == 0, \
+            "Bundle.control_plane_secrets: ${_cps_second_telemetry_token(workloads, observability, control_plane_secrets)} — a cluster and namespace has at most one telemetry_token (a workload reads exactly one OTLP credential)"
+        len(_cps_also_provided(workloads, observability, control_plane_secrets, required_secrets, rendered_secrets, cluster_target)) == 0, \
+            "Bundle.control_plane_secrets: ${_cps_also_provided(workloads, observability, control_plane_secrets, required_secrets, rendered_secrets, cluster_target)} also declared as a required_secrets ExternalSecret or a rendered_secrets entry. One Secret has one provider: the control plane delivers it, so drop the other declaration"
         # THE DESTINATION'S HEADERS MUST RESOLVE. The node agent reads them
         # through a secretKeyRef in its own namespace, and a Secret nothing
         # supplies leaves the DaemonSet in CreateContainerConfigError with
@@ -4058,7 +4171,7 @@ schema Bundle:
         # checked live by the deploy preflight) or a rendered_secrets entry.
         # A local env without cluster workloads uses the secret store instead,
         # which `forge env up` checks before it starts anything.
-        _headers_secret_supplied(workloads, observability, required_secrets, rendered_secrets), \
+        _headers_secret_supplied(workloads, observability, required_secrets, rendered_secrets, _cps_all(workloads, observability, control_plane_secrets)), \
             _headers_secret_msg(observability)
         # ONE LOG SHIPPING PATH. The node agent (cluster) and the local
         # collector (host) already ship container/process logs; a workload that

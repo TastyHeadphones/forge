@@ -234,6 +234,8 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 		Domains:   in.Shape.Domains,
 		Clusters:  in.Shape.Clusters,
 		Objects:   objects,
+
+		ControlPlaneSecrets: in.Shape.ControlPlaneSecrets,
 	}.Canonical()
 	if err := shape.Validate(); err != nil {
 		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)
