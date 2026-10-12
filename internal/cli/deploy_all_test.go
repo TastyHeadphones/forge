@@ -378,7 +378,7 @@ func TestChooseDeployRelease_CutsANewReleaseAndSaysWhy(t *testing.T) {
 				}
 			}
 			var announced bytes.Buffer
-			got.announce(&announced, "prod")
+			got.announce(&announced, "prod", false)
 			if want := "[deploy] cutting new release " + got.Version + " because "; !strings.HasPrefix(announced.String(), want) {
 				t.Errorf("announcement = %q, want it to start %q", announced.String(), want)
 			}

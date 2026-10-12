@@ -91,3 +91,95 @@ func TestCaptureProvenance(t *testing.T) {
 		t.Fatalf("non-git dir: %+v %v", plain, err)
 	}
 }
+
+func gitRun(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@t"}, args...)...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// A parked worktree or cloned repo inside the project is another checkout's
+// content: it must not make this checkout dirty (a 2026-10-12 prod deploy cut
+// and built a release for an unchanged tree because of one), but every other
+// untracked file still counts.
+func TestInspectCheckout_NestedCheckoutsAreNotDirt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
+	dir := gitInit(t)
+	ctx := context.Background()
+	opts := CaptureOptions{ForgeVersion: "v0.1.44"}
+	clean, err := CaptureProvenance(ctx, dir, opts)
+	if err != nil || clean.Dirty {
+		t.Fatalf("baseline: %+v %v", clean, err)
+	}
+
+	gitRun(t, dir, "worktree", "add", "-q", "-b", "other", filepath.Join(dir, "linked-worktree"))
+	if err := os.MkdirAll(filepath.Join(dir, "cloned"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, filepath.Join(dir, "cloned"), "init", "-q")
+	if err := os.WriteFile(filepath.Join(dir, "cloned", "f.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	changes, err := InspectCheckout(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changes.Dirty() || len(changes.Paths) != 0 {
+		t.Fatalf("nested checkouts counted as changes: %+v", changes)
+	}
+	if got := strings.Join(changes.Nested, " "); got != "cloned/ linked-worktree/" {
+		t.Fatalf("nested = %q, want both checkouts listed", got)
+	}
+	withNested, err := CaptureProvenance(ctx, dir, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withNested.Dirty || withNested.Tree != clean.Tree {
+		t.Fatalf("a tree with only nested checkouts must equal the clean one: %+v vs %+v", withNested, clean)
+	}
+
+	// A real untracked file still counts, nested checkouts or not, and the
+	// hashed tree contains it but neither checkout.
+	if err := os.WriteFile(filepath.Join(dir, "real.txt"), []byte("r"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changes, _ = InspectCheckout(ctx, dir)
+	if !changes.Dirty() || strings.Join(changes.Paths, " ") != "real.txt" {
+		t.Fatalf("paths = %v, want [real.txt]", changes.Paths)
+	}
+	dirty, err := CaptureProvenance(ctx, dir, opts)
+	if err != nil || !dirty.Dirty || dirty.Tree == clean.Tree {
+		t.Fatalf("dirty capture: %+v %v", dirty, err)
+	}
+	listing, _ := gitOut(ctx, dir, "ls-tree", "-r", "--name-only", dirty.Tree)
+	if strings.Contains(listing, "cloned") || strings.Contains(listing, "linked-worktree") || !strings.Contains(listing, "real.txt") {
+		t.Fatalf("hashed tree = %q: want real.txt and no nested checkout", listing)
+	}
+}
+
+// A rename is two porcelain entries in -z mode; the origin must not be read
+// as a path of its own.
+func TestInspectCheckout_ParsesRenamesAndLeadingSpace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
+	dir := gitInit(t)
+	ctx := context.Background()
+	gitRun(t, dir, "mv", "a.txt", "b b.txt")
+	if err := os.WriteFile(filepath.Join(dir, "c.txt"), []byte("c"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changes, err := InspectCheckout(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(changes.Paths, "|"); got != "b b.txt|c.txt" {
+		t.Fatalf("paths = %q", got)
+	}
+}
