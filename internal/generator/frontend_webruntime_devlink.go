@@ -129,6 +129,57 @@ func devWorkspaceRootManifest(members []string) string {
 `
 }
 
+// devNpmrcName is the gitignored project-root npm config the bridge writes.
+const devNpmrcName = ".npmrc"
+
+// devNpmrcMarker is the first line of the .npmrc the bridge writes. It is how
+// forge recognises the file as its OWN (safe to rewrite or remove) rather than
+// one a user wrote, which forge never touches.
+const devNpmrcMarker = "# forge-dev-workspace-root: GITIGNORED, written by a DEV build of forge."
+
+// devNpmrcBody makes `npm install` survive the bridge on the npm that ships
+// with Node 22 (10.9.x).
+//
+// Linking web-runtime as a workspace member installs ITS devDependencies into
+// the project's tree, and those include vitest ^4.1. npm 10.x and 11.0.0 (11.21.0 is fine)
+// crashes resolving a tree that holds vitest >= 4.1:
+//
+//	npm error Cannot read properties of null (reading 'edgesOut')
+//
+// (arborist's #loadPeerSet; reproducible with a package.json that contains
+// nothing but that vitest range, no bridge involved, on every npm 10.x and
+// 11.0.0). The scaffold's own frontends pin vitest ^3 and install fine, which
+// is why only a bridged project hit it. legacy-peer-deps skips the peer-set
+// walk. It loses nothing here: every peer web-runtime declares (react,
+// @connectrpc/connect, @bufbuild/protobuf, @opentelemetry/api, @hyperdx/browser,
+// @tanstack/react-query) is also a direct dependency of the frontends, which
+// is what keeps a single copy of each in the tree.
+const devNpmrcBody = devNpmrcMarker + `
+# Works around an npm 10.x crash on web-runtime's vitest ^4 devDependency; delete this
+# file and .forge-link/ together to go back to the registry copy.
+legacy-peer-deps=true
+`
+
+// isForgeOwnedNpmrc reports whether path is an .npmrc this bridge wrote.
+func isForgeOwnedNpmrc(path string) bool {
+	body, err := os.ReadFile(path)
+	return err == nil && strings.HasPrefix(string(body), devNpmrcMarker)
+}
+
+// reconcileNpmrc writes the bridge's .npmrc unless the project has an .npmrc
+// of its own, which is left exactly as it is. Reports whether a user-owned
+// file is standing in the way.
+func reconcileNpmrc(path string) (userOwned bool, err error) {
+	if _, statErr := os.Stat(path); statErr == nil && !isForgeOwnedNpmrc(path) {
+		return true, nil
+	}
+	existing, _ := os.ReadFile(path)
+	if string(existing) == devNpmrcBody {
+		return false, nil
+	}
+	return false, os.WriteFile(path, []byte(devNpmrcBody), 0o644)
+}
+
 // devBridgeIgnoreEntries are the paths forge must ensure are ignored before it
 // writes any of them. Ensuring rather than assuming matters: the bridge is
 // only safe because it CANNOT be committed, so a project whose .gitignore
@@ -141,6 +192,7 @@ func devWorkspaceRootManifest(members []string) string {
 var devBridgeIgnoreEntries = []string{
 	"/package.json",
 	"/package-lock.json",
+	"/" + devNpmrcName,
 	"/node_modules/",
 	"/" + devLinkDir + "/",
 }
@@ -174,6 +226,17 @@ func EnsureDevWebRuntimeLink(projectDir string) {
 	if err := reconcileWorkspaceRoot(rootPath, devWorkspaceRootManifest(members)); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not write the dev workspace root in %s: %v\n", projectDir, err)
 		return
+	}
+
+	userOwned, err := reconcileNpmrc(filepath.Join(projectDir, devNpmrcName))
+	switch {
+	case err != nil:
+		fmt.Fprintf(os.Stderr, "warning: could not write the dev %s in %s: %v\n", devNpmrcName, projectDir, err)
+	case userOwned:
+		fmt.Fprintf(os.Stderr, "warning: %s/%s is yours, so forge did not add `legacy-peer-deps=true` to it. "+
+			"npm 10.x crashes (\"Cannot read properties of null (reading 'edgesOut')\") installing the bridged "+
+			"%s because of its vitest ^4 devDependency: add that line to %s yourself, or use a newer npm (11.21 works).\n",
+			projectDir, devNpmrcName, WebRuntimePackage, devNpmrcName)
 	}
 
 	link := filepath.Join(projectDir, devLinkDir, "web-runtime")
@@ -225,6 +288,9 @@ func removeModuleCacheBridge(projectDir string) {
 	rootPath := filepath.Join(projectDir, "package.json")
 	if isForgeOwnedWorkspaceRoot(rootPath) {
 		_ = os.Remove(rootPath)
+	}
+	if npmrc := filepath.Join(projectDir, devNpmrcName); isForgeOwnedNpmrc(npmrc) {
+		_ = os.Remove(npmrc)
 	}
 	fmt.Printf("🧹 removed a stale %s bridge into the read-only Go module cache (%s/, root package.json). "+
 		"Run `npm install` in each frontend to use the registry copy.\n", WebRuntimePackage, devLinkDir)

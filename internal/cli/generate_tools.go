@@ -13,6 +13,7 @@ import (
 	"golang.org/x/mod/modfile"
 
 	"github.com/reliant-labs/forge/internal/assets"
+	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/goexec"
@@ -194,6 +195,78 @@ func ensureGenGoMod(projectDir string) error {
 	}
 	fmt.Println("🔧 Bootstrapped missing gen/go.mod (fresh worktree).")
 	return nil
+}
+
+// retiredForgePkgModule is the pre-collapse companion module. Importing
+// forge/pkg/* with no forge requirement makes `go mod tidy` (which ignores
+// go.work) pick it as the longest module path that provides the import.
+const retiredForgePkgModule = "github.com/reliant-labs/forge/pkg"
+
+// ensureGenForgeRequire makes gen/go.mod require the single forge module and
+// drops the retired forge/pkg module, reporting whether it rewrote the file.
+//
+// gen/ is forge's own module: every *.pb.go in it blank-imports
+// forge/pkg/forgepb, so it must always carry the require. The scaffold's
+// gen-go.mod.tmpl writes one, but the scaffold's own `go mod tidy` runs while
+// gen/ still holds no Go files and removes it as unused. The tidy after
+// codegen then finds forge/pkg/forgepb with no forge requirement and resolves
+// it to the retired module instead — which generate refuses. Re-asserting the
+// require before codegen keeps tidy from ever choosing it, and migrates a
+// project whose gen/go.mod already holds the retired require.
+//
+// The version mirrors the root go.mod's pin (this binary's own when the root
+// has none), so both of the project's modules resolve the same forge.
+func ensureGenForgeRequire(projectDir string) (bool, error) {
+	path := filepath.Join(projectDir, "gen", "go.mod")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, nil // no gen module: nothing to maintain
+	}
+	f, err := modfile.Parse(path, data, nil)
+	if err != nil {
+		return false, nil // not ours to repair; tidy will say what is wrong
+	}
+	hasForge, hasRetired := false, false
+	for _, r := range f.Require {
+		switch r.Mod.Path {
+		case forgeModulePath:
+			hasForge = true
+		case retiredForgePkgModule:
+			hasRetired = true
+		}
+	}
+	if hasForge && !hasRetired {
+		return false, nil
+	}
+	if hasRetired {
+		if err := f.DropRequire(retiredForgePkgModule); err != nil {
+			return false, err
+		}
+	}
+	if !hasForge {
+		version := rootForgeVersion(projectDir)
+		if version == "" {
+			version = buildinfo.InstallableVersion()
+		}
+		if version == "" {
+			version = buildinfo.PublishedFloor()
+		}
+		if version == "" {
+			return false, nil
+		}
+		if err := f.AddRequire(forgeModulePath, version); err != nil {
+			return false, err
+		}
+	}
+	f.Cleanup()
+	out, err := f.Format()
+	if err != nil {
+		return false, err
+	}
+	if err := os.WriteFile(path, out, 0o644); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // forgeRequireRE matches the forge `require` line in a go.mod — either the

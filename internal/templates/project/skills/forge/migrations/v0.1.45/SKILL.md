@@ -1,8 +1,8 @@
 ---
 name: v0.1.45
-description: Upgrade a project to forge v0.1.45. One section per change — (1) the typed `forge.Observability` declaration replaces the bare `_observability` toggle; (2) continuous profiles, on by default beside the local ClickStack (`profiles_port`, the `otel-profiles` collector). Use when deploy/kcl/<env>/main.k has `_observability` but no `observability =` on its forge.Bundle, has no `profiles_port`, or a workload still sets OTEL_EXPORTER_OTLP_* by hand to reach a collector, or `forge.OTEL_ENV` points at `otel-collector.observability:4317`.
+description: Upgrade a project to forge v0.1.45. One section per change — (1) the typed `forge.Observability` declaration replaces the bare `_observability` toggle; (2) continuous profiles, on by default beside the local ClickStack (`profiles_port`, the `otel-profiles` collector); (3) `gen/go.mod` requiring the retired `github.com/reliant-labs/forge/pkg` module, which `forge generate` now rewrites (the root `go.mod` is yours to fix); (4) the gitignored `.npmrc` (`legacy-peer-deps`) that stops `npm install` crashing in a `--link-forge` project. Use when deploy/kcl/<env>/main.k has `_observability` but no `observability =` on its forge.Bundle or no `profiles_port`, when `grep forge/pkg gen/go.mod go.mod` matches or `forge env up` reports "go module graph is stale" on every start, or when a bridged frontend's `npm install` dies with "Cannot read properties of null (reading 'edgesOut')".
 version: v0.1.45
-detection: (grep -qs '^_observability = ' deploy/kcl/*/main.k && ! grep -qs '^    observability = ' deploy/kcl/*/main.k) || (grep -qs '^_observability = ' deploy/kcl/dev/main.k && ! grep -qs 'profiles_port' deploy/kcl/dev/main.k)
+detection: (grep -qs '^_observability = ' deploy/kcl/*/main.k && ! grep -qs '^    observability = ' deploy/kcl/*/main.k) || (grep -qs '^_observability = ' deploy/kcl/dev/main.k && ! grep -qs 'profiles_port' deploy/kcl/dev/main.k) || grep -qsE '^[[:space:]]*(require[[:space:]]+)?github\.com/reliant-labs/forge/pkg[[:space:]]+v' go.mod gen/go.mod
 ---
 
 # Upgrading to v0.1.45
@@ -78,3 +78,87 @@ Use when `deploy/kcl/dev/main.k` declares `_observability` but no `profiles_port
 ### Verify
 
 `forge env render dev | grep PROFILES` shows `OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT=http://127.0.0.1:<port>/v1development/profiles` on each host workload. After `forge env up dev` and a minute of traffic, `forge observe profile --list` names your services.
+
+## 3. Retired `forge/pkg` module in `gen/go.mod`
+
+Use when `grep forge/pkg gen/go.mod go.mod` matches, or `forge env up` reports "go module graph is stale" on every start.
+
+### What happened
+
+forge v0.1.44 collapsed `github.com/reliant-labs/forge/pkg` into the one module
+`github.com/reliant-labs/forge`. Import paths did not change
+(`github.com/reliant-labs/forge/pkg/orm` is still that path); only the module
+that provides them did.
+
+A project scaffolded before this release could end up with this in `gen/go.mod`:
+
+```
+require github.com/reliant-labs/forge/pkg v0.1.15
+```
+
+The scaffold wrote the correct `require github.com/reliant-labs/forge vX.Y.Z`,
+but its own `go mod tidy` ran while `gen/` still had no Go files and deleted it
+as unused. The first real tidy, after codegen, then found
+`forge/pkg/forgepb` imported with no forge requirement, and `go mod tidy`
+(which ignores `go.work`) resolved it to the longest module path providing it:
+the retired `forge/pkg` module. Symptoms: `forge env up` says the module graph
+is stale on every start, and a root `go.mod` that also requires `forge` makes
+every `forge/pkg/*` import "ambiguous".
+
+### What forge does now
+
+- `forge project new` no longer tidies a `gen/` that holds no Go files, so the
+  template's forge require survives.
+- `forge generate` re-asserts `gen/go.mod`'s forge requirement before codegen:
+  it drops `github.com/reliant-labs/forge/pkg` and adds
+  `github.com/reliant-labs/forge` at the root `go.mod`'s pin. Nothing for you to
+  do in `gen/`: run `forge generate`, and it prints
+  `gen/go.mod now requires github.com/reliant-labs/forge`.
+
+### Steps
+
+1. Run `forge generate`. `gen/go.mod` is migrated.
+2. Check the ROOT `go.mod`. `forge generate` refuses (it will not edit your
+   `go.mod`) while it still requires the retired module:
+
+   ```bash
+   grep -n 'reliant-labs/forge' go.mod
+   # if it lists forge/pkg:
+   go mod edit -droprequire=github.com/reliant-labs/forge/pkg
+   go get github.com/reliant-labs/forge@$(grep -m1 '^forge_version' forge.yaml | awk '{print $2}')
+   go mod tidy
+   ```
+
+3. Commit `gen/go.mod` and `gen/go.sum` if your project tracks them.
+
+### Verify
+
+```bash
+grep -c 'forge/pkg ' go.mod gen/go.mod      # 0 and 0
+(cd gen && GOWORK=off go mod tidy -diff)    # exits 0
+```
+
+## 4. `npm install` crash in a `--link-forge` project
+
+Use when a bridged project's frontend `npm install` dies with "Cannot read properties of null (reading 'edgesOut')". Nothing to run: `forge generate` handles it.
+
+A project bridged to a forge checkout (`forge project new --link-forge`, or a
+`go.work` that `use`s one) also gets a gitignored npm workspace root that links
+`web-runtime` into the install. That brings `web-runtime`'s `vitest ^4.1`
+devDependency into the tree, and npm 10.x (what Node 22 ships) and 11.0.0 crash
+resolving any tree holding vitest >= 4.1:
+
+```
+npm error Cannot read properties of null (reading 'edgesOut')
+```
+
+Reproducible without forge: a `package.json` containing only
+`"vitest": "^4.1.11"` crashes the same way (npm 11.21.0 installs it).
+Unbridged projects are unaffected: the scaffolded frontends pin vitest `^3`.
+
+`forge generate` now writes a gitignored `/.npmrc` containing
+`legacy-peer-deps=true` next to the bridge's root `package.json`, before it
+installs anything. Nothing to do. If the project already has its own
+`.npmrc`, forge leaves it alone and warns: add `legacy-peer-deps=true` to it,
+or use a newer npm. Dropping the bridge (delete `.forge-link/` and the root
+`package.json`) removes the need.

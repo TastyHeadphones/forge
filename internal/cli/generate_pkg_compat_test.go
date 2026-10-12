@@ -276,11 +276,10 @@ func appendTo(t *testing.T, path, extra string) {
 	mustWrite(t, path, string(data)+extra)
 }
 
-// The retired require came back through gen/go.mod as often as through the
-// root — `go mod tidy` in gen/ picked it for the forgepb import. The check
-// must read gen/go.mod as well, and the fix must name BOTH modules, each as a
-// command runnable from the project root.
-func TestCheckPkgCompat_RetiredPkgInGenModuleIsCaughtAndFixedPerModule(t *testing.T) {
+// gen/go.mod is forge's own module, so a retired forge/pkg require there is
+// migrated by generate (ensureGenForgeRequire), not refused: refusing made the
+// user run `go mod edit` on a file they never wrote.
+func TestCheckPkgCompat_RetiredPkgInGenModuleIsNotRefused(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "gen"), 0o755); err != nil {
 		t.Fatal(err)
@@ -288,21 +287,8 @@ func TestCheckPkgCompat_RetiredPkgInGenModuleIsCaughtAndFixedPerModule(t *testin
 	mustWrite(t, filepath.Join(dir, "go.mod"), "module example.com/app\n\ngo 1.24\n\nrequire github.com/reliant-labs/forge v0.1.17\n")
 	mustWrite(t, filepath.Join(dir, "gen", "go.mod"), "module example.com/app/gen\n\ngo 1.24\n\nrequire github.com/reliant-labs/forge/pkg v0.1.15\n")
 
-	err := checkPkgCompat(dir)
-	if err == nil {
-		t.Fatal("a retired forge/pkg require in gen/go.mod must be refused")
-	}
-	msg := err.Error()
-	for _, want := range []string{
-		"gen/go.mod (v0.1.15)",
-		"(cd gen && go mod edit -droprequire=github.com/reliant-labs/forge/pkg && go get github.com/reliant-labs/forge@",
-	} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("error must contain %q, got:\n%s", want, msg)
-		}
-	}
-	if strings.Contains(msg, "(cd . &&") {
-		t.Errorf("the root module is clean and must not be named in the fix, got:\n%s", msg)
+	if err := checkPkgCompat(dir); err != nil && strings.Contains(err.Error(), "gen/go.mod") {
+		t.Fatalf("a retired require in gen/go.mod must be migrated by generate, not refused:\n%v", err)
 	}
 }
 

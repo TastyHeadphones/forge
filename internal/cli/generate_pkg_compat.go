@@ -69,9 +69,9 @@ func checkPkgCompat(projectDir string) error {
 	// elsewhere in the dependency graph is not — see
 	// directRetiredPkgRequire.
 	//
-	// gen/go.mod is read too: it is the project's own second module, and a
-	// plain `go mod tidy` there is exactly how the retired require used to
-	// come back (see generator.resolveForgeVersion).
+	// gen/go.mod is not read: generate repairs it itself (see
+	// ensureGenForgeRequire), which is how the retired require used to come
+	// back via a plain `go mod tidy` there.
 	if retired := projectRetiredPkgRequires(projectDir, gomod); len(retired) > 0 {
 		return retiredPkgModuleErr(projectDir, retired)
 	}
@@ -247,19 +247,15 @@ type retiredPkgRequire struct {
 	Version string
 }
 
-// projectRetiredPkgRequires reads the project's two go.mod files — the root
-// (already loaded as rootGoMod) and gen/ — for a direct retired require.
-func projectRetiredPkgRequires(projectDir, rootGoMod string) []retiredPkgRequire {
-	var out []retiredPkgRequire
+// projectRetiredPkgRequires reads the project's own root go.mod for a direct
+// retired require. gen/go.mod is deliberately NOT read: it is forge's module,
+// and the "ensure gen/go.mod" step migrates it in place rather than refusing —
+// the user's go.mod is the only one whose swap forge cannot make for them.
+func projectRetiredPkgRequires(_, rootGoMod string) []retiredPkgRequire {
 	if v, found := directRetiredPkgRequire(rootGoMod); found {
-		out = append(out, retiredPkgRequire{Dir: ".", Version: v})
+		return []retiredPkgRequire{{Dir: ".", Version: v}}
 	}
-	if data, err := os.ReadFile(filepath.Join(projectDir, "gen", "go.mod")); err == nil {
-		if v, found := directRetiredPkgRequire(string(data)); found {
-			out = append(out, retiredPkgRequire{Dir: "gen", Version: v})
-		}
-	}
-	return out
+	return nil
 }
 
 // retiredPkgModuleErr names the pre-collapse submodule. Only the DIRECT case
