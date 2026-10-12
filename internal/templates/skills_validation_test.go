@@ -410,6 +410,7 @@ var knownDotForgeEntries = map[string]bool{
 	"skills":                true,
 	"state":                 true,
 	"logs":                  true, // forge env up writes per-service logs to .forge/logs/<env>/<name>.log
+	"observability":         true, // forge env up renders the local forwarder's pipeline into .forge/observability/forwarder.yaml (clickstack.ForwarderConfigDir)
 	"debug":                 true,
 	"debug-session.json":    true,
 	"migrations.json":       true,
