@@ -1906,7 +1906,7 @@ func probeRowsListening(rows []upServiceRow, probe func(int) bool) {
 }
 
 // enrichOwnership fills each listening row's PID + Owned by resolving the
-// port's listener (portListenerPID / lsof) and walking its ancestry for
+// port's listener (portListenerPID) and walking its ancestry for
 // this env's forge-up marker (forgeOwnerOfPID). It CONSUMES the ownership
 // work's helpers rather than re-discovering process ownership — the same
 // signal the pre-flight reclaim guard uses. Best-effort: on platforms
@@ -2280,7 +2280,7 @@ type portReadyState int
 const (
 	// portReadyOurs: our own forge-up-marked child is listening — or (the
 	// degrade case) SOMETHING is listening but the holder pid can't be
-	// resolved (no lsof / Windows), so we can't prove it's foreign and don't
+	// resolved (another user's process, or no lsof on macOS/BSD), so we can't prove it's foreign and don't
 	// misfire. Either way the port is up and this run is not blocked.
 	portReadyOurs portReadyState = iota
 	// portReadyForeign: a resolvable, NON-forge-owned process holds the
@@ -2308,8 +2308,8 @@ func classifyPortReadiness(port int, projectID, envName string, listening func(i
 	}
 	pid := resolvePID(port)
 	if pid <= 0 {
-		// Something is listening but the holder is unidentifiable (lsof
-		// missing / Windows no-op). Degrade to "up" rather than misfire — we
+		// Something is listening but the holder is unidentifiable (another
+		// user's process, or lsof missing on macOS/BSD). Degrade to "up" rather than misfire — we
 		// cannot prove a foreign holder. Mirrors enrichOwnership.
 		return portReadyOurs
 	}
