@@ -432,6 +432,15 @@ type Config struct {
 	// its migration connection before the migration runs.
 	DBPoolTuning DBPoolTuning
 
+	// DBConnectTimeout is the TOTAL budget for connecting to the database at
+	// startup (AutoMigrate and OpenDB). The connect retries with capped
+	// exponential backoff and jitter inside it, the process stays up and
+	// reports not-ready meanwhile, and only a database still unreachable at
+	// the deadline fails the process. Zero falls back to
+	// DefaultDBConnectTimeout (5m). The rendered startup probe window must
+	// cover it — see v1alpha1.StartupWindowSeconds.
+	DBConnectTimeout time.Duration
+
 	// CORSOrigins is the allow-list handed to the CORSMiddleware factory.
 	// Each entry must be a full origin (scheme + host + optional port).
 	//
@@ -535,6 +544,9 @@ func (c *Config) Normalize() {
 	}
 	if c.DBDriver == "" {
 		c.DBDriver = "pgx"
+	}
+	if c.DBConnectTimeout == 0 {
+		c.DBConnectTimeout = DefaultDBConnectTimeout
 	}
 }
 

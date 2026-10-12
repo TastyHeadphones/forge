@@ -23,6 +23,7 @@ package serverkit
 // is not a library, it is a template with extra syntax.
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log/slog"
@@ -73,6 +74,18 @@ func Boot(cfg Config) (*slog.Logger, *http.ServeMux) {
 // (rather than serverkit reaching for it) is what keeps serverkit free of
 // any compile-time dependency on the project.
 func AutoMigrate(cfg Config, logger *slog.Logger, migrate func(*sql.DB, *slog.Logger) error) error {
+	return AutoMigrateContext(context.Background(), cfg, logger, migrate)
+}
+
+// AutoMigrateContext is AutoMigrate with the boot context. The connect to the
+// database RETRIES (capped exponential backoff with jitter, bounded by
+// Config.DBConnectTimeout) instead of failing the process on the first
+// refused dial: a database or pooler that comes up seconds after its clients
+// is routine in a rollout, and a crash loop for it is a self-inflicted
+// incident. Pass the ctx from StartBootProbes so /readyz names the database
+// as pending while this waits. Only the migration itself is not retried — a
+// failed or dirty migration is a human's problem, not a transient.
+func AutoMigrateContext(ctx context.Context, cfg Config, logger *slog.Logger, migrate func(*sql.DB, *slog.Logger) error) error {
 	if !cfg.AutoMigrate {
 		return nil
 	}
@@ -85,13 +98,12 @@ func AutoMigrate(cfg Config, logger *slog.Logger, migrate func(*sql.DB, *slog.Lo
 	// nothing for the guarantee.
 	cfg.Normalize()
 
-	db, err := sql.Open(cfg.DBDriver, cfg.DatabaseURL)
+	db, err := OpenDB(ctx, cfg.DBDriver, cfg.DatabaseURL, cfg.DBPoolTuning, cfg.ConnectPolicy(logger))
 	if err != nil {
 		return fmt.Errorf("failed to connect to database for migration: %w", err)
 	}
 	defer func() { _ = db.Close() }()
 
-	ApplyDBPoolTuning(db, cfg.DBPoolTuning)
 	if err := migrate(db, logger); err != nil {
 		return fmt.Errorf("auto-migration failed: %w", err)
 	}

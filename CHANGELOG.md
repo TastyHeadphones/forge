@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A database that is not up yet no longer crash-loops the server.** The
+  startup connect (`serverkit.AutoMigrateContext`, the scaffolded
+  `openDatabase` via `serverkit.OpenDB`) retries with capped exponential
+  backoff and jitter for `DB_CONNECT_TIMEOUT` (new config field, default 5m)
+  instead of failing on the first refused dial, logging one WARN per 15s
+  bucket with the error class and INFO with elapsed time on success. The
+  scaffolded `Serve` binds the listener first (`serverkit.StartBootProbes`):
+  `/healthz` passes and `/readyz` returns 503 naming `database` until `Run`
+  takes the address over. Only a database still unreachable at the deadline
+  exits non-zero (`*serverkit.ConnectTimeoutError`). The rendered default
+  startup probe is now `/readyz` with a 360s window, covering the 5m wait;
+  a prod rollout restarted three services over a PgBouncer that was seconds
+  late. `serverkit.AutoMigrate` keeps its signature (no boot probes).
+  Existing projects own `serve.go`/`providers.go`: see the PR for the edits.
 - **Frontend builds are told what they were built from.** Every frontend build
   forge runs gets `FORGE_SOURCE_REPO`, `FORGE_SOURCE_REF`, `FORGE_SOURCE_COMMIT`
   (the GitSource pin and the sha it resolved to) and `FORGE_RELEASE` (the

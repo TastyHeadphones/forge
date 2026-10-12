@@ -438,7 +438,7 @@ func isDurationField(f ConfigField) bool {
 		return false
 	}
 	switch f.GoName {
-	case "PreStopDelay", "ShutdownTimeout", "DbConnMaxIdleTime", "DbConnMaxLifetime":
+	case "PreStopDelay", "ShutdownTimeout", "DbConnMaxIdleTime", "DbConnMaxLifetime", "DbConnectTimeout":
 		return true
 	}
 	if f.DefaultValue == "" {
@@ -1046,6 +1046,16 @@ func DefaultConfigMessages() []ConfigMessage {
 					Flag:         "db-conn-max-lifetime",
 					DefaultValue: "30m",
 					Description:  "Maximum amount of time a connection may be reused before being closed (Go duration, e.g. 30m).",
+				},
+				{
+					Name:         "db_connect_timeout",
+					GoName:       "DbConnectTimeout",
+					GoType:       "string",
+					ProtoType:    "string",
+					EnvVar:       "DB_CONNECT_TIMEOUT",
+					Flag:         "db-connect-timeout",
+					DefaultValue: "5m",
+					Description:  "Total time to keep retrying the database connection at startup (capped exponential backoff with jitter) before the process exits non-zero. While retrying, the process stays up: /healthz passes and /readyz fails naming the database. The rendered startup probe window covers the 5m default; raise this only together with the probe window.",
 				},
 				{
 					// pprof is ON BY DEFAULT, on a LOOPBACK side-listener. A

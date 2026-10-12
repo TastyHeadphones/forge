@@ -230,7 +230,12 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 		stop()
 	}
 
-	ln, err := (&net.ListenConfig{}).Listen(runCtx, "tcp", cfg.Addr)
+	// Composition is done: hand the address from the boot probes (if the
+	// composition root started them) to the real listener.
+	boot := BootProbesFrom(ctx)
+	boot.release()
+
+	ln, err := listenAfterHandoff(runCtx, cfg.Addr, boot != nil)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", cfg.Addr, err)
 	}
@@ -475,6 +480,20 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	}
 	componentMu.Unlock()
 	return runErr
+}
+
+// listenAfterHandoff binds addr. Taking an address over from the boot probes
+// can lose a race with the kernel releasing it, so in that case an in-use
+// error is retried for a couple of seconds; a first-time bind is not.
+func listenAfterHandoff(ctx context.Context, addr string, handoff bool) (net.Listener, error) {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
+		if err == nil || !handoff || !errors.Is(err, syscall.EADDRINUSE) || time.Now().After(deadline) {
+			return ln, err
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // waitWithin blocks until wg drains or ctx expires, reporting whether the
