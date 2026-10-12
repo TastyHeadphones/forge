@@ -615,7 +615,7 @@ func recordEnvDeclaration(ctx context.Context, envName string, entities *KCLEnti
 	// says so; without it, a mixed env (control-plane prod: bound clusters
 	// plus a Firebase frontend) got hub Kustomizations over the very objects
 	// this machine applies — two appliers, one of which would revert the
-	// other once it gained the RBAC to try.
+	// other once it gained the permissions to try.
 	hubConverged := envConvergedByHub(entities)
 	ref.HubConverged = &hubConverged
 	if err := declareHostedEnv(ctx, client, ref); err != nil {

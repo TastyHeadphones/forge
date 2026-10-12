@@ -234,13 +234,13 @@ func TestAgentConfigCollectsByPushAndEnrichesOnly(t *testing.T) {
 		switch r {
 		case "otlp", "filelog", "kubeletstats":
 		default:
-			t.Errorf("receiver %q: the agent pulls only stdout and kubelet stats (never scrape tenants by default)", r)
+			t.Errorf("receiver %q: the agent pulls only stdout and kubelet stats (never scrape application endpoints by default)", r)
 		}
 	}
-	for _, banned := range []string{"tenant", "org", "token", "attributes/", "resource/"} {
+	for _, banned := range []string{"org", "token", "attributes/", "resource/"} {
 		for p := range doc.Processors {
 			if strings.HasPrefix(p, banned) {
-				t.Errorf("processor %q looks like a tenant-identity rule; forge's agent only enriches", p)
+				t.Errorf("processor %q looks like an identity-stamping rule; forge's agent only enriches", p)
 			}
 		}
 	}
@@ -398,7 +398,7 @@ func TestAgentStripsClientIdentityBeforeEnrichment(t *testing.T) {
 			t.Errorf("pipeline %s is node-derived; stripping would delete the trustworthy k8s.* attributes: %v", name, p.Processors)
 		}
 	}
-	for _, key := range []string{"k8s.namespace.name", "k8s.pod.uid", "reliant.org.id", "tenant.id", "org.id"} {
+	for _, key := range []string{"k8s.namespace.name", "k8s.pod.uid", "reliant.org.id"} {
 		if !regexp.MustCompile(ClientIdentityKeyPattern).MatchString(key) {
 			t.Errorf("%s is not stripped", key)
 		}
