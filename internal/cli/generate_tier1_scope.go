@@ -174,7 +174,6 @@ var tier1OwnerRegistry = []tier1OwnerEntry{
 	{glob: "deploy/observability/dashboards/*_gen.json", gate: gateObservabilityDashboardsEnabled},
 	{exact: "deploy/observability/dashboards/saved-searches_gen.ndjson", gate: gateObservabilityDashboardsEnabled},
 	{exact: "deploy/observability/dashboard-spec_gen.json", gate: gateObservabilityDashboardsEnabled},
-	{exact: "deploy/observability/alerts-pending_gen.json", gate: gateObservabilityDashboardsEnabled},
 
 	{glob: "internal/*/mock_gen.go", gate: gateContractsEnabled},
 	{glob: "internal/*/*/mock_gen.go", gate: gateContractsEnabled},

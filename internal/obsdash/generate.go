@@ -26,8 +26,6 @@ const (
 	// compose entrypoint upserts it, because the file provisioner has no
 	// saved-search path.
 	SavedSearchesFile = DashboardsDir + "/saved-searches_gen.ndjson"
-	// AlertsFile records the alert definitions that cannot be provisioned yet.
-	AlertsFile = "deploy/observability/alerts-pending_gen.json"
 )
 
 // genSuffix marks the files forge owns and rewrites.
@@ -107,20 +105,6 @@ func Write(projectDir string, in Input, cs *checksums.FileChecksums) ([]string, 
 		nd.WriteByte('\n')
 	}
 	if err := emit(SavedSearchesFile, nd.Bytes()); err != nil {
-		return nil, err
-	}
-
-	alerts, err := json.MarshalIndent(struct {
-		Note   string  `json:"note"`
-		Alerts []Alert `json:"alerts"`
-	}{
-		Note:   "Pending: HyperDX 2.40 does not evaluate alerts declared in provisioned files (hyperdx PR #3233). These definitions are recorded for the delivery layer that can create them through the HyperDX alerts API; nothing here fires.",
-		Alerts: sp.Alerts,
-	}, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	if err := emit(AlertsFile, append(alerts, '\n')); err != nil {
 		return nil, err
 	}
 

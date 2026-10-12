@@ -16,8 +16,7 @@ one service.
 | `.../<project>-service-<svc>_gen.json` | per service: a requests / error-rate / latency row for EVERY rpc, a RED-by-rpc table, DB calls, Go runtime (memory, GC goal, goroutines, allocation), error logs and logs scoped to that service |
 | `.../<project>-frontend_gen.json` | with a web frontend: JS errors, sessions, page views, failed API calls, LCP/INP/CLS p75, page-load percentiles, browser API latency and calls by URL |
 | `.../saved-searches_gen.ndjson` | one error-log search per service |
-| `deploy/observability/dashboard-spec_gen.json` | the renderer-neutral model all of the above come from |
-| `deploy/observability/alerts-pending_gen.json` | alert definitions (see Alerts) |
+| `deploy/observability/dashboard-spec_gen.json` | the renderer-neutral model all of the above come from, including the alert definitions (see Alerts) |
 
 Every dashboard has `service.name` and `deployment.environment.name` filters.
 
@@ -51,10 +50,10 @@ exists forge stops writing (and removes a pristine) `x_gen.json`. Any other
 
 HyperDX 2.40 validates an alert declared in a provisioned file and never
 evaluates it (hyperdx PR #3233, open). So no alert is embedded in a dashboard.
-`alerts-pending_gen.json` records the definitions (error rate above 5%, p99
-above 1s, no requests for 15m), each `status: pending`, for a deliverer that can
-create them through the alerts API. When #3233 ships and the pin moves, embed
-them and drop the file.
+`dashboard-spec_gen.json` records the definitions in its `alerts` array (error
+rate above 5%, p99 above 1s, no requests for 15m), each `status: pending`, for a
+deliverer that can create them through the alerts API. When #3233 ships and the
+pin moves, embed them in the dashboards.
 
 ## The seam: spec, then renderer
 

@@ -2348,9 +2348,14 @@ func gateObservabilityDashboards(ctx *pipelineContext) bool {
 
 // stepObservabilityDashboards writes deploy/observability/dashboards/*_gen.json
 // (HyperDX v2 dashboards), the renderer-neutral dashboard-spec_gen.json beside
-// it, the saved searches and the pending alert definitions.
+// it (which also carries the pending alert definitions) and the saved searches.
 func stepObservabilityDashboards(ctx *pipelineContext) error {
-	in := obsdash.Input{Project: ctx.Cfg.Name, HasDatabase: ctx.Cfg.Database.Driver != ""}
+	// The database panels read spans the ORM's query hook emits, so they track
+	// whether the project has a schema. Database.Driver cannot say: it is
+	// derived from the db/migrations DIRECTORY, which every service scaffold
+	// creates (empty, under a .gitkeep), so it is never "" and names a
+	// database before the first migration exists.
+	in := obsdash.Input{Project: ctx.Cfg.Name, HasDatabase: codegen.ProjectHasSQLMigrations(ctx.AbsPath)}
 	for _, s := range ctx.Services {
 		svc := obsdash.Service{Name: naming.ServicePackage(s.Name), Package: s.Package, ProtoService: s.Name}
 		for _, m := range s.Methods {
