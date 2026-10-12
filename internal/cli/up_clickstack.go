@@ -203,6 +203,14 @@ func forwarderConfig(o *ObservabilityEntity) (string, error) {
 	if o == nil || o.Destination == nil {
 		return "", fmt.Errorf("the local forwarder needs Bundle.observability.destination")
 	}
+	// The local forwarder has no mounted file and no control plane writing a
+	// Secret next to it. Building its spec from headers alone would start a
+	// collector that sends no credential, refused by the backend with nothing
+	// on screen saying why.
+	if o.Destination.TokenSecret != nil {
+		return "", fmt.Errorf("destination %s authenticates with a token the node agent reads from a mounted Secret (token_secret / token_from_control_plane), and the local forwarder has none. "+
+			"Use headers_secret for the host side of this env (forge secret set --env <env> <key>), or declare observability only on the cluster env", o.Destination.Endpoint)
+	}
 	spec := deploy.ObservabilityAgentSpec{
 		Endpoint: hostReachableEndpoint(o.Destination.Endpoint),
 		Protocol: o.Destination.Protocol,

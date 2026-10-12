@@ -3984,15 +3984,31 @@ func requiredSecretsForPreflight(entities *KCLEntities) []cluster.RequiredSecret
 // nil entities / no minted declarations => nil (the exemption is inert).
 func provisionedByDeployForPreflight(entities *KCLEntities) []cluster.ProvisionedSecret {
 	minted := deployMintedKubeconfigSecrets(entities)
-	if len(minted) == 0 {
+	var delivered []ControlPlaneSecretEntity
+	if entities != nil {
+		delivered = entities.ControlPlaneSecrets
+	}
+	if len(minted)+len(delivered) == 0 {
 		return nil
 	}
-	out := make([]cluster.ProvisionedSecret, 0, len(minted))
+	out := make([]cluster.ProvisionedSecret, 0, len(minted)+len(delivered))
 	for _, k := range minted {
 		out = append(out, cluster.ProvisionedSecret{
 			Name:      k.Name,
 			Namespace: k.Namespace,
 			By:        cluster.SupplyKubeconfigSecret,
+		})
+	}
+	// A Secret the control plane delivers AFTER this deploy cannot be a
+	// precondition of it. Its mount is optional, so the pod starts without it,
+	// and the live reference check must not read the absence as a missing
+	// dependency: that would refuse every first deploy, on a Secret whose
+	// deliverer is waiting for this deploy to record it.
+	for _, c := range delivered {
+		out = append(out, cluster.ProvisionedSecret{
+			Name:      c.Name,
+			Namespace: c.Namespace,
+			By:        cluster.SupplyControlPlaneSecret,
 		})
 	}
 	return out
@@ -4003,6 +4019,18 @@ func secretSupplyForPreflight(entities *KCLEntities) []cluster.SecretSupply {
 		return nil
 	}
 	var out []cluster.SecretSupply
+	// A Secret the control plane delivers is the bundle's promise that the
+	// Secret will exist, exactly as an ExternalSecret is. It is supply for the
+	// render-time gate, so a workload mounting one is not "undeclared", and it
+	// is deliberately NOT a RequiredSecret, so the live check never demands it
+	// before the control plane has had a chance to write it.
+	for _, c := range entities.ControlPlaneSecrets {
+		out = append(out, cluster.SecretSupply{
+			Name:      c.Name,
+			Namespace: c.Namespace,
+			Kind:      cluster.SupplyControlPlaneSecret,
+		})
+	}
 	for _, k := range entities.KubeconfigSecrets {
 		out = append(out, cluster.SecretSupply{
 			Name:      k.Name,

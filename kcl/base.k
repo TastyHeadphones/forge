@@ -118,6 +118,35 @@ OTEL_COLLECTOR_IMAGE: str = "otel/opentelemetry-collector-contrib:0.162.0@sha256
 # (internalTrafficPolicy: Local), in `Observability.agent.namespace`.
 OTEL_AGENT_SERVICE: str = "otel-agent"
 
+# forge.ControlPlaneSecret: what the declared control plane writes under each
+# kind, and where a workload reads it. ONE contract, spelled once: the control
+# plane (which writes the Secret), the node agent (pkg/deploy, `token_secret`)
+# and pkg/observe (`OTEL_EXPORTER_OTLP_HEADERS_FILE`) all depend on it.
+#
+# telemetry_token writes two keys of one Secret:
+#   OTEL_EXPORTER_OTLP_HEADERS  `authorization=Bearer <jwt>`, the OTEL headers
+#                               format, which a workload reads from a file;
+#   token                       the bare `<jwt>`, which the node agent's
+#                               bearertokenauth extension reads from a file.
+CONTROL_PLANE_SECRET_KINDS: {str: [str]} = {
+    "telemetry_token" = ["OTEL_EXPORTER_OTLP_HEADERS", "token"]
+}
+
+# The Secret the node agent reads its ingest token from when the destination is
+# the control plane's (ObservabilityDestination.token_from_control_plane): one
+# per cluster, in Observability.agent.namespace. The agent's bearertokenauth
+# reads the `token` key (pkg/deploy mounts it at /etc/otel-auth/token).
+OTEL_AGENT_TOKEN_SECRET: str = "forge-otlp-token"
+
+# The pod volume, its directory and the file a workload reads the headers from
+# when its OTLP auth is a ControlPlaneSecret. A whole-directory Secret volume,
+# never subPath: the kubelet refreshes a directory in place, so a renewal needs
+# no restart. The volume name is fixed because a (cluster, namespace) has at
+# most one telemetry_token ControlPlaneSecret.
+CONTROL_PLANE_OTLP_VOLUME: str = "forge-otlp-auth"
+CONTROL_PLANE_OTLP_DIR: str = "/var/run/secrets/forge/otlp"
+CONTROL_PLANE_OTLP_FILE: str = "headers"
+
 # OTLP exporter env vars for a workload on a cluster that runs the node agent
 # `Bundle.observability` renders. A project that declares Bundle.observability
 # needs none of this: forge derives the same pair. This is the splice default

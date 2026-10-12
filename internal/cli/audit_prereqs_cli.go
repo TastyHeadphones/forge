@@ -245,6 +245,16 @@ func printPrerequisiteChecklist(entities *KCLEntities) {
 	// a clean apply followed by a silent runtime refusal.
 	backendPrereqs := routeBackendPrereqFindings(entities)
 
+	if len(entities.RequiredSecrets) == 0 && len(entities.RequiredDNS) == 0 && len(backendPrereqs) == 0 && len(entities.ControlPlaneSecrets) == 0 {
+		return
+	}
+	if len(entities.ControlPlaneSecrets) > 0 {
+		fmt.Println("Secrets the control plane delivers AFTER this deploy (they never block it; pods start without them and pick them up):")
+		for _, c := range entities.ControlPlaneSecrets {
+			fmt.Printf("  - Secret %s/%s [%s] on %s via connected cluster %s\n", c.Namespace, c.Name, c.Kind, c.Cluster, emptyAs(c.ConnectedCluster, "(none)"))
+		}
+		fmt.Println()
+	}
 	if len(entities.RequiredSecrets) == 0 && len(entities.RequiredDNS) == 0 && len(backendPrereqs) == 0 {
 		return
 	}

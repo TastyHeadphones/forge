@@ -209,6 +209,12 @@ type SecretVolumeSource struct {
 	// +optional
 	// +kubebuilder:validation:MaxItems=64
 	Items []KeyToPath `json:"items,omitempty"`
+	// Optional lets the pod start while the Secret does not exist yet; the
+	// kubelet fills the volume in once it appears. A Secret the control plane
+	// delivers after the first deploy (forge.ControlPlaneSecret) is mounted
+	// this way, so a first deploy never waits on it.
+	// +optional
+	Optional bool `json:"optional,omitempty"`
 }
 
 // ConfigMapVolumeSource names a ConfigMap, and optionally which keys to

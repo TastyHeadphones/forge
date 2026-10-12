@@ -108,6 +108,12 @@ func declaredBindings(e *KCLEntities) (map[string][]string, []string) {
 	for context, connected := range e.ConnectedClusters {
 		note(context, connected)
 	}
+	// A Secret the control plane delivers names the connected cluster it goes
+	// through, so a cluster ONLY such a Secret reaches is still bound and
+	// recorded, and a second name for the same context is drift like any other.
+	for _, c := range e.ControlPlaneSecrets {
+		note(c.Cluster, c.ConnectedCluster)
+	}
 	out := make(map[string][]string, len(seen))
 	var conflicts []string
 	for context, set := range seen {
@@ -157,6 +163,9 @@ func connectedClusterOf(t *ClusterTargetEntity) string {
 // requiring a registration for one would mean connecting a cluster that only
 // exists on one laptop.
 func refuseUnboundClusterTargets(envName string, e *KCLEntities) error {
+	if err := refuseUndeliverableControlPlaneSecrets(envName, e); err != nil {
+		return err
+	}
 	if e == nil || e.ControlPlane == nil {
 		return nil
 	}
@@ -230,5 +239,68 @@ func quoteEach(items []string) []string {
 	for _, s := range items {
 		out = append(out, fmt.Sprintf("%q", s))
 	}
+	return out
+}
+
+// refuseUndeliverableControlPlaneSecrets refuses, AT RENDER, a forge.ControlPlaneSecret
+// the control plane has no way to deliver.
+//
+// Delivery is the control plane writing the Secret into the cluster through a
+// connected-cluster credential, so it needs both: a control plane, and the
+// connected cluster it writes through. A declaration missing either is
+// recorded, never delivered, and reads as a Secret that is merely late.
+//
+// There is no k3d exemption, unlike refuseUnboundClusterTargets. That one
+// exempts a local cluster because forge applies to it directly and the control
+// plane never dials it. Delivery is exactly the control plane dialing the
+// cluster, so a k3d cluster is deliverable only once it is connected (which is
+// how this is tested), and an unconnected one is refused like any other.
+//
+// KCL refuses the same cases at the declaration (kcl/schema.k, Bundle checks).
+// This is the Go side of the same rule for an entity set that did not come
+// from that render, and it names the same fix.
+func refuseUndeliverableControlPlaneSecrets(envName string, e *KCLEntities) error {
+	if e == nil || len(e.ControlPlaneSecrets) == 0 {
+		return nil
+	}
+	if e.ControlPlane == nil {
+		return fmt.Errorf("env %q declares control-plane secrets (%s) and no control plane.\n"+
+			"Nothing would mint, deliver or renew them.\n"+
+			"fix: declare `control_plane = forge.ControlPlane {}` on the Bundle",
+			envName, strings.Join(quoteEach(controlPlaneSecretNames(e.ControlPlaneSecrets)), ", "))
+	}
+	var unbound []ControlPlaneSecretEntity
+	for _, c := range e.ControlPlaneSecrets {
+		if strings.TrimSpace(c.ConnectedCluster) == "" {
+			unbound = append(unbound, c)
+		}
+	}
+	if len(unbound) == 0 {
+		return nil
+	}
+	contexts := map[string]bool{}
+	for _, c := range unbound {
+		contexts[c.Cluster] = true
+	}
+	sorted := make([]string, 0, len(contexts))
+	for c := range contexts {
+		sorted = append(sorted, c)
+	}
+	sort.Strings(sorted)
+	return fmt.Errorf("env %q declares control-plane secrets (%s) on cluster %s, which names no connected cluster.\n"+
+		"The control plane can only write a Secret into a cluster it holds a credential for, so there is nothing to deliver it with.\n"+
+		"fix: register the cluster once, then name it:\n\n"+
+		"    forge cluster connect <name> --context %s --env %s\n\n"+
+		"    connected_clusters = {%q: \"<name>\"}    # on the Bundle, or ClusterTarget.connected_cluster",
+		envName, strings.Join(quoteEach(controlPlaneSecretNames(unbound)), ", "), strings.Join(quoteEach(sorted), ", "),
+		sorted[0], envName, sorted[0])
+}
+
+func controlPlaneSecretNames(in []ControlPlaneSecretEntity) []string {
+	out := make([]string, 0, len(in))
+	for _, c := range in {
+		out = append(out, c.Name)
+	}
+	sort.Strings(out)
 	return out
 }

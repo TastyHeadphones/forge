@@ -358,6 +358,12 @@ type Shape struct {
 	Domains   []string        `json:"domains"`
 	Clusters  []string        `json:"clusters"`
 	Objects   []ShapeObject   `json:"objects"`
+	// ControlPlaneSecrets are the Secrets the env's declared control plane
+	// supplies and renews (forge.ControlPlaneSecret): where each lands and what
+	// to mint into it. It is how the control plane learns what to deliver, so
+	// it is recorded on every ensure. Omitted when empty, so an env that
+	// declares none encodes, and hashes, exactly as it did before the field.
+	ControlPlaneSecrets []ShapeControlPlaneSecret `json:"control_plane_secrets,omitempty"`
 }
 
 // ShapeWorkload is one declared workload and where it runs.
@@ -381,6 +387,37 @@ type ShapeSecret struct {
 	Provider string `json:"provider"`
 	// DeclaredBy are the workloads that read it.
 	DeclaredBy []string `json:"declared_by,omitempty"`
+}
+
+// Control-plane secret kinds: what the control plane mints into the Secret.
+const (
+	// ControlPlaneSecretTelemetryToken is the per-environment OTLP ingest
+	// token.
+	ControlPlaneSecretTelemetryToken = "telemetry_token"
+)
+
+// ShapeControlPlaneSecret is one Secret the control plane supplies: a
+// DESTINATION and a KIND, never a value. Keys names what the control plane
+// writes under the Secret, so a reader knows the contract without the kind's
+// definition.
+type ShapeControlPlaneSecret struct {
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+	// Cluster is the kube context the Secret lands in, the same key the
+	// shape's workloads and objects use.
+	Cluster string `json:"cluster"`
+	// ConnectedCluster is the name `forge cluster connect` registered: the
+	// credential the control plane delivers with.
+	ConnectedCluster string `json:"connected_cluster"`
+	// Kind says what the control plane mints into it
+	// (ControlPlaneSecretTelemetryToken).
+	Kind string   `json:"kind"`
+	Keys []string `json:"keys,omitempty"`
+}
+
+// Key identifies the Secret within a shape: (cluster, namespace, name).
+func (s ShapeControlPlaneSecret) Key() string {
+	return s.Cluster + "/" + s.Namespace + "/" + s.Name
 }
 
 // ShapeObject is one rendered Kubernetes object.
@@ -492,6 +529,22 @@ func (s Shape) Validate() error {
 			return fmt.Errorf("%w: shape workload needs a name and a runtime", ErrInvalid)
 		}
 	}
+	delivered := map[string]bool{}
+	for _, c := range s.ControlPlaneSecrets {
+		if strings.TrimSpace(c.Name) == "" || strings.TrimSpace(c.Namespace) == "" || strings.TrimSpace(c.Cluster) == "" {
+			return fmt.Errorf("%w: shape control-plane secret needs a name, a namespace and a cluster", ErrInvalid)
+		}
+		if strings.TrimSpace(c.ConnectedCluster) == "" {
+			return fmt.Errorf("%w: shape control-plane secret %s names no connected cluster, so the control plane has no credential to deliver it with", ErrInvalid, c.Key())
+		}
+		if c.Kind != ControlPlaneSecretTelemetryToken {
+			return fmt.Errorf("%w: shape control-plane secret %s: kind %q (expected %s)", ErrInvalid, c.Key(), c.Kind, ControlPlaneSecretTelemetryToken)
+		}
+		if delivered[c.Key()] {
+			return fmt.Errorf("%w: shape names control-plane secret %s twice", ErrInvalid, c.Key())
+		}
+		delivered[c.Key()] = true
+	}
 	return nil
 }
 
@@ -507,6 +560,16 @@ func (s Shape) Canonical() Shape {
 		out.Secrets[i] = sec
 	}
 	sort.Slice(out.Secrets, func(i, j int) bool { return out.Secrets[i].Name < out.Secrets[j].Name })
+	if len(s.ControlPlaneSecrets) > 0 {
+		out.ControlPlaneSecrets = make([]ShapeControlPlaneSecret, len(s.ControlPlaneSecrets))
+		for i, c := range s.ControlPlaneSecrets {
+			c.Keys = sortedStrings(c.Keys)
+			out.ControlPlaneSecrets[i] = c
+		}
+		sort.Slice(out.ControlPlaneSecrets, func(i, j int) bool {
+			return out.ControlPlaneSecrets[i].Key() < out.ControlPlaneSecrets[j].Key()
+		})
+	}
 	out.Domains = sortedStrings(s.Domains)
 	out.Clusters = sortedStrings(s.Clusters)
 	out.Objects = append([]ShapeObject(nil), s.Objects...)

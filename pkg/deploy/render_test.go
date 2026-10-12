@@ -1713,3 +1713,34 @@ func TestPodSecurityOverrideRender(t *testing.T) {
 		t.Errorf("default securityContext changed: %v", get(pod, "securityContext"))
 	}
 }
+
+// TestSecretVolumeOptional: a Secret volume marked optional renders
+// `optional: true` (the pod starts before the control plane has delivered the
+// Secret, and the kubelet fills the volume in once it appears), and one that is
+// not renders byte-identically to before the field existed.
+func TestSecretVolumeOptional(t *testing.T) {
+	w := svc("api", httpPort(true))
+	w.Spec.Volumes = []v1alpha1.Volume{
+		{Name: "otlp", MountPath: "/var/run/secrets/forge/otlp", ReadOnly: true, Source: v1alpha1.VolumeSource{Secret: &v1alpha1.SecretVolumeSource{
+			Name: "reliant-otel-auth", Optional: true, Items: []v1alpha1.KeyToPath{{Key: "OTEL_EXPORTER_OTLP_HEADERS", Path: "headers"}},
+		}}},
+		{Name: "certs", MountPath: "/etc/certs", ReadOnly: true, Source: v1alpha1.VolumeSource{Secret: &v1alpha1.SecretVolumeSource{Name: "tls"}}},
+	}
+	pod := podOf(objects(t, render(t, v1alpha1.ProfileFull, w))["Deployment/api"])
+	byName := map[string]any{}
+	for _, v := range asSlice(get(pod, "volumes")) {
+		m, _ := v.(map[string]any)
+		byName[m["name"].(string)] = m["secret"]
+	}
+	otlp, _ := byName["otlp"].(map[string]any)
+	if otlp["optional"] != true {
+		t.Errorf("optional volume rendered optional = %v", otlp["optional"])
+	}
+	if items := asSlice(otlp["items"]); len(items) != 1 || items[0].(map[string]any)["path"] != "headers" {
+		t.Errorf("the projected file is %v, want headers", otlp["items"])
+	}
+	certs, _ := byName["certs"].(map[string]any)
+	if _, set := certs["optional"]; set {
+		t.Errorf("a volume that did not ask for optional rendered optional = %v", certs["optional"])
+	}
+}

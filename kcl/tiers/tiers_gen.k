@@ -602,6 +602,7 @@ schema SecretVolumeSource:
     """SecretVolumeSource names a Secret, and optionally which keys to project."""
     items?: [KeyToPath]
     name: str
+    optional?: bool
 
     check:
         items == Undefined or len(items) <= 64, "SecretVolumeSource.items allows at most 64 entries"
@@ -612,6 +613,7 @@ secret_volume_source_json = lambda v: SecretVolumeSource -> {str:} {
     _d = {
         "items": [key_to_path_json(_i) for _i in v.items] if v.items else Undefined
         "name": v.name
+        "optional": v.optional
     }
     {k: _v for k, _v in _d if _v != Undefined and _v != None}
 }

@@ -9,6 +9,7 @@
       "token_env": "FORGE_CONTROL_PLANE_TOKEN",
       "type": "control_plane"
     },
+    "control_plane_secrets": [],
     "databases": [
       {
         "cluster": null,

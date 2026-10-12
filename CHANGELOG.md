@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`forge.ControlPlaneSecret`: a Secret the env's declared control plane
+  supplies and renews.** `Bundle.control_plane_secrets` declares one (`name`,
+  `cluster`, `namespace`, `kind = "telemetry_token"`). It is recorded in the
+  env shape (`shape.control_plane_secrets`: name, namespace, cluster,
+  connected cluster, kind, keys; never a value), **never blocks a first deploy**
+  (the preflight neither requires it nor reads its absence as a missing
+  dependency, and it counts as supply for the undeclared-mount gate), and is
+  **refused at render without a connected-cluster binding** or without
+  `control_plane`. There is no k3d exemption: delivery is the control plane
+  dialing the cluster. A cluster workload in the same cluster and namespace
+  gets an optional whole-directory Secret volume `forge-otlp-auth` at
+  `/var/run/secrets/forge/otlp` and `OTEL_EXPORTER_OTLP_HEADERS_FILE`, so a
+  renewal needs no restart. `ObservabilityDestination.token_from_control_plane
+  = True` derives the node agent's Secret (`forge-otlp-token`, key `token`) on
+  every cluster running the agent. `v1alpha1.SecretVolumeSource` gained
+  `optional`. `output.control_plane_secrets` is a new render-contract key
+  (every `render_contract` golden gains `"control_plane_secrets": []`). See
+  `deploy/control-plane-secret` and `migrations/v0.1.45` section 7.
+
 - **`forge env deploy <env> --offline-ledger`: a break-glass for a hosted ledger
   whose control plane is down.** With the control plane unreachable, a
   `forge.ControlPlane` env could not resolve its current release, and
