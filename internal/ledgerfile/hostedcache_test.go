@@ -64,3 +64,39 @@ func TestQueuedPromotions_IdempotentOnKeyAndGatesAttach(t *testing.T) {
 		t.Fatal("a record with no key is invalid")
 	}
 }
+
+func TestRebaseQueued_RepointsTheRecordsStandingOnALandedOne(t *testing.T) {
+	s := openTest(t)
+	now := time.Now().UTC()
+	for _, q := range []QueuedPromotion{
+		{Key: "a", Env: "prod", Endpoint: "e", Release: "v2", ExpectedPromotionID: "p-3", QueuedAt: now},
+		{Key: "b", Env: "prod", Endpoint: "e", Release: "v1", AfterKey: "a", QueuedAt: now},
+	} {
+		if err := s.QueuePromotion(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.RebaseQueued("prod", "a", "p-4"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.QueuedPromotions("prod")
+	if got[1].AfterKey != "" || got[1].ExpectedPromotionID != "p-4" || got[0].ExpectedPromotionID != "p-3" {
+		t.Fatalf("only the dependent record is re-pointed: %+v", got)
+	}
+}
+
+func TestHostedSnapshot_HistoryRoundTrips(t *testing.T) {
+	s := openTest(t)
+	cur, old := promotion("prod", "v2"), promotion("prod", "v1")
+	cur.ID, old.ID = "p-2", "p-1"
+	r1 := ociRelease("v1")
+	snap := HostedSnapshot{Env: "prod", Endpoint: "e", RefreshedAt: time.Now().UTC().Truncate(time.Second), Bound: true, Current: &cur, Window: 5,
+		History: []CachedPromotion{{Promotion: old, Release: &r1}}}
+	if err := s.PutHostedSnapshot(snap); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.HostedSnapshot("prod")
+	if err != nil || len(got.History) != 1 || got.History[0].Promotion.ID != "p-1" || got.History[0].Release == nil || got.Window != 5 {
+		t.Fatalf("history must round-trip with its release: %+v %v", got, err)
+	}
+}
