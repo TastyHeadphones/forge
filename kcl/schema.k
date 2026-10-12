@@ -3452,11 +3452,17 @@ schema ObservabilityDestination:
 schema ObservabilitySignals:
     """Which signals the env ships. A disabled signal is switched off at the
     app (`OTEL_<SIGNAL>_EXPORTER=none`) and left out of the collector's
-    pipelines. Profiles are off until the backend can store them."""
+    pipelines.
+
+    `profiles` UNSET means "on where forge runs the store": ON with the local
+    ClickStack (no destination and a `profiles_port`, the dev default), OFF
+    everywhere else (a destination, a cluster, forge.OnHosted). Set it to
+    say otherwise: False turns profiling off locally, True ships profiles to
+    a destination (its collector must accept OTLP profiles)."""
     traces: bool = True
     metrics: bool = True
     logs: bool = True
-    profiles: bool = False
+    profiles?: bool
 
 schema ObservabilitySampling:
     """Trace sampling. The ratio is HEAD sampling in the SDK: every workload
@@ -3531,11 +3537,17 @@ schema Observability:
     unreachable from a cluster. With a destination, the collector in front of
     the app forwards there, and cluster workloads export to the node agent.
 
-        observability = forge.Observability {local_port = _otlp_http_port}
+    `profiles_port` is the loopback port of the local profiles collector
+    (docker-compose.yml's `otel-profiles`, which writes into ClickStack's
+    ClickHouse). With it and no destination, profiles are on by default and
+    host processes get OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT aimed at it.
+
+        observability = forge.Observability {local_port = _otlp_http_port, profiles_port = _profiles_otlp_port}
     """
     enabled: bool = True
     destination?: ObservabilityDestination
     local_port: int = 0
+    profiles_port: int = 0
     signals: ObservabilitySignals = ObservabilitySignals {}
     sampling: ObservabilitySampling = ObservabilitySampling {}
     retention: ObservabilityRetention = ObservabilityRetention {}
@@ -3543,6 +3555,9 @@ schema Observability:
 
     check:
         local_port >= 0 and local_port < 65536, "Observability.local_port must be 0..65535"
+        profiles_port >= 0 and profiles_port < 65536, "Observability.profiles_port must be 0..65535"
+        not enabled or not signals.profiles or destination or local_port == 0 or profiles_port > 0, \
+            "Observability.signals.profiles = True with the local ClickStack needs profiles_port: ClickStack's own collector cannot store profiles, so they go to docker-compose.yml's `otel-profiles` collector. Set profiles_port to the port it publishes (see migrations/v0.1.45), or leave signals.profiles unset"
         not enabled or sampling.traces_ratio >= 1.0 or destination, \
             "Observability.sampling.traces_ratio < 1.0 needs a destination: sampling runs in the collector that forwards, and the local ClickStack stores everything"
 

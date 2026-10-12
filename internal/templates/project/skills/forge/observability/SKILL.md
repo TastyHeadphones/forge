@@ -14,11 +14,12 @@ It is one container (HyperDX's no-auth *local mode* image), about 0.8 GB residen
 | Signal | Path |
 |---|---|
 | Traces, metrics | Host processes started by `forge env up` get `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:<port>` and `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` and push OTLP/HTTP to the collector. Compose services use `http://otel-collector:4318`. The app never learns the backend, only the standard variables. |
+| Profiles | The runtime profiles itself and **pushes** OTLP profiles to `OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT`, which the env's declaration (`profiles_port`) points at the `otel-profiles` collector. See *Continuous profiles*. |
 | Logs | The collector tails `.forge/logs/<env>/<service>.log` — the files `forge env up` already tees every host process into — parsing the runtime's JSON lines. `service.name` is the file name (the workload name); `trace_id` / `span_id` become the log's trace link. This is the **one** local log path (the runtime does not also export logs over OTLP). The pipeline is `deploy/observability/otel-collector.yaml` — yours to edit. |
 
 A value you set yourself (shell, `config.k`, a workload's `env`) wins: `forge env up` fills `OTEL_EXPORTER_OTLP_ENDPOINT` and `_PROTOCOL` as a pair, only when neither is set. Frontend dev servers get the endpoint (for their `/_otel` proxy) and the env name; `frontend_*.log` is not tailed, as the browser SDK ships the console.
 
-**To turn it off**, set `_observability = False` in `deploy/kcl/dev/main.k`: no container starts and no endpoint is exported. Trace context still propagates. Profiles are not collected locally yet.
+**To turn it off**, set `_observability = False` in `deploy/kcl/dev/main.k`: no container starts and no endpoint is exported. Trace context still propagates. Profiles go with it (see *Continuous profiles*).
 
 **To send it somewhere else**, declare a destination: local ClickStack is just the default one. A `forge.Observability` on the Bundle names an OTLP endpoint, a headers *secret reference*, which signals, and sampling; forge renders the collector for the runtime (a compose forwarder locally, a node-agent DaemonSet on a cluster) and apps are unchanged. Depth: `forge skill load observability/destination`.
 
@@ -157,12 +158,18 @@ Apps never learn the collector's backend. The platform renders the standard Open
 | `OTEL_RESOURCE_ATTRIBUTES` | merged into the resource; carries `deployment.environment.name=<env>` |
 | `OTEL_SDK_DISABLED=true` | every export off |
 | `OTEL_LOGS_EXPORTER=otlp` | the explicit switch for OTLP logs (off by default) |
+| `OTEL_PROFILES_EXPORTER=none` | turns continuous profiling off (the runtime profiles whenever an endpoint is set); the declaration renders it wherever profiles are off (`observability/profiles`); typed equivalent `observe.Config.ProfilesDisabled` |
+| `OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT` | where profiles go: a FULL URL used as given (`http://127.0.0.1:4328/v1development/profiles`). Unset, profiles follow the base endpoint and gain `/v1development/profiles`. Headers, protocol, timeout and compression follow the per-signal `OTEL_EXPORTER_OTLP_PROFILES_*` variables |
 
 `Config.OTLPEndpoint` (the typed `otlp_endpoint` config field) overrides the endpoint variables; protocol and headers always come from the environment. With no endpoint nothing is exported, but `/metrics` still works and the W3C TraceContext+Baggage propagator is **always** installed, so `traceparent` is honoured and forwarded regardless. With export on, Go runtime metrics are recorded too.
 
 ### Logs: exactly one shipping path
 
 The server writes JSON lines to stdout; a record logged with a context holding a span (`logger.InfoContext(ctx, ...)`) carries `trace_id` and `span_id`. Locally a collector reads the `.forge/logs/<env>/*.log` files; on a cluster a node agent reads container logs. The OTLP logs exporter (`OTEL_LOGS_EXPORTER=otlp`) does not replace stdout and is **mutually exclusive with file/stdout collection** — turn it on only where no agent collects the same stream, or every line ships twice.
+
+## Continuous profiles
+
+Every process with an OTLP endpoint profiles itself (`pkg/observe`): a 10s CPU profile plus heap and goroutine snapshots about once a minute, **pushed** over OTLP to the `otel-profiles` collector, which writes them into ClickStack's ClickHouse. On by default with the local ClickStack; elsewhere `signals.profiles` on the env's `forge.Observability` governs it. HyperDX draws no flamegraphs: `forge observe profile --service api -o api.pb.gz`, then `go tool pprof -http=: api.pb.gz`. Depth (defaults, cost, tables, trace links, SQL): `forge skill load observability/profiles`.
 
 ## Resource identity
 

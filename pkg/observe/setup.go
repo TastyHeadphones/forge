@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -46,6 +47,12 @@ type Config struct {
 	// already ships the same lines (see NewLogHandler).
 	OTLPLogs bool
 
+	// ProfilesDisabled turns continuous profiling off, like
+	// OTEL_PROFILES_EXPORTER=none. Profiling is ON by default whenever an OTLP
+	// endpoint is configured: a CPU profile for 10s of every minute plus heap and
+	// goroutine snapshots, about 0.15% of one core. See profiler.go.
+	ProfilesDisabled bool
+
 	// InstanceID is reported as semconv service.instance.id when non-empty.
 	// Callers typically pass os.Hostname().
 	InstanceID string
@@ -81,8 +88,9 @@ func Setup(ctx context.Context, cfg Config) (func(context.Context) error, http.H
 	wantTraces := exportEnabled(signalTraces, cfg)
 	wantMetrics := exportEnabled(signalMetrics, cfg)
 	wantLogs := exportEnabled(signalLogs, cfg)
+	wantProfiles := exportEnabled(signalProfiles, cfg)
 
-	if !wantTraces && !wantMetrics && !wantLogs {
+	if !wantTraces && !wantMetrics && !wantLogs && !wantProfiles {
 		mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(promReader))
 		otel.SetMeterProvider(mp)
 		return func(ctx context.Context) error { return mp.Shutdown(ctx) }, metricsHandler, nil
@@ -139,6 +147,16 @@ func Setup(ctx context.Context, cfg Config) (func(context.Context) error, http.H
 		)
 		otel.SetLoggerProvider(lp)
 		shutdowns = append(shutdowns, lp.Shutdown)
+	}
+
+	if wantProfiles {
+		// Best effort by design: a profiling misconfiguration must never keep
+		// the service from starting.
+		if stop, err := startProfiler(ctx, cfg, res); err != nil {
+			slog.Warn("continuous profiling is off", "error", err)
+		} else {
+			shutdowns = append(shutdowns, stop)
+		}
 	}
 
 	return func(ctx context.Context) error {

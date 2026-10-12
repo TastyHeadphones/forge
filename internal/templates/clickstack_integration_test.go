@@ -18,7 +18,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/pprof/profile"
+	pproftrans "github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/pprof"
+	"go.opentelemetry.io/collector/pdata/pcommon"
+	"go.opentelemetry.io/collector/pdata/pprofile"
+	"go.opentelemetry.io/collector/pdata/pprofile/pprofileotlp"
+
 	"github.com/reliant-labs/forge/internal/clickstack"
+	"github.com/reliant-labs/forge/pkg/profilequery"
 
 	collectorlogs "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	collectormetrics "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
@@ -70,6 +77,16 @@ func TestGeneratedProjectDeliversTelemetryToClickStack(t *testing.T) {
 	}
 	httpPort, grpcPort, uiPort := port(clickstack.EnvOTLPHTTPPort), port(clickstack.EnvOTLPGRPCPort), port(clickstack.EnvUIPort)
 
+	// Continuous profiles go to their own collector; a fresh env must run it too.
+	profilesWorkload, ok := w[clickstack.ProfilesService]
+	if !ok {
+		t.Fatalf("a fresh dev env does not run %s: %v", clickstack.ProfilesService, w)
+	}
+	profilesPort := regexp.MustCompile(`"` + clickstack.EnvProfilesOTLPPort + `":"(\d+)"`).FindStringSubmatch(profilesWorkload)
+	if profilesPort == nil {
+		t.Fatalf("the rendered %s workload carries no %s:\n%s", clickstack.ProfilesService, clickstack.EnvProfilesOTLPPort, profilesWorkload)
+	}
+
 	// `forge env up` creates the log dir before anything writes to it.
 	logDir := filepath.Join(root, ".forge", "logs", "dev")
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
@@ -85,6 +102,7 @@ func TestGeneratedProjectDeliversTelemetryToClickStack(t *testing.T) {
 			clickstack.EnvOTLPHTTPPort+"="+httpPort,
 			clickstack.EnvOTLPGRPCPort+"="+grpcPort,
 			clickstack.EnvUIPort+"="+uiPort,
+			clickstack.EnvProfilesOTLPPort+"="+profilesPort[1],
 		)
 		return cmd.CombinedOutput()
 	}
@@ -96,6 +114,11 @@ func TestGeneratedProjectDeliversTelemetryToClickStack(t *testing.T) {
 		t.Fatalf("docker compose up --wait clickstack: %v\n%s\n--- logs ---\n%s", err, out, logs)
 	}
 	t.Logf("clickstack healthy %.0fs after `up --wait`", time.Since(start).Seconds())
+	// The schema job runs to completion first, then the profiles collector starts.
+	if out, err := compose("up", "-d", "--wait", "--wait-timeout", "180", clickstack.ProfilesService); err != nil {
+		logs, _ := compose("logs", "--tail", "60", clickstack.ProfilesService, "profiles-schema")
+		t.Fatalf("docker compose up --wait %s: %v\n%s\n--- logs ---\n%s", clickstack.ProfilesService, err, out, logs)
+	}
 
 	query := func(sql string) string {
 		t.Helper()
@@ -135,12 +158,18 @@ func TestGeneratedProjectDeliversTelemetryToClickStack(t *testing.T) {
 	// them. Reading it from the render, not rebuilding it here, is what makes
 	// this gate prove the env a user gets delivers data.
 	env := map[string]string{}
-	for _, m := range regexp.MustCompile(`"name":"(OTEL_EXPORTER_OTLP_[A-Z]+)","value":"([^"]*)"`).FindAllStringSubmatch(w["api"], -1) {
+	for _, m := range regexp.MustCompile(`"name":"(OTEL_(?:EXPORTER_OTLP|PROFILES)_[A-Z_]+)","value":"([^"]*)"`).FindAllStringSubmatch(w["api"], -1) {
 		env[m[1]] = m[2]
 	}
 	endpoint := env["OTEL_EXPORTER_OTLP_ENDPOINT"]
 	if env["OTEL_EXPORTER_OTLP_PROTOCOL"] != "http/protobuf" || endpoint != "http://127.0.0.1:"+httpPort {
 		t.Fatalf("host OTLP env = %v (rendered api: %s)", env, w["api"])
+	}
+	// Profiles are on by default beside the local ClickStack: the declaration
+	// aims host processes at the profiles collector's published port.
+	profilesEndpoint := env["OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT"]
+	if profilesEndpoint != "http://127.0.0.1:"+profilesPort[1]+"/v1development/profiles" || env["OTEL_PROFILES_EXPORTER"] != "" {
+		t.Fatalf("host profiles env = %v: want the profiles collector on :%s, profiling on (rendered api: %s)", env, profilesPort[1], w["api"])
 	}
 
 	run := fmt.Sprintf("%d", time.Now().UnixNano())
@@ -208,6 +237,113 @@ func TestGeneratedProjectDeliversTelemetryToClickStack(t *testing.T) {
 	waitRows("file log: service name is the FILE name; body, severity, trace link and env come from the JSON line",
 		fmt.Sprintf(`SELECT ServiceName, Body, SeverityText, TraceId, SpanId, ResourceAttributes['deployment.environment.name'] FROM default.otel_logs WHERE ServiceName='%s'`, svcFile),
 		strings.Join([]string{svcFile, "gate-file-log", "warn", hex.EncodeToString(fileTrace), hex.EncodeToString(fileSpan), "dev"}, "\t"))
+
+	// ── Continuous profiles: pushed over OTLP to the profiles collector ──
+	//
+	// What pkg/observe's profiler sends, built here with the same translator, with
+	// ONE sample linked to a span and BOTH Go CPU sample types left in so the
+	// materialized view's `samples` filter is exercised too.
+	svcProf := "gate-prof-" + run
+	profTrace, profSpan := bytes16(0xE5), []byte{0xF6, 2, 3, 4, 5, 6, 7, 8}
+	fnMain := &profile.Function{ID: 1, Name: "gate.main", Filename: "gate.go"}
+	fnWork := &profile.Function{ID: 2, Name: "gate.work", Filename: "gate.go"}
+	fnHash := &profile.Function{ID: 3, Name: "gate.hash", Filename: "gate.go"}
+	locMain := &profile.Location{ID: 1, Line: []profile.Line{{Function: fnMain, Line: 1}}}
+	locWork := &profile.Location{ID: 2, Line: []profile.Line{{Function: fnWork, Line: 2}}}
+	locHash := &profile.Location{ID: 3, Line: []profile.Line{{Function: fnHash, Line: 3}}}
+	pp := &profile.Profile{
+		SampleType: []*profile.ValueType{{Type: "samples", Unit: "count"}, {Type: "cpu", Unit: "nanoseconds"}},
+		PeriodType: &profile.ValueType{Type: "cpu", Unit: "nanoseconds"}, Period: 10_000_000,
+		TimeNanos: time.Now().UnixNano(), DurationNanos: int64(10 * time.Second),
+		Function: []*profile.Function{fnMain, fnWork, fnHash}, Location: []*profile.Location{locMain, locWork, locHash},
+		Sample: []*profile.Sample{
+			{Location: []*profile.Location{locHash, locWork, locMain}, Value: []int64{4, 40_000_000}},
+			{Location: []*profile.Location{locWork, locMain}, Value: []int64{1, 10_000_000}},
+		},
+	}
+	pdProf, err := pproftrans.ConvertPprofToProfiles(pp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pdProf.ResourceProfiles().At(0).Resource().Attributes().PutStr("service.name", svcProf)
+	pdProf.ResourceProfiles().At(0).Resource().Attributes().PutStr("deployment.environment.name", "dev")
+	links := pdProf.Dictionary().LinkTable()
+	if links.Len() == 0 {
+		links.AppendEmpty() // index 0 = no link
+	}
+	lk := links.AppendEmpty()
+	linkIdx := int32(links.Len() - 1)
+	var tid pcommon.TraceID
+	var sid pcommon.SpanID
+	copy(tid[:], profTrace)
+	copy(sid[:], profSpan)
+	lk.SetTraceID(tid)
+	lk.SetSpanID(sid)
+	for i := 0; i < pdProf.ResourceProfiles().At(0).ScopeProfiles().At(0).Profiles().Len(); i++ {
+		prof := pdProf.ResourceProfiles().At(0).ScopeProfiles().At(0).Profiles().At(i)
+		prof.SetProfileID(pprofile.ProfileID{byte(i + 1), 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9})
+		prof.Samples().At(0).SetLinkIndex(linkIdx) // the heavy stack ran inside the span
+	}
+	body, err := pprofileotlp.NewExportRequestFromProfiles(*pdProf).MarshalProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+	postBytes(t, profilesEndpoint, body)
+
+	waitRows("raw profile row: exact service, type, trace link and a profile id",
+		fmt.Sprintf(`SELECT SampleType, TraceId, SpanId, ProfileId != '', arrayStringConcat(arrayReverse(FunctionNames), ';') FROM default.otel_profiles WHERE ServiceName='%s' AND TraceId='%s' AND SampleType='cpu'`,
+			svcProf, hex.EncodeToString(profTrace)),
+		strings.Join([]string{"cpu", hex.EncodeToString(profTrace), hex.EncodeToString(profSpan), "1", "gate.main;gate.work;gate.hash"}, "\t"))
+	waitRows("the samples/count twin reaches the raw tier but never the aggregate",
+		fmt.Sprintf(`SELECT (SELECT count() FROM default.otel_profiles WHERE ServiceName='%[1]s' AND SampleType='samples'), (SELECT count() FROM default.profile_samples_1m WHERE ServiceName='%[1]s' AND SampleType='samples')`, svcProf),
+		"2\t0")
+
+	// The flamegraph query returns the stacks, root to leaf, with exact values.
+	flame := func(q profilequery.Query) string {
+		t.Helper()
+		sql, params := q.SQL()
+		args := []string{"exec", "-T", clickstack.Service, "sh", "-c",
+			`q="$1"; shift; exec clickhouse-client -u "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" --query "$q" "$@"`, "sh", sql}
+		for k, v := range params {
+			args = append(args, "--param_"+k+"="+v)
+		}
+		out, err := compose(args...)
+		if err != nil {
+			t.Fatalf("flamegraph query: %v\n%s", err, out)
+		}
+		p, err := profilequery.Parse(bytes.NewReader(out), q)
+		if err != nil {
+			t.Fatalf("parse flamegraph rows: %v\n%s", err, out)
+		}
+		var folded bytes.Buffer
+		_ = p.Folded(&folded)
+		return folded.String()
+	}
+	wantFolded := "gate.main;gate.work;gate.hash 40000000\ngate.main;gate.work 10000000\n"
+	rangeQ := profilequery.Query{Service: svcProf, SampleType: "cpu", Env: "dev", From: time.Now().Add(-time.Hour), To: time.Now().Add(time.Hour)}
+	var gotFolded string
+	for deadline := time.Now().Add(60 * time.Second); time.Now().Before(deadline); time.Sleep(2 * time.Second) {
+		if gotFolded = flame(rangeQ); gotFolded == wantFolded {
+			break
+		}
+	}
+	if gotFolded != wantFolded {
+		t.Errorf("range flamegraph (aggregate tier):\n got %q\nwant %q", gotFolded, wantFolded)
+	}
+	// Only the span-linked sample belongs to the trace.
+	if got := flame(profilequery.Query{Service: svcProf, SampleType: "cpu", TraceID: hex.EncodeToString(profTrace)}); got != "gate.main;gate.work;gate.hash 40000000\n" {
+		t.Errorf("trace flamegraph (raw tier) = %q", got)
+	}
+	if got := flame(profilequery.Query{Service: svcProf, SampleType: "cpu", Env: "staging", From: rangeQ.From, To: rangeQ.To}); got != "" {
+		t.Errorf("an env filter that matches nothing returned %q", got)
+	}
+	// The retention the design promises: 72h raw, 30d aggregate (ClickHouse prints
+	// INTERVAL n UNIT as toIntervalUnit(n)).
+	for table, want := range map[string]string{"otel_profiles": "toIntervalHour(72)", "profile_stacks": "toIntervalDay(30)", "profile_samples_1m": "toIntervalDay(30)"} {
+		if ddl := query("SHOW CREATE TABLE default." + table); !strings.Contains(ddl, want) {
+			t.Errorf("%s has no %q TTL:\n%s", table, want, ddl)
+		}
+	}
 
 	// ── Pre-created sources and the dashboard provisioner ────────────────
 	apiGet := func(path string) string {
@@ -338,6 +474,29 @@ func post(t *testing.T, url string, msg proto.Message) {
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 			t.Fatalf("POST %s needs credentials (%v): host processes cannot send any", url, last)
 		}
+	}
+	t.Fatalf("POST %s never accepted: %v", url, last)
+}
+
+// postBytes sends one pre-marshalled OTLP/HTTP request with no credentials and
+// requires the collector to accept it.
+func postBytes(t *testing.T, url string, body []byte) {
+	t.Helper()
+	var last error
+	for deadline := time.Now().Add(60 * time.Second); time.Now().Before(deadline); time.Sleep(time.Second) {
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/x-protobuf")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			last = err
+			continue
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			return
+		}
+		last = fmt.Errorf("HTTP %d: %s", resp.StatusCode, b)
 	}
 	t.Fatalf("POST %s never accepted: %v", url, last)
 }

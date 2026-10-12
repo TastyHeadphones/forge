@@ -261,6 +261,8 @@ authored protos, in one call.`,
 	// lives under it with the env as a positional argument. Commands where
 	// env is an optional modifier (e.g. `forge build [env]`) stay at root.
 	rootCmd.AddCommand(newEnvCmd())
+	// `observe` reads back what the local observability stack collected.
+	rootCmd.AddCommand(newObserveCmd())
 	// `release` is the release-ledger noun. Cutting a ledger stays on
 	// `forge env build --release` and advancing one stays on `forge env
 	// promote` — both act on the thing that owns them. What lives here is

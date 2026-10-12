@@ -149,9 +149,17 @@ _destination = None
 _otlp_http_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-otlp-http", 4318) if _observability else 0
 _otlp_grpc_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-otlp-grpc", 4317) if _observability else 0
 _hyperdx_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-hyperdx", 8180) if _observability and not _destination else 0
+# Continuous profiles go to their own collector (docker-compose.yml
+# `otel-profiles`), which writes into ClickStack's ClickHouse, so it runs only
+# beside ClickStack.
+_profiles_otlp_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-otlp-profiles", 4328) if _observability and not _destination else 0
 
 _observability_decl = forge.Observability {
     local_port = _otlp_http_port
+    # Where host processes push profiles. With the local ClickStack, profiles
+    # are ON by default (`signals.profiles` unset); set
+    # `signals = forge.ObservabilitySignals {profiles = False}` to turn them off.
+    profiles_port = _profiles_otlp_port
     destination = _destination
     # Retention hints (days), e.g. `retention = forge.ObservabilityRetention {logs_days = 7}`,
     # become ClickStack's table TTL below. Sampling and signals live here too.
@@ -321,6 +329,14 @@ _telemetry_workloads = ([fw.Workload {
             "CLICKSTACK_OTLP_HTTP_PORT" = str(_otlp_http_port)
             "CLICKSTACK_OTLP_GRPC_PORT" = str(_otlp_grpc_port)
         } | ({"CLICKSTACK_TABLES_TTL" = _ttl} if _ttl else {})
+    }
+}, fw.Workload {
+    # Continuous profiles: a contrib collector (feature gate on) that writes to
+    # the ClickHouse inside clickstack. Hosts push to CLICKSTACK_PROFILES_OTLP_PORT.
+    name = "otel-profiles"
+    runtime = forge.OnCompose {
+        service = "otel-profiles"
+        env = {"CLICKSTACK_PROFILES_OTLP_PORT" = str(_profiles_otlp_port)}
     }
 }]) if _observability else []
 

@@ -24,7 +24,9 @@ type clickstackCompose struct {
 		Healthcheck struct {
 			Test []string `yaml:"test"`
 		} `yaml:"healthcheck"`
-		Networks yaml.Node `yaml:"networks"`
+		Networks  yaml.Node `yaml:"networks"`
+		Command   []string  `yaml:"command"`
+		DependsOn yaml.Node `yaml:"depends_on"`
 	} `yaml:"services"`
 	Volumes map[string]any `yaml:"volumes"`
 }
@@ -224,4 +226,139 @@ func excluded(globs []string, p string) bool {
 		}
 	}
 	return false
+}
+
+// Profiles take a second, stock-contrib collector because ClickStack's own cannot
+// write them. These pin the pieces that make it work, each of which fails silently
+// otherwise: no feature gate means a 404 the app only logs at DEBUG; an unpinned
+// image means the profiles wire format moves under the producer; a collector that
+// starts before the schema job writes to tables the exporter would not create.
+func TestComposeRunsAProfilesCollectorAndItsSchemaJob(t *testing.T) {
+	cf, raw := renderClickstackCompose(t)
+	prof, ok := cf.Services["otel-profiles"]
+	if !ok {
+		t.Fatal("no otel-profiles service: the named seam must be filled")
+	}
+	if !regexp.MustCompile(`^otel/opentelemetry-collector-contrib:0\.(1[6-9]\d|[2-9]\d\d)\.\d+@sha256:[0-9a-f]{64}$`).MatchString(prof.Image) {
+		t.Errorf("image %q must be contrib >= 0.162, pinned by version and digest", prof.Image)
+	}
+	if !slices.Contains(prof.Command, "--feature-gates=+service.profilesSupport") {
+		t.Errorf("command %v lacks the profiles feature gate", prof.Command)
+	}
+	if len(prof.Ports) != 1 || !strings.HasPrefix(prof.Ports[0], "127.0.0.1:") || !strings.HasSuffix(prof.Ports[0], ":4318") {
+		t.Errorf("ports %v: want exactly OTLP/HTTP on loopback", prof.Ports)
+	}
+	if !strings.Contains(strings.Join(prof.Volumes, "\n"), "./deploy/observability/otel-profiles.yaml:") {
+		t.Errorf("the collector config is not mounted: %v", prof.Volumes)
+	}
+	if prof.Environment["CLICKHOUSE_PASSWORD"] != cf.Services["clickstack"].Environment["CLICKHOUSE_PASSWORD"] ||
+		prof.Environment["CLICKHOUSE_USER"] != cf.Services["clickstack"].Environment["CLICKHOUSE_USER"] {
+		t.Error("the profiles collector must use the same ClickHouse credentials as clickstack, not invent its own")
+	}
+	var deps map[string]struct {
+		Condition string `yaml:"condition"`
+	}
+	if err := prof.DependsOn.Decode(&deps); err != nil || deps["profiles-schema"].Condition != "service_completed_successfully" {
+		t.Errorf("otel-profiles must wait for profiles-schema to COMPLETE: %v (%v)", deps, err)
+	}
+	schema, ok := cf.Services["profiles-schema"]
+	if !ok {
+		t.Fatal("no profiles-schema job: tables and TTLs are created here, idempotently, on every up")
+	}
+	if !strings.Contains(strings.Join(schema.Volumes, "\n"), "./deploy/observability/profiles-schema.sql:") {
+		t.Errorf("profiles-schema mounts %v", schema.Volumes)
+	}
+	var sdeps map[string]struct {
+		Condition string `yaml:"condition"`
+	}
+	if err := schema.DependsOn.Decode(&sdeps); err != nil || sdeps["clickstack"].Condition != "service_healthy" {
+		t.Errorf("profiles-schema must wait for clickstack to be healthy: %v (%v)", sdeps, err)
+	}
+	var nets map[string]struct {
+		Aliases []string `yaml:"aliases"`
+	}
+	if err := prof.Networks.Decode(&nets); err != nil {
+		t.Fatal(err)
+	}
+	aliased := false
+	for _, n := range nets {
+		aliased = aliased || slices.Contains(n.Aliases, "otel-profiles")
+	}
+	if !aliased {
+		t.Error("otel-profiles has no network alias for compose services")
+	}
+	for _, name := range []string{"app", "app-debug"} {
+		if got := cf.Services[name].Environment["OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT"]; got != "http://otel-profiles:4318/v1development/profiles" {
+			t.Errorf("%s pushes profiles to %q", name, got)
+		}
+	}
+	// Profiles are PUSHED. The collector never scrapes tenant pprof endpoints.
+	for _, banned := range []string{"pprofreceiver", "pyroscope"} {
+		if strings.Contains(raw, banned) {
+			t.Errorf("the compose file mentions %q: profiles are pushed in-process over OTLP", banned)
+		}
+	}
+}
+
+func TestProfilesCollectorConfigAndSchema(t *testing.T) {
+	out, err := ProjectTemplates().Render("otel-profiles.yaml.tmpl", struct{}{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Receivers map[string]any `yaml:"receivers"`
+		Exporters map[string]struct {
+			CreateSchema *bool  `yaml:"create_schema"`
+			Endpoint     string `yaml:"endpoint"`
+			Username     string `yaml:"username"`
+			Password     string `yaml:"password"`
+		} `yaml:"exporters"`
+		Service struct {
+			Pipelines map[string]struct {
+				Receivers  []string `yaml:"receivers"`
+				Processors []string `yaml:"processors"`
+				Exporters  []string `yaml:"exporters"`
+			} `yaml:"pipelines"`
+		} `yaml:"service"`
+	}
+	if err := yaml.Unmarshal(out, &cfg); err != nil {
+		t.Fatalf("invalid YAML: %v\n%s", err, out)
+	}
+	ch := cfg.Exporters["clickhouse"]
+	if ch.CreateSchema == nil || *ch.CreateSchema {
+		t.Error("create_schema must be false: the TTLs and materialized views are ours, in profiles-schema.sql")
+	}
+	if ch.Endpoint != "tcp://clickstack:9000" || ch.Username != "${env:CLICKHOUSE_USER}" || ch.Password != "${env:CLICKHOUSE_PASSWORD}" {
+		t.Errorf("clickhouse exporter = %+v: credentials come from the environment, never the file", ch)
+	}
+	pl, ok := cfg.Service.Pipelines["profiles"]
+	if !ok || len(cfg.Service.Pipelines) != 1 {
+		t.Fatalf("pipelines = %v, want exactly one: profiles", cfg.Service.Pipelines)
+	}
+	if !slices.Equal(pl.Receivers, []string{"otlp"}) || !slices.Equal(pl.Exporters, []string{"clickhouse"}) || len(pl.Processors) != 0 {
+		t.Errorf("profiles pipeline = %+v: OTLP in, clickhouse out, no batch processor (it has no profiles support)", pl)
+	}
+
+	sql, err := ProjectTemplates().Render("profiles-schema.sql.tmpl", struct{}{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ddl := string(sql)
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS default.otel_profiles", "TTL toDateTime(Timestamp) + INTERVAL 72 HOUR",
+		"CREATE TABLE IF NOT EXISTS default.profile_stacks", "CREATE MATERIALIZED VIEW IF NOT EXISTS default.profile_stacks_mv",
+		"CREATE TABLE IF NOT EXISTS default.profile_samples_1m", "CREATE MATERIALIZED VIEW IF NOT EXISTS default.profile_samples_1m_mv",
+		"INTERVAL 30 DAY", "SampleType != 'samples'",
+	} {
+		if !strings.Contains(ddl, want) {
+			t.Errorf("profiles-schema.sql lacks %q", want)
+		}
+	}
+	// Every statement must be idempotent: the job runs on every `forge env up`.
+	for _, stmt := range strings.Split(ddl, ";") {
+		st := strings.TrimSpace(stmt)
+		if strings.HasPrefix(st, "CREATE") && !strings.Contains(strings.SplitN(st, "\n", 2)[0], "IF NOT EXISTS") {
+			t.Errorf("not idempotent: %.80s", st)
+		}
+	}
 }

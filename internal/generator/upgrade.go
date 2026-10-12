@@ -404,6 +404,8 @@ func managedFilesForKindBinary(kind, binary, binName string) []managedFile {
 		// observability being enabled.
 		{templateName: "otel-collector.yaml.tmpl", destPath: "deploy/observability/otel-collector.yaml", templated: true, tier: Tier2, enabledFor: enabledForObservability},
 		{templateName: "dashboards-README.md.tmpl", destPath: "deploy/observability/dashboards/README.md", templated: true, tier: Tier2, enabledFor: enabledForObservability},
+		{templateName: "otel-profiles.yaml.tmpl", destPath: "deploy/observability/otel-profiles.yaml", templated: true, tier: Tier2, enabledFor: enabledForObservability},
+		{templateName: "profiles-schema.sql.tmpl", destPath: "deploy/observability/profiles-schema.sql", templated: true, tier: Tier2, enabledFor: enabledForObservability},
 	}
 }
 

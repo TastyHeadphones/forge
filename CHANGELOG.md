@@ -59,6 +59,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   goose squashes goose's history into one first-migration baseline and lists
   every goose version in the baseline's header:
   `-- forge:adopts goose <version> …` (the line repeats to wrap).
+- **Continuous profiles go to ClickHouse, pushed by the app (owner decision: push by default, no Pyroscope).**
+  `pkg/observe` now profiles every process that has an OTLP endpoint: a 10s CPU
+  profile plus heap and goroutine snapshots about once a minute (jittered),
+  converted to OTLP profiles and POSTed to `OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT`
+  (a full URL; unset, the base endpoint gains `/v1development/profiles`). On by
+  default whenever an endpoint is set; off with `OTEL_PROFILES_EXPORTER=none` or
+  `observe.Config{ProfilesDisabled: true}`. The loop never blocks or crashes the
+  app: own goroutine, panics recovered, a TCP probe before each cycle, exponential
+  backoff to 15 min, and the CPU profile is skipped when another is running.
+  Measured: ~90 ms CPU and 1.5 MB per conversion (~0.15% of a core), ~8.5 MB/day
+  of ClickHouse per instance. The redundant `samples` sample type is dropped, a
+  profile ID is set, and the `trace_id`/`span_id` pprof labels that
+  `TracingInterceptor` (and the new `observe.ProfileLabelsMiddleware`) put on
+  request goroutines become OTLP links. **Pre-release pin:** the profiles format
+  is `v1development`, so contrib `pkg/translator/pprof` and collector
+  `pdata/pprofile` are pinned together at **v0.162.0**, the same version as the
+  local `otel-profiles` collector; bump all three in one change.
+- **`otel-profiles` in the scaffolded `docker-compose.yml`** fills the seam left
+  for it: stock contrib collector 0.162.0 (digest-pinned) with
+  `--feature-gates=+service.profilesSupport`, OTLP in, the `clickhouseexporter`
+  out to the ClickStack ClickHouse with its existing credentials. Compose
+  services get `OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT`; for host processes the
+  typed declaration derives it (`forge.Observability.profiles_port`, the port
+  `dev/main.k` publishes) unless you chose an OTLP endpoint, protocol or
+  profiles endpoint yourself. **Profiles are on by default with the local
+  ClickStack and governed by `signals.profiles` elsewhere:** `signals.profiles`
+  is now unset by default, meaning on when there is no destination and a
+  `profiles_port`, off otherwise (rendered as `OTEL_PROFILES_EXPORTER=none`);
+  an explicit value wins. `True` with the local ClickStack but no
+  `profiles_port` is refused at render. The compose `otel-forwarder` gained the
+  `service.profilesSupport` gate so `signals.profiles = True` with a
+  destination starts. See `observability/profiles` and `migrations/v0.1.45`.
+  `deploy/observability/profiles-schema.sql` (yours) creates the raw
+  `otel_profiles` table (72h TTL) and two materialized views, deduplicated
+  stacks and per-minute totals (30d TTL), idempotently, on every up.
+- **`forge observe profile`** exports an aggregated profile (a service over a
+  time range, or one trace) as pprof (`go tool pprof -http`), speedscope JSON, or
+  collapsed stacks; `--sql` prints the query. The query and the writers are in
+  the new `pkg/profilequery` for reuse by other tools.
 
   On the normal `db migrate up` and `AutoMigrate` paths, a database with a
   `goose_db_version` table and nothing yet in `schema_migrations` is checked

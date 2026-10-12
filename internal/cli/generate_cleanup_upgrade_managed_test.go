@@ -126,6 +126,8 @@ func TestUpgradeManagedPaths_CoversReportedFiles(t *testing.T) {
 		"docker-compose.yml",
 		".gitignore",
 		"deploy/observability/otel-collector.yaml",
+		"deploy/observability/otel-profiles.yaml",
+		"deploy/observability/profiles-schema.sql",
 	}
 	var missing []string
 	for _, p := range want {

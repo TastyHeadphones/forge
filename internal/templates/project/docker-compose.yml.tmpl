@@ -49,6 +49,7 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-{{.ProjectName}}}?sslmode=disable
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT: http://otel-profiles:4318/v1development/profiles
       OTEL_SERVICE_NAME: {{.ProjectName}}
       ENVIRONMENT: development
       LOG_LEVEL: debug
@@ -137,6 +138,7 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-{{.ProjectName}}}?sslmode=disable
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT: http://otel-profiles:4318/v1development/profiles
       OTEL_SERVICE_NAME: {{.ProjectName}}
       ENVIRONMENT: development
     ports:
@@ -504,7 +506,9 @@ services:
   otel-forwarder:
     image: otel/opentelemetry-collector-contrib:0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6
     restart: unless-stopped
-    command: ["--config=/etc/otel/forwarder.yaml"]
+    # The gate lets a destination that accepts profiles get them
+    # (`signals.profiles = True`); it is inert while no profiles pipeline exists.
+    command: ["--config=/etc/otel/forwarder.yaml", "--feature-gates=+service.profilesSupport"]
     ports:
       - "127.0.0.1:${OTEL_FORWARDER_HTTP_PORT:-4318}:4318"
       - "127.0.0.1:${OTEL_FORWARDER_GRPC_PORT:-4317}:4317"
@@ -522,15 +526,70 @@ services:
         aliases:
           - otel-collector
 
-  # ── SEAM: profiles (not wired) ─────────────────────────────────────────────
-  # The collector inside `clickstack` is ClickStack's build of contrib v0.155,
-  # which receives profiles but cannot WRITE them. ClickHouse here is 26.8, past
-  # the 26.2 that contrib's clickhouse exporter needs for profiles. So profiles
-  # arrive as a SECOND collector, contrib >= 0.162 with the
-  # `service.profilesSupport` feature gate, as its own compose service named
-  # `otel-profiles`, exporting to ClickHouse at tcp://clickstack:9000 (reachable
-  # on this network; user/password are the clickstack service's CLICKHOUSE_*).
-  # Nothing replaces the collector above and apps keep one endpoint.
+  # ── Profiles ───────────────────────────────────────────────────────────────
+  # The collector inside `clickstack` is ClickStack's own build of contrib v0.155:
+  # it receives profiles but cannot WRITE them. So continuous profiles take a
+  # SECOND collector, stock contrib v0.162.0 with the `service.profilesSupport`
+  # feature gate, writing to the ClickHouse inside `clickstack` (26.8, past the
+  # 26.2 contrib's profiles exporter needs). Nothing replaces the collector above;
+  # traces, metrics and logs keep their one endpoint.
+  #
+  # Apps PUSH. pkg/observe captures a 10s CPU profile plus heap and goroutine
+  # snapshots about once a minute and POSTs OTLP profiles to
+  # OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT. dev/main.k's declaration
+  # (`profiles_port`) points host processes at 127.0.0.1:${CLICKSTACK_PROFILES_OTLP_PORT};
+  # compose services use `otel-profiles` below. It runs only beside `clickstack`
+  # (it writes into its ClickHouse), so a destination env does not start it.
+  # The collector scrapes nothing. OTEL_PROFILES_EXPORTER=none turns a
+  # process's profiling off.
+  #
+  # Tables and TTLs live in deploy/observability/profiles-schema.sql, applied
+  # idempotently by `profiles-schema` on every up; the collector writes only
+  # (create_schema: false). Read them back with `forge observe profile`.
+  #
+  # Pinned by digest AND version: the profiles wire format is v1development and
+  # changes between releases. pkg/observe's converter is pinned to the same
+  # v0.162.0; bump them together.
+  profiles-schema:
+    image: clickhouse/clickstack-local:2.40.0@sha256:4690fbfc2f25e2366ca496aabf4ee9e14d6cacb42119b84888b182495e6a5b74
+    restart: "no"
+    depends_on:
+      clickstack:
+        condition: service_healthy
+    environment:
+      CLICKHOUSE_USER: forge
+      CLICKHOUSE_PASSWORD: ${CLICKSTACK_CLICKHOUSE_PASSWORD:-forge-dev-only}
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        until clickhouse-client --host clickstack -u "$$CLICKHOUSE_USER" --password "$$CLICKHOUSE_PASSWORD" --query 'SELECT 1' >/dev/null 2>&1; do sleep 2; done;
+        exec clickhouse-client --host clickstack -u "$$CLICKHOUSE_USER" --password "$$CLICKHOUSE_PASSWORD" --multiquery < /etc/forge/profiles-schema.sql
+    volumes:
+      - ./deploy/observability/profiles-schema.sql:/etc/forge/profiles-schema.sql:ro
+    networks:
+      - {{.ProjectName}}-net
+
+  otel-profiles:
+    image: otel/opentelemetry-collector-contrib:0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6
+    restart: unless-stopped
+    command:
+      - --config=/etc/otelcol/profiles.yaml
+      - --feature-gates=+service.profilesSupport
+    ports:
+      - "127.0.0.1:${CLICKSTACK_PROFILES_OTLP_PORT:-4328}:4318" # OTLP/HTTP profiles, for host processes
+    environment:
+      CLICKHOUSE_USER: forge
+      CLICKHOUSE_PASSWORD: ${CLICKSTACK_CLICKHOUSE_PASSWORD:-forge-dev-only}
+    volumes:
+      - ./deploy/observability/otel-profiles.yaml:/etc/otelcol/profiles.yaml:ro
+    depends_on:
+      profiles-schema:
+        condition: service_completed_successfully
+    networks:
+      {{.ProjectName}}-net:
+        aliases:
+          - otel-profiles
 
 volumes:
   postgres_data:
