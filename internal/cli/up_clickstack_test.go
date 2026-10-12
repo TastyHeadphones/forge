@@ -158,6 +158,38 @@ func TestShellTransportWinsOverTheDerivedPair(t *testing.T) {
 	}
 }
 
+// The declaration derives a profiles endpoint aimed at the local profiles
+// collector. A developer who pointed their telemetry elsewhere gets their
+// profiles there too (the SDK appends the profiles path to their base), never
+// sent to a collector they did not pick; their own profiles endpoint wins.
+func TestDerivedProfilesEndpointNeverRoutesAroundTheDevelopersCollector(t *testing.T) {
+	const pep = "OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT"
+	derived := map[string]string{
+		"OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318",
+		"OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+		pep:                           "http://127.0.0.1:4328/v1development/profiles",
+	}
+	if got := withoutDerivedOTLPIfShellSet(derived, []string{"PATH=/bin"}); !reflect.DeepEqual(got, derived) {
+		t.Errorf("a clean shell keeps every derived key: %v", got)
+	}
+	for _, kv := range []string{
+		"OTEL_EXPORTER_OTLP_ENDPOINT=http://elsewhere:4318",
+		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://elsewhere:4318/v1/traces",
+		"OTEL_EXPORTER_OTLP_PROTOCOL=grpc",
+	} {
+		if _, ok := withoutDerivedOTLPIfShellSet(derived, []string{kv})[pep]; ok {
+			t.Errorf("%s: forge kept profiles on its own collector over the developer's choice", kv)
+		}
+	}
+	got := withoutDerivedOTLPIfShellSet(derived, []string{pep + "=http://mine:4318/x"})
+	if _, ok := got[pep]; ok {
+		t.Errorf("an exported profiles endpoint must displace the derived one: %v", got)
+	}
+	if got["OTEL_EXPORTER_OTLP_ENDPOINT"] != "http://127.0.0.1:4318" {
+		t.Errorf("a profiles endpoint alone must leave the derived traces pair: %v", got)
+	}
+}
+
 // A frontend dev server's /_otel proxy must aim at THIS project's collector,
 // the port compose actually published, and the browser must learn the env name.
 func TestFrontendDevServerGetsTheCollectorAndTheEnvName(t *testing.T) {

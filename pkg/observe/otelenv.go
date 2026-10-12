@@ -19,7 +19,9 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // Environment variable names of the contract. Exported so docs, doctor checks
@@ -37,6 +39,18 @@ const (
 
 	// EnvSDKDisabled turns every export off. Context propagation stays on.
 	EnvSDKDisabled = "OTEL_SDK_DISABLED"
+
+	// EnvProfilesExporter is the switch for continuous profiling. Profiles are
+	// exported by default whenever an OTLP endpoint is configured; the value
+	// "none" turns them off (the same spelling OTEL_TRACES_EXPORTER=none uses).
+	EnvProfilesExporter = "OTEL_PROFILES_EXPORTER"
+
+	// EnvOTLPProfilesEndpoint is the per-signal profiles endpoint. Unlike the
+	// base OTEL_EXPORTER_OTLP_ENDPOINT it is a FULL URL used as given, so a
+	// platform can send profiles to a different collector than traces. It
+	// exists because profiles need a collector built with the profiles feature
+	// gate and a profiles-capable exporter, which the traces collector may not be.
+	EnvOTLPProfilesEndpoint = "OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT"
 )
 
 const (
@@ -54,6 +68,9 @@ const (
 	signalTraces  signal = "TRACES"
 	signalMetrics signal = "METRICS"
 	signalLogs    signal = "LOGS"
+	// signalProfiles is OTLP profiles (v1development). Its HTTP path is
+	// /v1development/profiles, not /v1/profiles.
+	signalProfiles signal = "PROFILES"
 )
 
 func envValue(name string) string { return strings.TrimSpace(os.Getenv(name)) }
@@ -85,6 +102,11 @@ func exportEnabled(s signal, cfg Config) bool {
 	switch s {
 	case signalLogs:
 		if !cfg.OTLPLogs && !logsExportRequested() {
+			return false
+		}
+	case signalProfiles:
+		// On by default; off by the typed field or OTEL_PROFILES_EXPORTER=none.
+		if cfg.ProfilesDisabled || strings.EqualFold(envValue(EnvProfilesExporter), "none") {
 			return false
 		}
 	default:
@@ -125,7 +147,104 @@ func typedEndpointURL(endpoint, protocol string, s signal) (string, error) {
 		return "", fmt.Errorf("invalid OTLP endpoint %q: %w", endpoint, err)
 	}
 	if protocol == ProtocolHTTPProtobuf {
-		u.Path = strings.TrimRight(u.Path, "/") + "/v1/" + strings.ToLower(string(s))
+		u.Path = strings.TrimRight(u.Path, "/") + signalPath(s)
 	}
 	return u.String(), nil
+}
+
+// signalPath is the OTLP/HTTP path of signal s under a base endpoint.
+func signalPath(s signal) string {
+	if s == signalProfiles {
+		return "/v1development/profiles"
+	}
+	return "/v1/" + strings.ToLower(string(s))
+}
+
+// profilesTarget is where and how the profiler pushes, resolved once from Config
+// and the environment.
+type profilesTarget struct {
+	Protocol string
+	// URL is the full OTLP/HTTP URL, or the gRPC dial target (host:port).
+	URL string
+	// Insecure is gRPC-only: plaintext, because the endpoint said http:// or
+	// named no scheme.
+	Insecure bool
+	Headers  map[string]string
+	Timeout  time.Duration
+	Gzip     bool
+}
+
+// resolveProfilesTarget turns Config and the OTEL_* environment into the
+// profiles destination. Precedence for the address, most specific first:
+//
+//  1. OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT, a FULL URL used as given;
+//  2. Config.OTLPEndpoint, then OTEL_EXPORTER_OTLP_ENDPOINT, both BASE
+//     endpoints that gain /v1development/profiles for http/protobuf.
+//
+// Profiles are gzip-compressed unless OTEL_EXPORTER_OTLP_[PROFILES_]COMPRESSION
+// says none: a CPU profile is protobuf with heavy string repetition.
+func resolveProfilesTarget(cfg Config) (profilesTarget, error) {
+	proto, err := protocolFor(signalProfiles)
+	if err != nil {
+		return profilesTarget{}, err
+	}
+	t := profilesTarget{Protocol: proto, Timeout: 10 * time.Second, Gzip: true, Headers: map[string]string{}}
+
+	full := signalProfiles.env("ENDPOINT")
+	base := cfg.OTLPEndpoint
+	if base == "" {
+		base = envValue(EnvOTLPEndpoint)
+	}
+	endpoint := full
+	if endpoint == "" {
+		endpoint = base
+	}
+	if endpoint == "" {
+		return profilesTarget{}, fmt.Errorf("no OTLP endpoint configured")
+	}
+	if !strings.Contains(endpoint, "://") {
+		endpoint = "http://" + endpoint
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return profilesTarget{}, fmt.Errorf("invalid OTLP profiles endpoint %q: %w", endpoint, err)
+	}
+	if proto == ProtocolGRPC {
+		t.URL = u.Host
+		t.Insecure = u.Scheme != "https"
+	} else {
+		if full == "" {
+			u.Path = strings.TrimRight(u.Path, "/") + signalPath(signalProfiles)
+		}
+		t.URL = u.String()
+	}
+
+	for _, raw := range []string{envValue(EnvOTLPHeaders), signalProfiles.env("HEADERS")} {
+		for _, kv := range strings.Split(raw, ",") {
+			k, v, ok := strings.Cut(kv, "=")
+			if !ok || strings.TrimSpace(k) == "" {
+				continue
+			}
+			if dv, err := url.PathUnescape(strings.TrimSpace(v)); err == nil {
+				v = dv
+			}
+			t.Headers[strings.TrimSpace(k)] = strings.TrimSpace(v)
+		}
+	}
+
+	ms := signalProfiles.env("TIMEOUT")
+	if ms == "" {
+		ms = envValue("OTEL_EXPORTER_OTLP_TIMEOUT")
+	}
+	if n, err := strconv.Atoi(ms); err == nil && n > 0 {
+		t.Timeout = time.Duration(n) * time.Millisecond
+	}
+	comp := signalProfiles.env("COMPRESSION")
+	if comp == "" {
+		comp = envValue("OTEL_EXPORTER_OTLP_COMPRESSION")
+	}
+	if strings.EqualFold(comp, "none") {
+		t.Gzip = false
+	}
+	return t, nil
 }

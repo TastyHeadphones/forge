@@ -349,6 +349,8 @@ func (g *ProjectGenerator) generateObservability() error {
 	for _, f := range []struct{ tmpl, dest string }{
 		{"otel-collector.yaml.tmpl", filepath.Join("deploy", "observability", "otel-collector.yaml")},
 		{"dashboards-README.md.tmpl", filepath.Join("deploy", "observability", "dashboards", "README.md")},
+		{"otel-profiles.yaml.tmpl", filepath.Join("deploy", "observability", "otel-profiles.yaml")},
+		{"profiles-schema.sql.tmpl", filepath.Join("deploy", "observability", "profiles-schema.sql")},
 	} {
 		content, err := templates.ProjectTemplates().Render(f.tmpl, struct{}{})
 		if err != nil {

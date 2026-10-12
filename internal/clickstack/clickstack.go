@@ -14,6 +14,16 @@ const (
 	EnvOTLPHTTPPort = "CLICKSTACK_OTLP_HTTP_PORT"
 	// EnvOTLPGRPCPort is the collector's published OTLP/gRPC port.
 	EnvOTLPGRPCPort = "CLICKSTACK_OTLP_GRPC_PORT"
+	// ProfilesService is the compose service (and workload name) of the profiles
+	// collector: contrib with the profiles feature gate, writing to the ClickHouse
+	// inside Service. ClickStack's own collector cannot write profiles.
+	ProfilesService = "otel-profiles"
+	// EnvProfilesOTLPPort is the profiles collector's published OTLP/HTTP port.
+	EnvProfilesOTLPPort = "CLICKSTACK_PROFILES_OTLP_PORT"
+	// EnvOTLPProfilesEndpoint is the standard per-signal profiles variable. Unlike
+	// the base endpoint it is a full URL.
+	EnvOTLPProfilesEndpoint = EnvOTLPPrefix + "PROFILES_ENDPOINT"
+
 	// EnvUIPort is the published HyperDX UI port.
 	EnvUIPort = "CLICKSTACK_UI_PORT"
 
@@ -24,6 +34,12 @@ const (
 	EnvOTLPEndpoint = EnvOTLPPrefix + "ENDPOINT"
 	// EnvOTLPProtocol is the standard OTLP protocol variable.
 	EnvOTLPProtocol = EnvOTLPPrefix + "PROTOCOL"
+
+	// ProfilesCollectorConfig and ProfilesSchema are the project-relative files
+	// the profiles collector and its schema job mount.
+	ProfilesCollectorConfig = "deploy/observability/otel-profiles.yaml"
+	// ProfilesSchema creates the profile tables, TTLs and materialized views.
+	ProfilesSchema = "deploy/observability/profiles-schema.sql"
 
 	// DashboardsDir is the project-relative directory mounted as HyperDX's
 	// DASHBOARD_PROVISIONER_DIR. A HyperDX v2 dashboard JSON dropped here is

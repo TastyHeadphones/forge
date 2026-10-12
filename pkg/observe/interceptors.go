@@ -217,7 +217,9 @@ func (i *tracingInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc
 	return connect.UnaryFunc(func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
 		ctx, span := i.tracer.Start(ctx, req.Spec().Procedure)
 		defer span.End()
-		resp, err := next(ctx, req)
+		var resp connect.AnyResponse
+		var err error
+		withSpanProfileLabels(ctx, func(ctx context.Context) { resp, err = next(ctx, req) })
 		if err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
@@ -234,7 +236,8 @@ func (i *tracingInterceptor) WrapStreamingHandler(next connect.StreamingHandlerF
 	return connect.StreamingHandlerFunc(func(ctx context.Context, conn connect.StreamingHandlerConn) error {
 		ctx, span := i.tracer.Start(ctx, conn.Spec().Procedure)
 		defer span.End()
-		err := next(ctx, conn)
+		var err error
+		withSpanProfileLabels(ctx, func(ctx context.Context) { err = next(ctx, conn) })
 		if err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())

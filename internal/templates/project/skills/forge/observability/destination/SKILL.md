@@ -34,12 +34,13 @@ observability = forge.Observability {
 | `destination.protocol` | `http/protobuf` | `grpc` also supported |
 | `destination.headers_secret` | none | `{name, key}`: a reference, **never an inline value**. The value is a JSON object of header → value, e.g. `{"authorization": "<key>"}` |
 | `signals.traces / metrics / logs` | `True` | an off signal is `OTEL_<SIGNAL>_EXPORTER=none` at the app and has no collector pipeline |
-| `signals.profiles` | `False` | on adds a profiles pipeline (and the `service.profilesSupport` gate); the backend must store them |
+| `signals.profiles` | unset | unset = **on with the local ClickStack** (no destination, `profiles_port` set), off everywhere else; `True` adds a profiles pipeline (and the `service.profilesSupport` gate), so the backend must store them. See `observability/profiles` |
 | `sampling.traces_ratio` | `1.0` | **head sampling in the SDK**: every workload gets `OTEL_TRACES_SAMPLER=parentbased_traceidratio` + `OTEL_TRACES_SAMPLER_ARG=<ratio>`, so each service follows the root span and a trace is whole or absent. No collector samples traces. Needs a destination; your own sampler env wins |
 | `sampling.errors_always` | `False` | keeping every ERROR trace is a *tail* decision (a head sampler cannot know a trace will fail), which needs the whole trace in one gateway. Forge renders none, so with `traces_ratio < 1` it is refused unless `destination_tail_samples = True` declares that the destination's gateway keeps error traces itself |
 | `sampling.destination_tail_samples` | `False` | the destination's promise (e.g. the hosted platform's gateway), carried in the render; forge does not enforce it |
 | `retention.{traces,metrics,logs}_days` | `0` | hints. The local ClickStack takes one table TTL (the longest); a node agent has no storage and ignores them |
 | `local_port` | `0` | the loopback port the env's collector publishes; host processes export there |
+| `profiles_port` | `0` | the loopback port of the local profiles collector (`otel-profiles`, beside ClickStack only); host processes get `OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT` aimed there |
 | `agent.namespace / image / memory_limit_mib` | `forge-observability`, contrib pinned by digest, 256 | the node agent |
 
 

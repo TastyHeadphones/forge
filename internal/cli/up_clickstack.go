@@ -86,6 +86,9 @@ func composeServiceName(w WorkloadEntity) string {
 // clickstackRowLabel names a clickstack port for the env-up summary. The
 // service publishes three, and ":8080" alone does not say which one is the UI.
 func clickstackRowLabel(service string, targetPort int) (string, bool) {
+	if service == clickstack.ProfilesService && targetPort == 4318 {
+		return "OTLP/HTTP profiles", true
+	}
 	if service != clickstack.Service {
 		return "", false
 	}
@@ -106,30 +109,45 @@ func clickstackRowLabel(service string, targetPort int) (string, bool) {
 // pointed elsewhere on purpose (their gRPC :4317), and filling in half of it
 // is how export fails with nothing on screen. Only the derived pair is
 // dropped: an endpoint the author wrote in KCL is not this env's local one.
+//
+// The derived profiles endpoint goes with it: profiles then follow the rest of
+// the developer's telemetry (the SDK appends the profiles path to their base
+// endpoint) instead of reaching a collector they did not pick. A profiles
+// endpoint exported in the shell displaces only the derived one.
 func withoutDerivedOTLPIfShellSet(declared map[string]string, shell []string) map[string]string {
-	ep := declared[clickstack.EnvOTLPEndpoint]
-	if ep == "" || !strings.HasPrefix(ep, "http://127.0.0.1:") {
-		return declared
-	}
 	shellSet := nonEmptyEnvKeys(shell)
-	set := false
+	transportSet := false
 	for _, suffix := range []string{"ENDPOINT", "PROTOCOL"} {
 		for _, sig := range []string{"", "TRACES_", "METRICS_", "LOGS_"} {
 			if shellSet[clickstack.EnvOTLPPrefix+sig+suffix] {
-				set = true
+				transportSet = true
 			}
 		}
 	}
-	if !set {
+	drop := map[string]bool{}
+	if isLoopbackDerived(declared[clickstack.EnvOTLPEndpoint]) && transportSet {
+		drop[clickstack.EnvOTLPEndpoint] = true
+		drop[clickstack.EnvOTLPProtocol] = true
+	}
+	if isLoopbackDerived(declared[clickstack.EnvOTLPProfilesEndpoint]) && (transportSet || shellSet[clickstack.EnvOTLPProfilesEndpoint]) {
+		drop[clickstack.EnvOTLPProfilesEndpoint] = true
+	}
+	if len(drop) == 0 {
 		return declared
 	}
 	out := make(map[string]string, len(declared))
 	for k, v := range declared {
-		if k != clickstack.EnvOTLPEndpoint && k != clickstack.EnvOTLPProtocol {
+		if !drop[k] {
 			out[k] = v
 		}
 	}
 	return out
+}
+
+// isLoopbackDerived reports whether an endpoint is one the declaration derived
+// for this machine's collector, as opposed to one an author wrote.
+func isLoopbackDerived(endpoint string) bool {
+	return strings.HasPrefix(endpoint, "http://127.0.0.1:")
 }
 
 // localCollectorService is the compose service that is this env's local

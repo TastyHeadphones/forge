@@ -1112,12 +1112,15 @@ type KCLEnvVar struct {
 // (Bundle.observability) as `output.observability`. Nil when the env declares
 // none: telemetry is off and nothing is injected.
 type ObservabilityEntity struct {
-	Enabled       bool                       `json:"enabled"`
-	LocalPort     int                        `json:"local_port,omitempty"`
-	LocalEndpoint string                     `json:"local_endpoint,omitempty"`
-	Destination   *ObservabilityDestEntity   `json:"destination,omitempty"`
-	Signals       ObservabilitySignalsEntity `json:"signals"`
-	Sampling      struct {
+	Enabled       bool   `json:"enabled"`
+	LocalPort     int    `json:"local_port,omitempty"`
+	LocalEndpoint string `json:"local_endpoint,omitempty"`
+	// ProfilesEndpoint is the full URL of the local profiles collector host
+	// processes push to; "" when profiles are off or go to a destination.
+	ProfilesEndpoint string                     `json:"profiles_endpoint,omitempty"`
+	Destination      *ObservabilityDestEntity   `json:"destination,omitempty"`
+	Signals          ObservabilitySignalsEntity `json:"signals"`
+	Sampling         struct {
 		TracesRatio            float64 `json:"traces_ratio"`
 		ErrorsAlways           bool    `json:"errors_always"`
 		DestinationTailSamples bool    `json:"destination_tail_samples"`

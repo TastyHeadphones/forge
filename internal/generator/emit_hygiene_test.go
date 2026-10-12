@@ -46,6 +46,7 @@ func TestObservabilityFilesAreFormatterClean(t *testing.T) {
 	for _, rel := range []string{
 		"deploy/observability/otel-collector.yaml",
 		"deploy/observability/dashboards/README.md",
+		"deploy/observability/otel-profiles.yaml",
 	} {
 		b, err := os.ReadFile(filepath.Join(dir, rel))
 		if err != nil {

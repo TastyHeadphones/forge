@@ -436,6 +436,22 @@ _obs_agent_endpoint = lambda b: Bundle -> str {
     "http://${OTEL_AGENT_SERVICE}.${b.observability.agent.namespace}.svc.cluster.local:4318" if _obs_on(b) and b.observability.destination else ""
 }
 
+# Profiles. Unset `signals.profiles` follows where the store is: ON with the
+# local ClickStack (no destination, and the env publishes a profiles collector
+# on `profiles_port`), OFF otherwise. An explicit value always wins.
+_obs_profiles_on = lambda b: Bundle -> bool {
+    _o = b.observability
+    _obs_on(b) and (bool(_o.signals.profiles) if _o.signals.profiles in [True, False] else (not _o.destination and _o.profiles_port > 0))
+}
+
+# The full URL host processes push profiles to: the local profiles collector,
+# which is not ClickStack's (that one cannot write profiles), so the base
+# endpoint will not do. "" with a destination: there the forwarder takes
+# profiles at the base endpoint like every other signal.
+_obs_profiles_local_endpoint = lambda b: Bundle -> str {
+    "http://127.0.0.1:${b.observability.profiles_port}/v1development/profiles" if _obs_profiles_on(b) and not b.observability.destination and b.observability.profiles_port > 0 else ""
+}
+
 _OTLP_TRANSPORT_KEYS: [str] = [
     "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_PROTOCOL",
     "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
@@ -455,8 +471,11 @@ _obs_env = lambda rt: any, b: Bundle, env: {str:} -> {str:str} {
     _ep = _obs_agent_endpoint(b) if rt.type == "cluster" else (_obs_local_endpoint(b) if rt.type == "host" else "")
     _transport = not _otlp_transport_set(env)
     _sig = b.observability.signals if _obs_on(b) else Undefined
+    _pep = _obs_profiles_local_endpoint(b) if rt.type == "host" else ""
     ({OTEL_EXPORTER_OTLP_ENDPOINT = _ep, OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf"} if _obs_on(b) and _ep and _transport else {}) \
         | ({OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf"} if _obs_on(b) and rt.type == "hosted" and _transport else {}) \
+        | ({OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT = _pep} if _pep and _transport and not _env_set(env, "OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT") else {}) \
+        | ({OTEL_PROFILES_EXPORTER = "none"} if _sig and not _obs_profiles_on(b) and not _env_set(env, "OTEL_PROFILES_EXPORTER") else {}) \
         | ({OTEL_TRACES_EXPORTER = "none"} if _sig and not _sig.traces and not _env_set(env, "OTEL_TRACES_EXPORTER") else {}) \
         | ({OTEL_METRICS_EXPORTER = "none"} if _sig and not _sig.metrics and not _env_set(env, "OTEL_METRICS_EXPORTER") else {}) \
         | ({OTEL_LOGS_EXPORTER = "none"} if _sig and not _sig.logs and not _env_set(env, "OTEL_LOGS_EXPORTER") else {}) \
@@ -975,7 +994,7 @@ _obs_agent_records = lambda b: Bundle, part_of: str -> [any] {
                 "traces": _o.signals.traces
                 "metrics": _o.signals.metrics
                 "logs": _o.signals.logs
-                "profiles": _o.signals.profiles
+                "profiles": _obs_profiles_on(b)
             }
             "image": _o.agent.image
             "memoryLimitMiB": _o.agent.memory_limit_mib
@@ -990,6 +1009,7 @@ _render_observability = lambda b: Bundle -> any {
         "enabled": _o.enabled
         "local_port": _o.local_port
         "local_endpoint": _obs_local_endpoint(b) or None
+        "profiles_endpoint": _obs_profiles_local_endpoint(b) or None
         "destination": {
             "endpoint": _o.destination.endpoint
             "protocol": _o.destination.protocol
@@ -1002,7 +1022,7 @@ _render_observability = lambda b: Bundle -> any {
             "traces": _o.signals.traces
             "metrics": _o.signals.metrics
             "logs": _o.signals.logs
-            "profiles": _o.signals.profiles
+            "profiles": _obs_profiles_on(b)
         }
         "sampling": {
             "traces_ratio": _o.sampling.traces_ratio
