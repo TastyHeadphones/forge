@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1286,6 +1287,13 @@ func runGoModTidy(ctx context.Context, path string) error {
 	if _, err := os.Stat(filepath.Join(genDir, "go.mod")); err != nil {
 		return nil
 	}
+	// A fresh scaffold's gen/ holds no Go files until the first generate, and
+	// tidy on a module with no packages deletes every require the template
+	// wrote — including forge, which is what then lets the next tidy resolve
+	// forge/pkg/* to the retired forge/pkg module.
+	if !dirHasGoFiles(genDir) {
+		return nil
+	}
 	if bridged {
 		return tidyBridgedModule(genDir, "gen/ tidy")
 	}
@@ -1420,4 +1428,19 @@ func applyDisableFlags(gen *generator.ProjectGenerator, disable []string) error 
 		}
 	}
 	return nil
+}
+
+// dirHasGoFiles reports whether any .go file lives at or below dir.
+func dirHasGoFiles(dir string) bool {
+	found := false
+	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || found {
+			return filepath.SkipDir
+		}
+		if !d.IsDir() && filepath.Ext(p) == ".go" {
+			found = true
+		}
+		return nil
+	})
+	return found
 }

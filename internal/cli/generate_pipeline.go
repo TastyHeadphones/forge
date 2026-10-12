@@ -1467,7 +1467,17 @@ func stepDetectProtoDirs(ctx *pipelineContext) error {
 // concern. Best-effort: see ensureGenGoMod for the no-op fallthrough
 // conditions.
 func stepEnsureGenModule(ctx *pipelineContext) error {
-	return ensureGenGoMod(ctx.ProjectDir)
+	if err := ensureGenGoMod(ctx.ProjectDir); err != nil {
+		return err
+	}
+	changed, err := ensureGenForgeRequire(ctx.ProjectDir)
+	if err != nil {
+		return fmt.Errorf("repair gen/go.mod's forge requirement: %w", err)
+	}
+	if changed {
+		fmt.Println("🔧 gen/go.mod now requires github.com/reliant-labs/forge (the retired forge/pkg module is dropped).")
+	}
+	return nil
 }
 
 // stepBufGenerateGo — was Step 1.
@@ -1554,6 +1564,10 @@ func stepFrontendWorkspaces(ctx *pipelineContext) error {
 // per-frontend loop would call the workspace helper N times, which is
 // idempotent but spams the output.
 func stepFrontendBufTS(ctx *pipelineContext) error {
+	// This step may run `npm install` (protoc-gen-es missing), so the dev
+	// bridge's gitignored npm config must already be in place: a project
+	// bridged by an older forge has none and the install would crash.
+	generator.EnsureDevWebRuntimeLink(ctx.ProjectDir)
 	if ctx.Cfg.IsFrontendWorkspacesEnabled() {
 		return runBufGenerateTypeScriptWorkspace(ctx.Cfg, ctx.ProjectDir)
 	}
