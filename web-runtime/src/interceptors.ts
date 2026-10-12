@@ -35,6 +35,7 @@
 import { MethodOptions_IdempotencyLevel } from "@bufbuild/protobuf/wkt";
 
 import { ConnectClientError, normalizeError } from "./errors.js";
+import { telemetryReady } from "./telemetry-gate.js";
 import { injectTraceContext } from "./trace.js";
 
 import type {
@@ -88,9 +89,14 @@ export function headerInterceptor(cfg: RuntimeInterceptorConfig): Interceptor {
 /**
  * Propagates a W3C traceparent so the backend (otelconnect + otelhttp) joins
  * the same distributed trace. Always emits a valid header — see trace.ts.
+ *
+ * While browser telemetry is still starting it waits (bounded; see
+ * telemetry-gate.ts) so the call is made through the SDK's patched fetch and
+ * its traceparent names a span the browser really exports.
  */
 export function traceInterceptor(): Interceptor {
   return (next) => async (req) => {
+    await telemetryReady();
     injectTraceContext(req.header);
     return next(req);
   };

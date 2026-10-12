@@ -58,6 +58,7 @@
 import { trace } from "@opentelemetry/api";
 
 import { setExceptionReporter } from "./error-reporter.js";
+import { registerTelemetryStartup } from "./telemetry-gate.js";
 
 /** Where the browser ships telemetry: this origin's `/_otel`. */
 export const DEFAULT_INGEST_PATH = "/_otel";
@@ -134,6 +135,7 @@ export function initBrowserTelemetry(
     return Promise.resolve(false);
   }
   started = start(config, ingest);
+  registerTelemetryStartup(started);
   return started;
 }
 

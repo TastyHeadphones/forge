@@ -1,8 +1,8 @@
 ---
 name: v0.1.45
-description: Upgrade a project to forge v0.1.45. One section per change — (1) the typed `forge.Observability` declaration replaces the bare `_observability` toggle; (2) continuous profiles, on by default beside the local ClickStack (`profiles_port`, the `otel-profiles` collector); (3) `gen/go.mod` requiring the retired `github.com/reliant-labs/forge/pkg` module, which `forge generate` now rewrites (the root `go.mod` is yours to fix); (4) the gitignored `.npmrc` (`legacy-peer-deps`) that stops `npm install` crashing in a `--link-forge` project. Use when deploy/kcl/<env>/main.k has `_observability` but no `observability =` on its forge.Bundle or no `profiles_port`, when `grep forge/pkg gen/go.mod go.mod` matches or `forge env up` reports "go module graph is stale" on every start, or when a bridged frontend's `npm install` dies with "Cannot read properties of null (reading 'edgesOut')".
+description: Upgrade a project to forge v0.1.45. One section per change — (1) the typed `forge.Observability` declaration replaces the bare `_observability` toggle; (2) continuous profiles, on by default beside the local ClickStack (`profiles_port`, the `otel-profiles` collector); (3) `gen/go.mod` requiring the retired `github.com/reliant-labs/forge/pkg` module, which `forge generate` now rewrites (the root `go.mod` is yours to fix); (4) the gitignored `.npmrc` (`legacy-peer-deps`) that stops `npm install` crashing in a `--link-forge` project; (5) `serve.go` opens the otelconnect span OUTSIDE auth (`chainDeps.Trace`), so rejected calls have spans and request logs carry `trace_id`. Use when deploy/kcl/<env>/main.k has `_observability` but no `observability =` on its forge.Bundle or no `profiles_port`, when `grep forge/pkg gen/go.mod go.mod` matches or `forge env up` reports "go module graph is stale" on every start, when a bridged frontend's `npm install` dies with "Cannot read properties of null (reading 'edgesOut')", or when `grep -n 'Extras = append(\[\]connect.Interceptor{otelInt}' cmd/*/cmd/serve.go` matches.
 version: v0.1.45
-detection: (grep -qs '^_observability = ' deploy/kcl/*/main.k && ! grep -qs '^    observability = ' deploy/kcl/*/main.k) || (grep -qs '^_observability = ' deploy/kcl/dev/main.k && ! grep -qs 'profiles_port' deploy/kcl/dev/main.k) || grep -qsE '^[[:space:]]*(require[[:space:]]+)?github\.com/reliant-labs/forge/pkg[[:space:]]+v' go.mod gen/go.mod
+detection: grep -qs 'Extras = append(\[\]connect.Interceptor{otelInt}' cmd/*/cmd/serve.go || (grep -qs '^_observability = ' deploy/kcl/*/main.k && ! grep -qs '^    observability = ' deploy/kcl/*/main.k) || (grep -qs '^_observability = ' deploy/kcl/dev/main.k && ! grep -qs 'profiles_port' deploy/kcl/dev/main.k) || grep -qsE '^[[:space:]]*(require[[:space:]]+)?github\.com/reliant-labs/forge/pkg[[:space:]]+v' go.mod gen/go.mod
 ---
 
 # Upgrading to v0.1.45
@@ -162,3 +162,56 @@ installs anything. Nothing to do. If the project already has its own
 `.npmrc`, forge leaves it alone and warns: add `legacy-peer-deps=true` to it,
 or use a newer npm. Dropping the bridge (delete `.forge-link/` and the root
 `package.json`) removes the need.
+
+## 5. Tracing outside auth: `serve.go` sets `chainDeps.Trace`
+
+Use when `grep -n 'Extras = append(\[\]connect.Interceptor{otelInt}' cmd/*/cmd/serve.go` matches. `serve.go` is scaffold-once, so this edit is yours; forge will not make it.
+
+### What was wrong
+
+The scaffolded `serve.go` PREPENDED the `otelconnect` interceptor to `chainDeps.Extras`, and its comment said that made the span "cover every interceptor after it, including auth rejections". It did not: `observe.Chain` appends `Extras` **after** auth, so the span sat inside auth.
+
+- A call auth rejected (a 401: missing or bad token) produced **no span**.
+- The `rpc failed` line and the audit event for it were written outside any span, so they carried **no `trace_id`**, and the failure could not be found from a trace.
+- Profile samples taken during the request had no span to link to.
+
+### What changed
+
+`observe.Deps` has a new `Trace connect.Interceptor` field. `observe.Chain` puts it OUTERMOST (trace, then pprof labels naming the span, then recovery, request-id, logging, tracing, metrics, auth, audit, rate-limit, extras). Inside it, every log line written for the request has the span in its context.
+
+### Steps
+
+In `cmd/<bin>/cmd/serve.go`, find:
+
+```go
+if otelInt, oerr := otelconnect.NewInterceptor(otelconnect.WithTrustRemote()); oerr == nil {
+    chainDeps.Extras = append([]connect.Interceptor{otelInt}, chainDeps.Extras...)
+} else {
+```
+
+and replace the one assignment:
+
+```go
+    chainDeps.Trace = otelInt
+```
+
+Keep `otelconnect.WithTrustRemote()`: it makes the browser's `traceparent` the PARENT of the server span (without it the two are linked, not joined). Update the comment above the `observe.Deps` literal if you copied the old "recovery, request-id, logging, tracing, metrics, then application interceptors" text. If you also build your own chain with `connect.WithInterceptors(...)` instead of `observe.Chain`, put the otelconnect interceptor FIRST.
+
+If you set `Deps.Tracer` (forge's own `TracingInterceptor`) as well as `Deps.Trace`, you get two spans per RPC; use one.
+
+### Frontends
+
+Nothing to edit. `@reliantlabs/forge-web-runtime` (next release) makes the first RPCs a page makes wait, up to 2 seconds, for the HyperDX SDK to finish starting, so their `traceparent` names a span the browser really exports (before, a call made in that window carried a synthesized id that no browser span matched, so the API span's parent was missing). Bump the dependency when it is published.
+
+### Verify
+
+```bash
+curl -si -X POST localhost:<port>/<pkg>.<Service>/<Method> -H 'content-type: application/json' -d '{}' \
+  -H 'traceparent: 00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01' | head -1   # 401
+```
+
+Then, in ClickHouse (`forge observe` or the HyperDX search): a span for that call with `TraceId = 0af7651916cd43dd8448eb211c80319c`, status error or unset, and an `otel_logs` row `rpc failed` with the same `TraceId`.
+
+Also covers `forge env up`:
+- A scaffold with no commits yet now tags images `uncommitted` instead of failing with "git tag resolution: exit status 128".
+- With `air` missing, `forge env up` installs forge's pinned air (v1.67.4) into its tool cache, or runs the API under `go-run` with a one-line notice if it cannot. Nothing to change.

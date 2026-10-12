@@ -767,3 +767,48 @@ func TestRealCPUProfileLinksLabelledWork(t *testing.T) {
 		t.Error("no CPU sample was linked to the labelled span")
 	}
 }
+
+// The span a profile sample links to is opened by otelconnect (Deps.Trace), not
+// by TracingInterceptor, so the labels come from the interceptor Chain places
+// directly inside it. Without it the producer had no trace_id/span_id label to
+// turn into an OTLP link.
+func TestChainLabelsTheHandlerWithTheTraceSpan(t *testing.T) {
+	tp := sdktrace.NewTracerProvider()
+	defer tp.Shutdown(context.Background())
+	profilingActive.Store(true)
+	defer profilingActive.Store(false)
+
+	var span trace.Span
+	opensSpan := connectInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
+		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+			ctx, span = tp.Tracer("t").Start(ctx, "rpc")
+			return next(ctx, req)
+		}
+	})
+
+	var gotTrace, gotSpan string
+	handler := connect.UnaryFunc(func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+		gotTrace, _ = pprof.Label(ctx, "trace_id")
+		gotSpan, _ = pprof.Label(ctx, "span_id")
+		return nil, nil
+	})
+	chain := Chain(Deps{Trace: opensSpan})
+	for i := len(chain) - 1; i >= 0; i-- {
+		handler = chain[i].WrapUnary(handler)
+	}
+	_, _ = handler(context.Background(), connect.NewRequest(&structpb.Struct{}))
+
+	if span == nil || gotTrace != span.SpanContext().TraceID().String() || gotSpan != span.SpanContext().SpanID().String() {
+		t.Errorf("handler labels = %q/%q, want the trace span's ids", gotTrace, gotSpan)
+	}
+}
+
+type connectInterceptorFunc func(connect.UnaryFunc) connect.UnaryFunc
+
+func (f connectInterceptorFunc) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc { return f(next) }
+func (connectInterceptorFunc) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
+	return next
+}
+func (connectInterceptorFunc) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
+	return next
+}

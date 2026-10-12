@@ -86,7 +86,7 @@ The auth MECHANISM (mode resolution, refusal-to-start, allow-list gate, Bearer p
 
 Mode resolution happens ONCE at construction: a validator → enforce; `ExternalAuth` → passthrough (another interceptor owns identity); neither → **refuse to start**. **No environment variable can run a forge service without authentication**, and no config value can either — which is why the answer is readable in a diff rather than only observable in production.
 
-Chain order (`observe.Chain`): **recovery → request-id → logging → tracing → metrics**, then **auth → audit → rate-limit**. Auth after observability is deliberate — operators see auth failures in the same dashboards as successful traffic.
+Chain order (`observe.Chain`): **trace** (otelconnect, `Deps.Trace`) **→ recovery → request-id → logging → tracing → metrics**, then **auth → audit → rate-limit**. Auth after observability is deliberate — operators see auth failures in the same dashboards as successful traffic, and a rejected call has a span and logs carrying its `trace_id`. Put otelconnect in `Deps.Trace`, never in `Extras` (which runs after auth).
 
 ### Publishing one RPC (per-RPC allow-list)
 

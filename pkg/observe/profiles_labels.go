@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"runtime/pprof"
 
+	"connectrpc.com/connect"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -34,6 +35,33 @@ func withSpanProfileLabels(ctx context.Context, fn func(context.Context)) {
 		return
 	}
 	pprof.Do(ctx, pprof.Labels(profileLabelTraceID, sc.TraceID().String(), profileLabelSpanID, sc.SpanID().String()), fn)
+}
+
+// profileLabelsInterceptor labels the goroutine serving an RPC with the span
+// already in its context. It exists for a span opened by an interceptor that
+// knows nothing about profiling (otelconnect, via Deps.Trace); Chain places it
+// directly inside that interceptor. TracingInterceptor does the same for the
+// span it opens itself.
+func profileLabelsInterceptor() connect.Interceptor { return profileLabels{} }
+
+type profileLabels struct{}
+
+func (profileLabels) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
+	return func(ctx context.Context, req connect.AnyRequest) (resp connect.AnyResponse, err error) {
+		withSpanProfileLabels(ctx, func(ctx context.Context) { resp, err = next(ctx, req) })
+		return resp, err
+	}
+}
+
+func (profileLabels) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
+	return next
+}
+
+func (profileLabels) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
+	return func(ctx context.Context, conn connect.StreamingHandlerConn) (err error) {
+		withSpanProfileLabels(ctx, func(ctx context.Context) { err = next(ctx, conn) })
+		return err
+	}
 }
 
 // ProfileLabelsMiddleware labels the goroutine serving a plain net/http request

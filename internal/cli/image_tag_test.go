@@ -318,3 +318,32 @@ func TestResolveDeployImageTag_MalformedStateIsHardError(t *testing.T) {
 		t.Errorf("error should mention the file path, got %v", err)
 	}
 }
+
+// A fresh `forge project new` has run `git init` and nothing else: HEAD is
+// unborn, so `git describe` and `git rev-parse` both exit 128. That must not
+// stop `forge env up`; it resolves to an untagged dev version, and the first
+// commit replaces it with the usual git-derived tag.
+func TestResolveImageTag_NoCommitsYet(t *testing.T) {
+	if testing.Short() {
+		t.Skip("-short: shells out to git; runs in task test")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available on PATH")
+	}
+	dir := t.TempDir()
+	cmd := exec.CommandContext(context.Background(), "git", "init", "-q")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	withDir(t, dir, func() {
+		tag, err := resolveImageTag(context.Background(), "")
+		if err != nil {
+			t.Fatalf("a repository with no commits must resolve to a dev tag, got error: %v", err)
+		}
+		if tag != untaggedDevTag {
+			t.Errorf("tag = %q, want %q", tag, untaggedDevTag)
+		}
+	})
+}

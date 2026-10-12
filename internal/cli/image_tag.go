@@ -27,13 +27,17 @@ import (
 // staging vs prod) and is currently unused. Keeping it in the signature
 // avoids a churn-only change later.
 //
-// Returns an error only when git is reachable but produces no output —
-// in practice this means HEAD is unset (empty repo). When git itself
-// fails (not a git repo, git not installed), the empty string is
-// returned and the caller decides whether to surface or default.
+// A repository with no commits yet (a fresh `forge project new`) has no
+// revision to describe: it resolves to untaggedDevTag instead of failing, so
+// the first `forge env up` works before the first commit. Outside a git
+// repository (or without git) it is an error and the caller decides whether
+// to surface it or ask for --tag.
 func resolveImageTag(ctx context.Context, _ string) (string, error) {
 	out, err := exec.CommandContext(ctx, "git", "describe", "--tags", "--always", "--dirty").Output()
 	if err != nil {
+		if gitHeadUnborn(ctx) {
+			return untaggedDevTag, nil
+		}
 		// Not a git repo, or git not on PATH. Fall back to short SHA;
 		// rev-parse covers the "git installed but no tag" case which
 		// describe --always already handled, plus the "shallow clone
@@ -53,6 +57,20 @@ func resolveImageTag(ctx context.Context, _ string) (string, error) {
 		return "", fmt.Errorf("git describe returned empty output")
 	}
 	return tag, nil
+}
+
+// untaggedDevTag is the image tag for a project with no commits. It names
+// no revision because there is none; the first commit replaces it with the
+// usual git-derived tag.
+const untaggedDevTag = "uncommitted"
+
+// gitHeadUnborn reports whether the working directory is inside a git
+// repository whose HEAD points at no commit yet.
+func gitHeadUnborn(ctx context.Context) bool {
+	if err := exec.CommandContext(ctx, "git", "rev-parse", "--is-inside-work-tree").Run(); err != nil {
+		return false
+	}
+	return exec.CommandContext(ctx, "git", "rev-parse", "--verify", "--quiet", "HEAD").Run() != nil
 }
 
 // buildTagFor is THE tag precedence for an image forge builds, for every

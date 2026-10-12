@@ -1,11 +1,22 @@
 package observe_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
+	"connectrpc.com/otelconnect"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/reliant-labs/forge/pkg/observe"
 )
@@ -116,5 +127,117 @@ func TestChain_AuditOnlyThreaded(t *testing.T) {
 	runChain(t, chain, &trace)
 	if len(trace) != 2 || trace[0] != "audit" || trace[1] != "handler" {
 		t.Fatalf("audit-only: trace = %v, want [audit handler]", trace)
+	}
+}
+
+// rejectAuth is an auth interceptor that refuses every call, the way a missing
+// or bad token does.
+type rejectAuth struct{ markerInterceptor }
+
+func (rejectAuth) WrapUnary(connect.UnaryFunc) connect.UnaryFunc {
+	return func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("missing Authorization header"))
+	}
+}
+
+// A request that auth rejects is exactly the one you want to find in a trace.
+// With the span opened INSIDE auth (otelconnect in Extras, the old scaffold) the
+// rejection had no span, and the "rpc failed" line, written outside the span,
+// had no trace_id to find it by. Deps.Trace is the outermost slot.
+func TestChain_TraceCoversAuthRejectionAndItsLogLine(t *testing.T) {
+	const procedure = "/observe.test.v1.TraceService/Do"
+	spans := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+	otelInt, err := otelconnect.NewInterceptor(otelconnect.WithTracerProvider(tp), otelconnect.WithPropagator(propagation.TraceContext{}), otelconnect.WithTrustRemote())
+	if err != nil {
+		t.Fatalf("otelconnect: %v", err)
+	}
+
+	var logs bytes.Buffer
+	logger := slog.New(observe.NewTraceHandler(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	handlerRan := false
+	mux := http.NewServeMux()
+	mux.Handle(procedure, connect.NewUnaryHandler(procedure,
+		func(context.Context, *connect.Request[structpb.Struct]) (*connect.Response[structpb.Struct], error) {
+			handlerRan = true
+			return connect.NewResponse(&structpb.Struct{}), nil
+		},
+		connect.WithInterceptors(observe.Chain(observe.Deps{
+			Logger: logger,
+			Trace:  otelInt,
+			Auth:   rejectAuth{},
+		})...),
+	))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	const browserTrace = "0af7651916cd43dd8448eb211c80319c"
+	const browserSpan = "b7ad6b7169203331"
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, srv.URL+procedure, strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("traceparent", "00-"+browserTrace+"-"+browserSpan+"-01")
+	resp, err := srv.Client().Do(req) //nolint:bodyclose // closed below
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+	if handlerRan {
+		t.Fatal("auth rejected the call, yet the handler ran")
+	}
+
+	ended := spans.Ended()
+	if len(ended) != 1 {
+		t.Fatalf("a rejected call must still have its span: got %d spans, want 1", len(ended))
+	}
+	sp := ended[0]
+	if got := sp.SpanContext().TraceID().String(); got != browserTrace {
+		t.Errorf("span trace id = %s, want the caller's %s (WithTrustRemote parents it)", got, browserTrace)
+	}
+	if got := sp.Parent().SpanID().String(); got != browserSpan {
+		t.Errorf("span parent = %s, want the caller's span %s", got, browserSpan)
+	}
+
+	var rpcFailed map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("log line is not JSON: %q", line)
+		}
+		if rec["msg"] == "rpc failed" {
+			rpcFailed = rec
+		}
+	}
+	if rpcFailed == nil {
+		t.Fatalf("no \"rpc failed\" line in:\n%s", logs.String())
+	}
+	if rpcFailed["trace_id"] != browserTrace || rpcFailed["span_id"] != sp.SpanContext().SpanID().String() {
+		t.Errorf("the \"rpc failed\" line must carry the span it ran in (trace_id=%s span_id=%s), got %v",
+			browserTrace, sp.SpanContext().SpanID(), rpcFailed)
+	}
+}
+
+func TestChain_TraceSitsOutsideEverythingElse(t *testing.T) {
+	var trace []string
+	chain := observe.Chain(observe.Deps{
+		Trace: markerInterceptor{name: "trace", trace: &trace},
+		Auth:  markerInterceptor{name: "auth", trace: &trace},
+	})
+	runChain(t, chain, &trace)
+	want := []string{"trace", "auth", "handler"}
+	if len(trace) != len(want) || trace[0] != want[0] || trace[1] != want[1] || trace[2] != want[2] {
+		t.Fatalf("trace = %v, want %v", trace, want)
+	}
+	if _, ok := chain[0].(markerInterceptor); !ok {
+		t.Errorf("chain[0] = %T, want the Trace interceptor outermost", chain[0])
 	}
 }

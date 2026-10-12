@@ -154,6 +154,23 @@ type Deps struct {
 	// Failures are always logged in full.
 	LogOptions []LogOption
 
+	// Trace is the interceptor that opens the SERVER SPAN for each RPC —
+	// otelconnect.NewInterceptor(...). Chain puts it OUTERMOST, ahead of
+	// recovery, logging, auth and audit, so that:
+	//
+	//   - a call auth rejects still has a span (the failed and unauthenticated
+	//     calls are the ones you most want to see);
+	//   - every log line any layer writes for the request, including the
+	//     "rpc failed" line and the audit event, carries the span's trace_id;
+	//   - the pprof labels that tie profile samples to this span (see
+	//     profiles_labels.go) wrap everything inside it.
+	//
+	// Passing it as an Extra instead lands it AFTER auth, which loses all
+	// three. Build it where you can decide whether to trust an inbound
+	// traceparent (otelconnect.WithTrustRemote). nil opens no span here.
+	// Set this OR Tracer, not both: two spans per RPC.
+	Trace connect.Interceptor
+
 	// Auth is the project's authentication interceptor — the value
 	// returned by authn.NewInterceptor(policy), with the token validator
 	// and identity enricher already threaded through the Policy. This is
@@ -194,7 +211,10 @@ type Deps struct {
 // OUTER to the handler, exactly the position DefaultMiddlewares documents
 // for Extras:
 //
-//  1. RecoveryInterceptor   — outermost; observes panics from everything.
+//  0. Trace                — the server span (Deps.Trace, when non-nil),
+//     then the pprof labels naming it. Outside everything below, so the span
+//     covers recovery, logging and auth, and their log lines carry its ids.
+//  1. RecoveryInterceptor   — observes panics from everything below.
 //  2. RequestIDInterceptor — mints/propagates the correlation id early.
 //  3. LoggingInterceptor   — every failure; every success, or a sample
 //     of them when sampling is turned on.
@@ -213,13 +233,17 @@ type Deps struct {
 // stable length via no-op interceptors). A worker process passing all-nil
 // application collaborators gets the pure observability chain.
 func Chain(deps Deps) []connect.Interceptor {
-	chain := []connect.Interceptor{
+	var chain []connect.Interceptor
+	if deps.Trace != nil {
+		chain = append(chain, deps.Trace, profileLabelsInterceptor())
+	}
+	chain = append(chain,
 		RecoveryInterceptor(deps.Logger),
 		RequestIDInterceptor(),
 		LoggingInterceptor(deps.Logger, deps.LogOptions...),
 		TracingInterceptor(deps.Tracer),
 		MetricsInterceptor(deps.Meter),
-	}
+	)
 	if deps.Auth != nil {
 		chain = append(chain, deps.Auth)
 	}
