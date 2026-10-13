@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	forgeconfig "github.com/reliant-labs/forge/pkg/config"
 )
 
 // Binding rules for (forge.v1.binary_config).
@@ -111,6 +113,10 @@ func (m ConfigMessage) ProcessName() string {
 //     env var or flag. The process running that command loads both, so it
 //     would read one value from two declarations that can drift, and its
 //     env projection would carry the key twice.
+//   - a binary's root config and one of its command configs declare a
+//     top-level field of the same name. The process reads both from ONE
+//     config file, flat across the two (forge/pkg/config's file layer), so
+//     the file could not say which of them a key sets.
 //
 // It reports EVERY offender rather than the first, for the reason
 // ValidateFrontendConfigs does: a renamed binary takes several messages with
@@ -224,12 +230,18 @@ func commandShapeProblem(command []string) string {
 // configs both declare.
 type processCollision struct {
 	root, cmd *ConfigMessage
-	what      string // "env var LOG_LEVEL" / "flag --log-level"
+	what      string // "env var LOG_LEVEL" / "flag --log-level" / "config file key port"
 	rootPath  string // the leaf on the root config, e.g. "log.level"
 	cmdPath   string
+	fileKey   bool // a top-level field name, not a leaf's env var or flag
 }
 
 func (c processCollision) detail() string {
+	if c.fileKey {
+		return fmt.Sprintf(
+			"%s is also a top-level field of %s, the binary's root config. The %#q process reads both configs from ONE config file (--config, or %s), whose keys are flat across the two, so the file could not say which %s it sets. Rename one of the two fields.",
+			c.what, c.root.Name, c.cmd.ProcessName(), forgeconfig.ConfigPathEnvFor(c.cmd.Binary), c.rootPath)
+	}
 	return fmt.Sprintf(
 		"%s (%s) is also declared by %s (%s), the binary's root config. The %#q process loads both, so it would read one value from two declarations that can drift, and its env projection would carry the key twice. Declare it once: on %s if every %s process reads it, otherwise on the command configs alone.",
 		c.what, c.cmdPath, c.root.Name, c.rootPath, c.cmd.ProcessName(), c.root.Name, c.root.Binary)
@@ -273,6 +285,20 @@ func processCollisions(messages []ConfigMessage, byProcess map[string][]*ConfigM
 			if p, dup := rootFlag[f.Flag]; dup && f.Flag != "" && !f.Sensitive {
 				out = append(out, processCollision{root: root, cmd: cmd,
 					what: "flag --" + f.Flag, rootPath: p, cmdPath: f.KCLPath()})
+			}
+		}
+
+		// The config FILE is flat across the two messages at the TOP level
+		// only (each message decodes its own keys below it), so a top-level
+		// field name — a composed block's included — is the file's key.
+		rootKeys := map[string]bool{}
+		for _, f := range root.Fields {
+			rootKeys[f.Name] = true
+		}
+		for _, f := range cmd.Fields {
+			if rootKeys[f.Name] {
+				out = append(out, processCollision{root: root, cmd: cmd, fileKey: true,
+					what: "config file key " + strconv.Quote(f.Name), rootPath: f.Name, cmdPath: f.Name})
 			}
 		}
 	}

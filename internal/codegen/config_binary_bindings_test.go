@@ -231,6 +231,38 @@ func TestValidateBinaryConfigBindings_RefusesARootAndCommandCollision(t *testing
 	}
 }
 
+// The `server api` process reads its root config and its command config from
+// ONE config file, flat across both, so the two may not share a top-level
+// field name even when the env vars and flags differ: the file key could not
+// say which config it sets.
+func TestValidateBinaryConfigBindings_RefusesARootAndCommandFileKeyCollision(t *testing.T) {
+	msgs := []ConfigMessage{
+		commandMessage("ReliantConfig", "reliant", nil, 10, envField("port", "PORT", "port")),
+		commandMessage("ApiServerConfig", "reliant", []string{"server", "api"}, 20,
+			envField("port", "API_PORT", "api-port")),
+		commandMessage("WorkerConfig", "reliant", []string{"server", "worker"}, 30,
+			envField("health_port", "HEALTH_PORT", "health-port")),
+	}
+	err := ValidateBinaryConfigBindings(msgs, []string{"reliant"})
+	if err == nil {
+		t.Fatal("root and command configs sharing a top-level field name generated cleanly; want a refusal")
+	}
+	got := err.Error()
+	for _, want := range []string{
+		"config.proto:20: message ApiServerConfig",
+		`config file key "port" is also a top-level field of ReliantConfig`,
+		"ONE config file (--config, or RELIANT_CONFIG)",
+		"Rename one of the two fields",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("refusal missing %q\n---\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "WorkerConfig") {
+		t.Errorf("WorkerConfig shares no key with the root config and must not be refused:\n%s", got)
+	}
+}
+
 func TestConfigMessage_ProcessName(t *testing.T) {
 	for _, c := range []struct {
 		m    ConfigMessage

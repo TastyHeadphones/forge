@@ -1,6 +1,6 @@
 ---
 name: config-files
-description: Loading a binary's typed config from a YAML/JSON file — --config and the per-binary <BINARY>_CONFIG path variable, precedence, the override, and what a missing or invalid file does.
+description: Loading a binary's typed config from a YAML/JSON file — --config and the per-binary <BINARY>_CONFIG path variable, precedence, the override, what a missing or invalid file does, and how a root and a command config share one flat file.
 ---
 
 # Config files
@@ -9,4 +9,13 @@ Every config also loads from a file: `--config <path>` (`.yaml`, `.yml` or `.jso
 
 - The variable is per binary on purpose: one shared name would let a shell that sets it for one app make every other forge binary launched from that shell load a file written for a different schema and fail at startup.
 - A path that is given but missing, unreadable or invalid fails startup, naming where it came from (`config file "/x.yaml" (from env RELIANT_CONFIG) does not exist`). No path given is not an error: the file layer is skipped. A variable set to `""` is unset, like every variable the loader reads.
+- One file configures one PROCESS, and it is flat, like the process's flags and env vars: `app server api` reads its root config AND `ApiServerConfig` from the same file, each taking its own top-level keys.
+
+  ```yaml
+  # app server api --config api.yaml
+  log: {level: debug}                 # AppConfig (root)
+  grpc_port: 9090                     # ApiServerConfig (server api)
+  ```
+
+  A key that no config the command loads declares is an error naming them all (`unknown key "grcp_port": no config this command loads has such a field (ApiServerConfig, AppConfig)`), so a misspelling still fails — and so does a key only another process reads: `app server worker` refuses `grpc_port`. Give each process its own file. The configs a command loads are the ones registered on its path (`config.Register<Msg>Flags`).
 - To answer to a different variable, call `forgeconfig.RegisterConfigFlag(root, "MY_APP_CONFIG")` (`forgeconfig` = `github.com/reliant-labs/forge/pkg/config`) on the binary's root command BEFORE `config.Register<Msg>Flags(root)`: the first `--config` registered on a command path names the variable for every load beneath it.

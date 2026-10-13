@@ -175,7 +175,7 @@ api, err := config.LoadApiServerConfig(cmd)    // refuses any command but `serve
 ```
 
 - `generate` checks each `command` element is one command name. It cannot check the path EXISTS — a cobra tree is built at runtime — so `Load<Msg>` checks it exactly against the real tree and errors, naming both paths, when called from another command.
-- A root config and a command config of one binary may not declare the same env var or flag (one process would read it twice); `generate` refuses the pair. Compose a shared block onto the root config, not onto each command config.
+- A root config and a command config of one binary may not declare the same env var or flag (one process would read it twice), nor the same top-level field name (one config file serves the process: `binaries/config-files`); `generate` refuses the pair. Compose a shared block onto the root config, not onto each command config.
 - KCL: every config keeps its own `<msg>EnvMap`, and a binary with command configs also gets `config_gen.<bin>ProcessEnvMap(cfgs, argv, config_secrets)`, which projects one workload's env from its own `command + args` — root config plus the matching command config, longest declared path first, `config_secrets` routed to whichever config declares each name. config.k scaffolds the bundle as `<bin>_process`:
 
   ```kcl
@@ -186,7 +186,7 @@ api, err := config.LoadApiServerConfig(cmd)    // refuses any command but `serve
 
 ### Config files
 
-Every config also loads from a YAML or JSON file: `--config <path>`, or the binary's own `<BINARY>_CONFIG` (`RELIANT_CONFIG` for `cmd/reliant`; the project-global `AppConfig` reads `<PROJECT>_CONFIG`). Precedence is defaults < file < env < flags. The file's shape, the variable's override and its failure modes: `binaries/config-files`.
+Every config also loads from a YAML or JSON file: `--config <path>`, or the binary's own `<BINARY>_CONFIG` (`RELIANT_CONFIG` for `cmd/reliant`; the project-global `AppConfig` reads `<PROJECT>_CONFIG`). Precedence is defaults < file < env < flags. One file serves one process, flat across its root and command config. The file's shape, the variable's override and its failure modes: `binaries/config-files`.
 
 Splitting into separate binaries instead (`cmd/app-server` + `cmd/app`) is right when the roles share nothing. When they share a binary — one image, a monolith mode that runs every role in one process, a CLI on the same root — `command` keeps one binary and still gives each process only its own config and credentials.
 

@@ -417,6 +417,21 @@ github.com/reliant-labs/forge/cmd/forge@<pin> <same args>` that needs no
   variable. A
   project that set `FORGE_CONFIG` sets the binary's variable instead, and
   regenerates `pkg/config/config_gen.go`.
+- **A root config and a command config share one `--config` file.** A process
+  that loads both (`reliant server api` reads `ReliantConfig` and
+  `ApiServerConfig`) decoded the file into each, each rejected the other's keys
+  as unknown, and so no non-empty file could load: every one failed one of the
+  two. The file is now flat across the configs the command loads, like its
+  flags and env vars, and each takes its own top-level keys. Those configs are
+  the ones registered on the command path through the cobra-level
+  `Register*` functions (recorded on the command), so a key none of them
+  declares is still a loud error, now naming them all (`unknown key
+  "jwks_ulr": no config this command loads has such a field (ApiServerConfig,
+  ReliantConfig)`), and nested keys stay strict. One file serves one process:
+  `server worker` refuses a key only `server api` reads. A key two loaded
+  configs both declare is refused at load, and `forge generate` refuses a root
+  and a command config of one binary that share a top-level field name, as it
+  already refused a shared env var or flag.
 
 - **`forge env deploy <env> --dry-run` now predicts the real run's release
   decision, and a nested git checkout is no longer "dirt".** A bare
