@@ -13,15 +13,15 @@
 // label rules, the inactive → pending → firing → resolved state machine with
 // flap damping, a jittered scheduler sharded over forge/pkg/lease, and an
 // Alertmanager v2 client. It owns nothing about WHERE rules come from, WHICH
-// database a tenant's query runs against, or where state is kept; those are the
+// database an owner's query runs against, or where state is kept; those are the
 // four interfaces below, declared here at the consumer.
 //
-// A tenant is an opaque string. The package never interprets it: it is handed
+// An owner is an opaque string. The package never interprets it: it is handed
 // to the Querier and recorded beside every instance, nothing more. Identity
 // labels (who an alert belongs to) are supplied by the RuleSource on the Rule
 // and are stamped LAST, so no query column or user label can override them.
 //
-// A self-hoster runs it with chquery (a single-tenant ClickHouse Querier), the
+// A self-hoster runs it with chquery (a single-owner ClickHouse Querier), the
 // pgstore Postgres StateStore (or NewMemoryStore) and any RuleSource.
 package alerting
 
@@ -30,15 +30,15 @@ import (
 	"time"
 )
 
-// RuleKey identifies one rule. Tenant and Env are opaque to this package.
+// RuleKey identifies one rule. Owner and Env are opaque to this package.
 type RuleKey struct {
-	Tenant string
-	Env    string
-	Name   string
+	Owner string
+	Env   string
+	Name  string
 }
 
 // String is the key as a log field.
-func (k RuleKey) String() string { return k.Tenant + "/" + k.Env + "/" + k.Name }
+func (k RuleKey) String() string { return k.Owner + "/" + k.Env + "/" + k.Name }
 
 // Rule is one alert rule, as declared.
 type Rule struct {
@@ -66,7 +66,7 @@ type Rule struct {
 
 	// Identity is set by the RuleSource, never by the rule author, and is
 	// applied after every other label: it is how a consumer routes an alert to
-	// the tenant it belongs to.
+	// the owner it belongs to.
 	Identity map[string]string
 }
 
@@ -81,17 +81,17 @@ type QueryOptions struct {
 	MaxResultRows int
 }
 
-// Querier runs one guarded SELECT for a tenant.
+// Querier runs one guarded SELECT for an owner.
 type Querier interface {
-	Query(ctx context.Context, tenant, query string, opts QueryOptions) ([]Row, error)
+	Query(ctx context.Context, owner, query string, opts QueryOptions) ([]Row, error)
 }
 
 // RuleSource lists what to evaluate.
 type RuleSource interface {
-	// Tenants lists every tenant that has rules.
-	Tenants(ctx context.Context) ([]string, error)
-	// Rules lists a tenant's rules across all of its envs.
-	Rules(ctx context.Context, tenant string) ([]Rule, error)
+	// Owners lists every owner that has rules.
+	Owners(ctx context.Context) ([]string, error)
+	// Rules lists an owner's rules across all of its envs.
+	Rules(ctx context.Context, owner string) ([]Rule, error)
 }
 
 // Alert is one alert as posted to a Notifier.
@@ -111,21 +111,21 @@ type Notifier interface {
 
 // StateStore keeps instance state and the transition history.
 type StateStore interface {
-	// LoadTenant returns every stored instance of a tenant, resolved included.
-	LoadTenant(ctx context.Context, tenant string) ([]Instance, error)
-	// Tenants lists tenants that have stored instances.
-	Tenants(ctx context.Context) ([]string, error)
+	// LoadOwner returns every stored instance of an owner, resolved included.
+	LoadOwner(ctx context.Context, owner string) ([]Instance, error)
+	// Owners lists owners that have stored instances.
+	Owners(ctx context.Context) ([]string, error)
 	// Apply persists one rule's changes atomically.
 	Apply(ctx context.Context, ch Changes) error
 	// Events reads the transition history, newest first.
 	Events(ctx context.Context, q EventQuery) ([]Event, error)
 }
 
-// EventQuery selects history rows. Tenant is required; the store never returns
-// another tenant's rows.
+// EventQuery selects history rows. Owner is required; the store never returns
+// another owner's rows.
 type EventQuery struct {
-	Tenant string
-	// Env narrows to one env; empty means all of the tenant's envs.
+	Owner string
+	// Env narrows to one env; empty means all of the owner's envs.
 	Env string
 	// Since is the oldest event wanted.
 	Since time.Time

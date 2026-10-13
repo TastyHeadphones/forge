@@ -542,16 +542,18 @@ func RestoreRollbackReport(root string) (restored, failed []string) {
 			failed = append(failed, relPath)
 			continue
 		}
-		// A scaffold-once file created THIS run is being un-created, so its
-		// birth record must go with it. Leaving the record behind would make
-		// the failed run consume the path's one and only birth: the ledger
-		// would read "already scaffolded", the file would be gone, and no
-		// later run would ever emit it. No-op for paths that were never
-		// scaffold-once.
-		ForgetScaffold(root, relPath)
 		pruneEmptyParents(root, filepath.Dir(full))
 		restored = append(restored, relPath)
 	}
+	// A scaffold-once file created THIS run was un-created above, so its
+	// birth record must go with it: a surviving record would make the failed
+	// run consume the path's one and only birth. The birth ledger is
+	// journaled like every other write (saveScaffoldLedgerLocked), so the
+	// loop already put .forge/scaffolded.json back to its pre-run bytes —
+	// births and absent-set alike. What remains is the in-memory copy, which
+	// still holds this run's records: drop it, so the next query reads the
+	// restored file.
+	ResetScaffoldLedgerCache()
 	// Files an external tool CREATED under a captured directory: every
 	// file that existed there at capture time is journaled, so anything
 	// else is new this run.

@@ -63,7 +63,7 @@ func TestRuleSpecValidate(t *testing.T) {
 
 func TestRuleBindsIdentityAndSource(t *testing.T) {
 	r := RuleSpec{Alert: "a", Expr: "SELECT 1", For: Duration(time.Minute)}.Rule("t", "prod", map[string]string{"reliant_org_id": "t"})
-	if r.Tenant != "t" || r.Env != "prod" || r.Name != "a" || r.Source != SourceUser || r.Identity["reliant_org_id"] != "t" || r.For != time.Minute {
+	if r.Owner != "t" || r.Env != "prod" || r.Name != "a" || r.Source != SourceUser || r.Identity["reliant_org_id"] != "t" || r.For != time.Minute {
 		t.Fatalf("rule = %+v", r)
 	}
 	if got := (RuleSpec{Alert: "a", Source: SourceDefault}).Rule("t", "e", nil).Source; got != SourceDefault {
@@ -81,12 +81,12 @@ func writeRules(t *testing.T, path, body string) {
 func TestFileRuleSourceLoadsReloadsAndKeepsLastGood(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "alerts.json")
 	now := t0
-	f := &FileRuleSource{Path: path, Tenant: "self", Env: "prod", Identity: map[string]string{"reliant_org_id": "self"}, Recheck: time.Second, now: func() time.Time { return now }}
+	f := &FileRuleSource{Path: path, Owner: "self", Env: "prod", Identity: map[string]string{"reliant_org_id": "self"}, Recheck: time.Second, now: func() time.Time { return now }}
 	ctx := context.Background()
 
 	// no file yet: no rules, no error.
-	if ts, err := f.Tenants(ctx); err != nil || len(ts) != 0 {
-		t.Fatalf("tenants=%v err=%v", ts, err)
+	if ts, err := f.Owners(ctx); err != nil || len(ts) != 0 {
+		t.Fatalf("owners=%v err=%v", ts, err)
 	}
 
 	writeRules(t, path, `{"alerts":[{"alert":"slow","expr":"SELECT s AS value FROM x","for":"1m","labels":{"severity":"critical"},"source":"default"}],"routes":[{"ignored":true}]}`)
@@ -95,11 +95,11 @@ func TestFileRuleSourceLoadsReloadsAndKeepsLastGood(t *testing.T) {
 	if len(rules) != 1 || rules[0].Name != "slow" || rules[0].Env != "prod" || rules[0].Source != SourceDefault || rules[0].Identity["reliant_org_id"] != "self" {
 		t.Fatalf("rules = %+v", rules)
 	}
-	if ts, _ := f.Tenants(ctx); len(ts) != 1 || ts[0] != "self" {
-		t.Fatalf("tenants = %v", ts)
+	if ts, _ := f.Owners(ctx); len(ts) != 1 || ts[0] != "self" {
+		t.Fatalf("owners = %v", ts)
 	}
 	if other, _ := f.Rules(ctx, "someone-else"); len(other) != 0 {
-		t.Fatal("a file source must serve only its own tenant")
+		t.Fatal("a file source must serve only its own owner")
 	}
 
 	// within Recheck, an edit is not seen yet.

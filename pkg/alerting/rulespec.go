@@ -64,7 +64,7 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 
 // RuleSpec is one declared alert rule, in the Prometheus rule shape with a SQL
 // `expr`. It is the unit a release's declared shape records and a rules file
-// holds: no tenant, no env and no identity, because those belong to WHERE the
+// holds: no owner, no env and no identity, because those belong to WHERE the
 // rule is deployed, not to what it says. A RuleSource turns a spec into a Rule
 // with Rule.Identity set.
 type RuleSpec struct {
@@ -119,11 +119,11 @@ func (s RuleSpec) Validate() error {
 	return nil
 }
 
-// Rule binds the spec to a tenant and env, with the identity labels the
+// Rule binds the spec to an owner and env, with the identity labels the
 // RuleSource vouches for.
-func (s RuleSpec) Rule(tenant, env string, identity map[string]string) Rule {
+func (s RuleSpec) Rule(owner, env string, identity map[string]string) Rule {
 	return Rule{
-		RuleKey:       RuleKey{Tenant: tenant, Env: env, Name: s.Alert},
+		RuleKey:       RuleKey{Owner: owner, Env: env, Name: s.Alert},
 		Expr:          s.Expr,
 		For:           s.For.Std(),
 		Interval:      s.Interval.Std(),

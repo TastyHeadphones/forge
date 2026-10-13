@@ -22,6 +22,7 @@
 package checksums
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -293,6 +294,54 @@ func TestScaffoldOnce_FailedRunForgetsBirth(t *testing.T) {
 	if wrote, err := WriteScaffoldIfMissing(root, rel, body); err != nil || !wrote {
 		t.Fatalf("after a rolled-back run the next generate must scaffold "+
 			"(wrote=%v, err=%v)", wrote, err)
+	}
+}
+
+// TestScaffoldOnce_FailedRunRestoresLedgerBytes pins the FILE, not only the
+// answer ScaffoldRecorded gives. generate's rollback verdict compares the
+// tree — .forge/scaffolded.json included — against its pre-run fingerprint,
+// so a failed run that leaves the ledger rewritten cannot report the tree
+// back in its pre-run state, even when every birth it recorded was dropped.
+func TestScaffoldOnce_FailedRunRestoresLedgerBytes(t *testing.T) {
+	root := newScaffoldProject(t)
+	const (
+		earlier = "internal/app/auth.go"
+		thisRun = "internal/app/login_broker.go"
+	)
+	if wrote, err := WriteScaffoldIfMissing(root, earlier, []byte("package app\n")); err != nil || !wrote {
+		t.Fatalf("seed an earlier birth (wrote=%v, err=%v)", wrote, err)
+	}
+	ledgerPath := filepath.Join(root, ScaffoldedFile)
+	before, err := os.ReadFile(ledgerPath)
+	if err != nil || len(before) == 0 {
+		t.Fatalf("premise broken: the earlier birth left no ledger to restore (err=%v)", err)
+	}
+	ResetScaffoldLedgerCache() // the failing generate is a fresh process
+
+	BeginRollbackJournal(root)
+	t.Cleanup(CommitRollback)
+	if wrote, err := WriteScaffoldIfMissing(root, thisRun, []byte("package app\n")); err != nil || !wrote {
+		t.Fatalf("scaffold under an armed journal must write (wrote=%v, err=%v)", wrote, err)
+	}
+	if during, _ := os.ReadFile(ledgerPath); bytes.Equal(during, before) {
+		t.Fatal("premise broken: this run's birth should have rewritten the ledger")
+	}
+
+	RestoreRollback(root)
+
+	after, err := os.ReadFile(ledgerPath)
+	if err != nil {
+		t.Fatalf("the ledger existed before the run, so the rollback must leave it in place: %v", err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Errorf("a rolled-back run must leave %s byte-for-byte as it found it\nbefore:\n%s\nafter:\n%s",
+			ScaffoldedFile, before, after)
+	}
+	if ScaffoldRecorded(root, thisRun) {
+		t.Error("the rolled-back birth must be forgotten, in memory as well as on disk")
+	}
+	if !ScaffoldRecorded(root, earlier) {
+		t.Error("a birth recorded before the run must survive its rollback")
 	}
 }
 

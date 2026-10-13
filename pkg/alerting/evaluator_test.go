@@ -22,15 +22,15 @@ type fakeQuerier struct {
 	opts  []QueryOptions
 }
 
-func (f *fakeQuerier) Query(_ context.Context, tenant, q string, o QueryOptions) ([]Row, error) {
+func (f *fakeQuerier) Query(_ context.Context, owner, q string, o QueryOptions) ([]Row, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, tenant+"|"+q)
+	f.calls = append(f.calls, owner+"|"+q)
 	f.opts = append(f.opts, o)
 	if f.err != nil {
 		return nil, f.err
 	}
-	return f.rows[tenant], nil
+	return f.rows[owner], nil
 }
 
 type fakeNotifier struct {
@@ -101,7 +101,7 @@ func TestEvaluateFiringThenResolving(t *testing.T) {
 	if !sent[0].EndsAt.Equal(t0.Add(3 * time.Minute)) {
 		t.Fatalf("EndsAt = %v", sent[0].EndsAt)
 	}
-	stored, _ := h.store.LoadTenant(context.Background(), "org-a")
+	stored, _ := h.store.LoadOwner(context.Background(), "org-a")
 	if len(stored) != 1 || stored[0].State != StateFiring {
 		t.Fatalf("stored = %+v", stored)
 	}
@@ -202,8 +202,8 @@ func TestIntervalFloor(t *testing.T) {
 	}
 }
 
-func TestPerTenantRuleCap(t *testing.T) {
-	h := newHarness(t, Limits{MaxRulesPerTenant: 2})
+func TestPerOwnerRuleCap(t *testing.T) {
+	h := newHarness(t, Limits{MaxRulesPerOwner: 2})
 	var rules []Rule
 	for _, n := range []string{"c", "a", "b"} {
 		r := evalRule()

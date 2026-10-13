@@ -21,7 +21,7 @@ func (n *neverConn) Query(context.Context, string, ...any) (driver.Rows, error) 
 
 func TestQuerierRefusesBeforeTouchingTheConnection(t *testing.T) {
 	c := &neverConn{}
-	_, err := New(c).Query(context.Background(), "any-tenant", "DROP TABLE x", alerting.QueryOptions{})
+	_, err := New(c).Query(context.Background(), "any-owner", "DROP TABLE x", alerting.QueryOptions{})
 	if !errors.Is(err, alerting.ErrBadExpr) {
 		t.Fatalf("err = %v", err)
 	}

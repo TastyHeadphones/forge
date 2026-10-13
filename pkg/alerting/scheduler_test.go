@@ -15,16 +15,16 @@ type fakeRules struct {
 	rules map[string][]Rule
 }
 
-func (f *fakeRules) set(tenant string, r ...Rule) {
+func (f *fakeRules) set(owner string, r ...Rule) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.rules == nil {
 		f.rules = map[string][]Rule{}
 	}
-	f.rules[tenant] = r
+	f.rules[owner] = r
 }
 
-func (f *fakeRules) Tenants(context.Context) ([]string, error) {
+func (f *fakeRules) Owners(context.Context) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []string
@@ -37,16 +37,16 @@ func (f *fakeRules) Tenants(context.Context) ([]string, error) {
 	return out, nil
 }
 
-func (f *fakeRules) Rules(_ context.Context, tenant string) ([]Rule, error) {
+func (f *fakeRules) Rules(_ context.Context, owner string) ([]Rule, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]Rule(nil), f.rules[tenant]...), nil
+	return append([]Rule(nil), f.rules[owner]...), nil
 }
 
-func ruleFor(tenant, name string) Rule {
+func ruleFor(owner, name string) Rule {
 	r := evalRule()
-	r.Tenant, r.Name, r.Interval = tenant, name, time.Millisecond
-	r.Identity = map[string]string{"reliant_org_id": tenant}
+	r.Owner, r.Name, r.Interval = owner, name, time.Millisecond
+	r.Identity = map[string]string{"reliant_org_id": owner}
 	return r
 }
 
@@ -59,7 +59,7 @@ func newSched(t *testing.T, h *harness, rules *fakeRules, shards int, lk Locker)
 	return s
 }
 
-func TestTickEvaluatesEachTenantWithItsOwnKey(t *testing.T) {
+func TestTickEvaluatesEachOwnerWithItsOwnKey(t *testing.T) {
 	h := newHarness(t, Limits{MinInterval: time.Millisecond})
 	h.q.rows["org-a"] = []Row{{"s": "a"}}
 	h.q.rows["org-b"] = []Row{{"s": "b"}}
@@ -68,7 +68,7 @@ func TestTickEvaluatesEachTenantWithItsOwnKey(t *testing.T) {
 	rules.set("org-b", ruleFor("org-b", "r"))
 	s := newSched(t, h, rules, 1, nil)
 
-	cache := map[string]*tenantState{}
+	cache := map[string]*ownerState{}
 	s.tick(context.Background(), 0, cache)
 	time.Sleep(5 * time.Millisecond)
 	s.tick(context.Background(), 0, cache)
@@ -78,28 +78,28 @@ func TestTickEvaluatesEachTenantWithItsOwnKey(t *testing.T) {
 		orgs[a.Labels["reliant_org_id"]] = a.Labels["s"]
 	}
 	if orgs["org-a"] != "a" || orgs["org-b"] != "b" || len(orgs) != 2 {
-		t.Fatalf("each tenant's alerts must carry only its own rows and identity: %v", orgs)
+		t.Fatalf("each owner's alerts must carry only its own rows and identity: %v", orgs)
 	}
 	for _, c := range h.q.calls {
 		if c[:5] != "org-a" && c[:5] != "org-b" {
-			t.Fatalf("query without a tenant key: %q", c)
+			t.Fatalf("query without an owner key: %q", c)
 		}
 	}
 }
 
-func TestRuleSourceCannotSmuggleAnotherTenantsRule(t *testing.T) {
+func TestRuleSourceCannotSmuggleAnotherOwnersRule(t *testing.T) {
 	h := newHarness(t, Limits{MinInterval: time.Millisecond})
 	h.q.rows["org-b"] = []Row{{"s": "b"}}
 	rules := &fakeRules{}
 	rules.set("org-a", ruleFor("org-b", "stolen"))
 	s := newSched(t, h, rules, 1, nil)
-	cache := map[string]*tenantState{}
+	cache := map[string]*ownerState{}
 	for i := 0; i < 2; i++ {
 		s.tick(context.Background(), 0, cache)
 		time.Sleep(5 * time.Millisecond)
 	}
 	if len(h.q.calls) != 0 {
-		t.Fatalf("a rule listed under the wrong tenant was evaluated: %v", h.q.calls)
+		t.Fatalf("a rule listed under the wrong owner was evaluated: %v", h.q.calls)
 	}
 }
 
@@ -109,7 +109,7 @@ func TestRemovedRuleIsRetiredAndResolved(t *testing.T) {
 	rules := &fakeRules{}
 	rules.set("org-a", ruleFor("org-a", "r"))
 	s := newSched(t, h, rules, 1, nil)
-	cache := map[string]*tenantState{}
+	cache := map[string]*ownerState{}
 	s.tick(context.Background(), 0, cache)
 	time.Sleep(5 * time.Millisecond)
 	s.tick(context.Background(), 0, cache)
@@ -121,12 +121,12 @@ func TestRemovedRuleIsRetiredAndResolved(t *testing.T) {
 	if last := all[len(all)-1]; !last.EndsAt.Equal(h.now) {
 		t.Fatalf("removal must resolve, got an alert ending %v", last.EndsAt)
 	}
-	left, _ := h.store.LoadTenant(context.Background(), "org-a")
+	left, _ := h.store.LoadOwner(context.Background(), "org-a")
 	if len(left) != 1 || left[0].State != StateResolved || !left[0].ResolveSent {
 		t.Fatalf("left = %+v", left)
 	}
 	s.tick(context.Background(), 0, cache)
-	left, _ = h.store.LoadTenant(context.Background(), "org-a")
+	left, _ = h.store.LoadOwner(context.Background(), "org-a")
 	if len(left) != 0 {
 		t.Fatalf("a delivered removal must be cleaned up: %+v", left)
 	}
@@ -140,16 +140,16 @@ func TestStateSurvivesAHandover(t *testing.T) {
 	r.For = time.Hour
 	rules.set("org-a", r)
 	s := newSched(t, h, rules, 1, nil)
-	owner1 := map[string]*tenantState{}
+	owner1 := map[string]*ownerState{}
 	s.tick(context.Background(), 0, owner1)
 	time.Sleep(5 * time.Millisecond)
 	s.tick(context.Background(), 0, owner1)
-	owner2 := map[string]*tenantState{} // the lease moved: empty caches
+	owner2 := map[string]*ownerState{} // the lease moved: empty caches
 	s.tick(context.Background(), 0, owner2)
 	time.Sleep(5 * time.Millisecond)
 	s.tick(context.Background(), 0, owner2)
 
-	stored, _ := h.store.LoadTenant(context.Background(), "org-a")
+	stored, _ := h.store.LoadOwner(context.Background(), "org-a")
 	if len(stored) != 1 || stored[0].State != StatePending {
 		t.Fatalf("stored = %+v", stored)
 	}
@@ -158,7 +158,7 @@ func TestStateSurvivesAHandover(t *testing.T) {
 	}
 }
 
-func TestShardingPartitionsTenants(t *testing.T) {
+func TestShardingPartitionsOwners(t *testing.T) {
 	h := newHarness(t, Limits{})
 	s := newSched(t, h, &fakeRules{}, 8, nil)
 	count := map[int]int{}
@@ -166,7 +166,7 @@ func TestShardingPartitionsTenants(t *testing.T) {
 		count[s.ShardOf("org-"+string(rune('a'+i%26))+string(rune('a'+i/26)))]++
 	}
 	if len(count) < 6 {
-		t.Fatalf("tenants hash into only %d of 8 shards", len(count))
+		t.Fatalf("owners hash into only %d of 8 shards", len(count))
 	}
 	a, b := "org-a", "org-"+"a"
 	if s.ShardOf(a) != s.ShardOf(b) {
@@ -216,7 +216,7 @@ func TestRunTakesOneLeasePerShardAndStops(t *testing.T) {
 
 func TestJitterIsStableAndWithinTheInterval(t *testing.T) {
 	k := RuleKey{"t", "e", "r"}
-	k2 := RuleKey{k.Tenant, k.Env, k.Name}
+	k2 := RuleKey{k.Owner, k.Env, k.Name}
 	if jitter(k, time.Minute) != jitter(k2, time.Minute) {
 		t.Fatal("jitter must be stable across restarts")
 	}
@@ -242,8 +242,8 @@ func TestNewSchedulerRequiresDeps(t *testing.T) {
 func allEvents(t *testing.T, s StateStore) []Event {
 	t.Helper()
 	var out []Event
-	for _, tenant := range []string{"org-a", "org-b"} {
-		ev, err := s.Events(context.Background(), EventQuery{Tenant: tenant, Limit: 1000})
+	for _, owner := range []string{"org-a", "org-b"} {
+		ev, err := s.Events(context.Background(), EventQuery{Owner: owner, Limit: 1000})
 		if err != nil {
 			t.Fatal(err)
 		}

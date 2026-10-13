@@ -50,24 +50,27 @@ import (
 // compileFields are the `go list -json` fields compileTree reads.
 const compileFields = "ImportPath,Name,Dir,ForTest,DepOnly,GoFiles,CgoFiles,Error,DepsErrors"
 
-// listedPackage is one package from `go list -json`.
+// listedPackage is one package from `go list -json`. Only the JSON decoder
+// in compileTree writes it; the tags name cmd/go's field spellings, which
+// are the wire contract (and keep compileFields and this struct readable
+// side by side).
 type listedPackage struct {
-	ImportPath string
-	Name       string
-	Dir        string
-	ForTest    string
-	DepOnly    bool
-	GoFiles    []string
-	CgoFiles   []string
-	Error      *listedPackageError
-	DepsErrors []*listedPackageError
+	ImportPath string                `json:"ImportPath"`
+	Name       string                `json:"Name"`
+	Dir        string                `json:"Dir"`
+	ForTest    string                `json:"ForTest"`
+	DepOnly    bool                  `json:"DepOnly"`
+	GoFiles    []string              `json:"GoFiles"`
+	CgoFiles   []string              `json:"CgoFiles"`
+	Error      *listedPackageError   `json:"Error"`
+	DepsErrors []*listedPackageError `json:"DepsErrors"`
 }
 
 // listedPackageError is cmd/go's PackageError as `go list -json` renders it.
 type listedPackageError struct {
-	ImportStack []string
-	Pos         string
-	Err         string
+	ImportStack []string `json:"ImportStack"`
+	Pos         string   `json:"Pos"`
+	Err         string   `json:"Err"`
 }
 
 // text renders the error the way `go build` prints it: compiler output

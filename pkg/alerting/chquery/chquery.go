@@ -1,10 +1,10 @@
 // Copyright (c) 2025 Reliant Labs
 
-// Package chquery is a single-tenant alerting.Querier over one ClickHouse
-// connection: the tenant key is ignored and every rule runs against the
+// Package chquery is a single-owner alerting.Querier over one ClickHouse
+// connection: the owner key is ignored and every rule runs against the
 // connection's database. It is what a self-hoster runs, and the reference for a
-// multi-tenant Querier, which differs only in choosing the connection (or the
-// identity it runs as) from the tenant key.
+// multi-owner Querier, which differs only in choosing the connection (or the
+// identity it runs as) from the owner key.
 //
 // The connection should be a read-only ClickHouse user; the guard and the
 // readonly=2 setting are belt and braces, not a substitute for grants.
@@ -35,12 +35,12 @@ var _ alerting.Querier = (*Querier)(nil)
 func New(conn Conn) *Querier { return &Querier{conn: conn} }
 
 // Query runs the statement with opts applied as ClickHouse settings and returns
-// every row. The tenant key is unused.
+// every row. The owner key is unused.
 func (q *Querier) Query(ctx context.Context, _ string, query string, opts alerting.QueryOptions) ([]alerting.Row, error) {
 	return Run(ctx, q.conn, query, opts)
 }
 
-// Run is the shared row-reading half: a multi-tenant Querier calls it with the
+// Run is the shared row-reading half: a multi-owner Querier calls it with the
 // connection it chose.
 func Run(ctx context.Context, conn Conn, query string, opts alerting.QueryOptions) ([]alerting.Row, error) {
 	if err := alerting.ValidateExpr(query); err != nil {

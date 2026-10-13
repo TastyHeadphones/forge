@@ -461,45 +461,9 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		}
 	}()
 
-	// Step-preset filter — when flags.Steps is non-empty, drop steps not
-	// in the allowlist BEFORE the Gate check. The gate is a project-shape
-	// predicate ("does this project have services?"); the step preset is
-	// a caller-intent predicate ("am I doing a bootstrap-only regen?").
-	// They compose: a step that's allowlisted by the preset still has to
-	// pass its Gate, and a step gated off would skip regardless of the
-	// preset.
-	steps := pipelineSteps()
-	totalSteps := len(steps)
-	if flags.Steps != "" {
-		allow, ok := stepPresetAllowlist[flags.Steps]
-		if !ok {
-			return fmt.Errorf("unknown pipeline step preset %q (valid: %s)", flags.Steps, knownStepPresetNames())
-		}
-		filtered := steps[:0:0]
-		for _, step := range steps {
-			if allow[step.Name] {
-				filtered = append(filtered, step)
-			}
-		}
-		fmt.Printf("⏩ steps=%s: running %d of %d pipeline steps\n", flags.Steps, len(filtered), len(steps))
-		steps = filtered
-	}
-
-	// --templates-only filter — intersects with --steps (if both are
-	// set, a step must pass BOTH allowlists). Applied AFTER --steps so
-	// the user-visible "running N of M" count reflects whichever filter
-	// is narrower. See templatesOnlyStepAllow for the included set and
-	// the WIP-tree rationale.
-	if flags.TemplatesOnly {
-		before := len(steps)
-		filtered := steps[:0:0]
-		for _, step := range steps {
-			if templatesOnlyStepAllow[step.Name] {
-				filtered = append(filtered, step)
-			}
-		}
-		fmt.Printf("⏩ --templates-only: running %d of %d pipeline steps (skipping cleanup, drift-guard, validation, external generators)\n", len(filtered), before)
-		steps = filtered
+	steps, totalSteps, err := selectPipelineSteps(flags)
+	if err != nil {
+		return err
 	}
 
 	// A plan that keeps the stomp guard keeps its fresh-render check.
@@ -610,6 +574,53 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	fmt.Println()
 	printGenerateOutcome(os.Stdout, summary, outside, flags, len(steps), totalSteps)
 	return nil
+}
+
+// selectPipelineSteps returns the steps this run executes after the
+// caller-intent filters (--steps, --templates-only), plus the size of the
+// full plan for the "running N of M" lines.
+func selectPipelineSteps(flags pipelineFlags) (steps []GenStep, total int, err error) {
+	// Step-preset filter — when flags.Steps is non-empty, drop steps not
+	// in the allowlist BEFORE the Gate check. The gate is a project-shape
+	// predicate ("does this project have services?"); the step preset is
+	// a caller-intent predicate ("am I doing a bootstrap-only regen?").
+	// They compose: a step that's allowlisted by the preset still has to
+	// pass its Gate, and a step gated off would skip regardless of the
+	// preset.
+	steps = pipelineSteps()
+	total = len(steps)
+	if flags.Steps != "" {
+		allow, ok := stepPresetAllowlist[flags.Steps]
+		if !ok {
+			return nil, 0, fmt.Errorf("unknown pipeline step preset %q (valid: %s)", flags.Steps, knownStepPresetNames())
+		}
+		filtered := steps[:0:0]
+		for _, step := range steps {
+			if allow[step.Name] {
+				filtered = append(filtered, step)
+			}
+		}
+		fmt.Printf("⏩ steps=%s: running %d of %d pipeline steps\n", flags.Steps, len(filtered), len(steps))
+		steps = filtered
+	}
+
+	// --templates-only filter — intersects with --steps (if both are
+	// set, a step must pass BOTH allowlists). Applied AFTER --steps so
+	// the user-visible "running N of M" count reflects whichever filter
+	// is narrower. See templatesOnlyStepAllow for the included set and
+	// the WIP-tree rationale.
+	if flags.TemplatesOnly {
+		before := len(steps)
+		filtered := steps[:0:0]
+		for _, step := range steps {
+			if templatesOnlyStepAllow[step.Name] {
+				filtered = append(filtered, step)
+			}
+		}
+		fmt.Printf("⏩ --templates-only: running %d of %d pipeline steps (skipping cleanup, drift-guard, validation, external generators)\n", len(filtered), before)
+		steps = filtered
+	}
+	return steps, total, nil
 }
 
 // completeWriteSummary adds to sum every file the pre-run fingerprint

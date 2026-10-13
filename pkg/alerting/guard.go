@@ -29,7 +29,7 @@ var deniedWords = map[string]string{
 	"outfile": "INTO OUTFILE is not allowed", "settings": "SETTINGS are applied by the evaluator, not the rule",
 }
 
-// deniedFunctions read from outside the tenant's data. The database grants are
+// deniedFunctions read from outside the owner's data. The database grants are
 // the real boundary; this refuses them before they are sent.
 var deniedFunctions = map[string]bool{
 	"url": true, "urlcluster": true, "file": true, "filecluster": true, "s3": true, "s3cluster": true,
@@ -76,7 +76,7 @@ func ValidateExpr(expr string) error {
 				return fmt.Errorf("%w: FORMAT is applied by the driver, not the rule", ErrBadExpr)
 			}
 			if t.call && deniedFunctions[t.text] {
-				return fmt.Errorf("%w: table function %s() reads outside the tenant", ErrBadExpr, t.text)
+				return fmt.Errorf("%w: table function %s() reads outside the owner", ErrBadExpr, t.text)
 			}
 		}
 	}
