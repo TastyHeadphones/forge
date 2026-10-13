@@ -25,7 +25,6 @@ package obsdash
 import (
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/reliant-labs/forge/pkg/observe/metrics"
 )
@@ -191,37 +190,12 @@ type SavedSearch struct {
 	Columns []string    `json:"columns,omitempty"`
 }
 
-// AlertStatus says whether an alert definition is live.
-type AlertStatus string
-
-// AlertPending marks an alert that is recorded but not live. HyperDX 2.40 validates an alert declared in a provisioned
-// dashboard file and then never evaluates it (hyperdx PR #3233 is open), so a
-// definition is recorded here and NOT embedded in the dashboard JSON. Whoever
-// owns delivery (the hosted control plane, via the HyperDX alerts API)
-// creates it.
-const AlertPending AlertStatus = "pending"
-
-// Alert is an alert definition over one panel's query.
-type Alert struct {
-	ID    string `json:"id"`
-	Title string `json:"title"`
-	// Panel is "<dashboard id>/<panel id>": the query the alert evaluates.
-	Panel string `json:"panel"`
-	// Interval is the evaluation window: 1m, 5m, 15m, 30m, 1h.
-	Interval      string      `json:"interval"`
-	ThresholdType string      `json:"thresholdType"` // "above" | "below"
-	Threshold     float64     `json:"threshold"`
-	Status        AlertStatus `json:"status"`
-	Note          string      `json:"note,omitempty"`
-}
-
 // Spec is everything the generator derives for one project.
 type Spec struct {
 	Version       string        `json:"version"`
 	Project       string        `json:"project"`
 	Dashboards    []Dashboard   `json:"dashboards"`
 	SavedSearches []SavedSearch `json:"savedSearches"`
-	Alerts        []Alert       `json:"alerts"`
 }
 
 // Method is one rpc of a service.
@@ -274,14 +248,13 @@ func FrontendServiceName(project string) string { return project + "-frontend" }
 
 // Build derives the project's Spec.
 func Build(in Input) Spec {
-	sp := Spec{Version: SpecVersion, Project: in.Project, SavedSearches: []SavedSearch{}, Alerts: []Alert{}}
+	sp := Spec{Version: SpecVersion, Project: in.Project, SavedSearches: []SavedSearch{}}
 
 	services := append([]Service(nil), in.Services...)
 	sort.Slice(services, func(i, j int) bool { return services[i].Name < services[j].Name })
 
 	overview := buildOverview(in)
 	sp.Dashboards = append(sp.Dashboards, overview)
-	sp.Alerts = append(sp.Alerts, buildAlerts(overview)...)
 
 	for _, s := range services {
 		if len(s.Methods) == 0 {
@@ -504,33 +477,4 @@ func buildFrontend(in Input) Dashboard {
 		{ID: "browser-console", Title: "Browser console and error events", Description: "The HyperDX SDK ships console output and uncaught errors as spans (console.*, onerror, unhandledrejection), not as OTLP logs.", Kind: KindSearch, Signal: Traces, Where: scoped(browserSpans, Predicate{Field: "span.name", Op: OpIn, Values: []string{"console.error", "console.warn", "onerror", "unhandledrejection"}}), Columns: []string{"timestamp", FieldService, "span.name", "span.attr.error.message"}, Width: 24, Height: 9},
 	}
 	return d
-}
-
-func buildAlerts(overview Dashboard) []Alert {
-	const note = "Not provisioned: HyperDX 2.40 never evaluates an alert declared in a provisioned file (hyperdx PR #3233). Create it through the HyperDX alerts API."
-	ref := func(panel string) string { return overview.ID + "/" + panel }
-	return []Alert{
-		{ID: "error-rate", Title: "Error rate above 5%", Panel: ref("error-rate"), Interval: "5m", ThresholdType: "above", Threshold: 0.05, Status: AlertPending, Note: note},
-		{ID: "p99-latency", Title: "p99 latency above 1s", Panel: ref("p99"), Interval: "5m", ThresholdType: "above", Threshold: 1000, Status: AlertPending, Note: note},
-		{ID: "no-data", Title: "No requests received", Panel: ref("requests"), Interval: "15m", ThresholdType: "below", Threshold: 1, Status: AlertPending, Note: note},
-	}
-}
-
-// panelByRef resolves "<dashboard id>/<panel id>".
-func panelByRef(s Spec, ref string) (Panel, bool) {
-	dash, panel, ok := strings.Cut(ref, "/")
-	if !ok {
-		return Panel{}, false
-	}
-	for _, d := range s.Dashboards {
-		if d.ID != dash {
-			continue
-		}
-		for _, p := range d.Panels {
-			if p.ID == panel {
-				return p, true
-			}
-		}
-	}
-	return Panel{}, false
 }

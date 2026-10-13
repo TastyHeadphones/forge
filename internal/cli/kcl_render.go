@@ -1169,6 +1169,8 @@ type ObservabilityEntity struct {
 		Image          string `json:"image"`
 		MemoryLimitMiB int    `json:"memory_limit_mib"`
 	} `json:"agent"`
+	// Alerts is Observability.alerts as the author declared it; nil when none.
+	Alerts *AlertsEntity `json:"alerts,omitempty"`
 }
 
 // ObservabilityDestEntity is Observability.destination.

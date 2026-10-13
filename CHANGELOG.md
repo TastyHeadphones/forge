@@ -26,6 +26,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`alerting.QueryOptions.Limits` and `chquery.Scan`**: the per-query limits without `readonly`, and the row reader behind `chquery.Run`, for a `Querier` that runs as an impersonated ClickHouse user (`EXECUTE AS`). Such a Querier cannot send `readonly` (a readonly session refuses the `EXECUTE AS` statement itself); the target user's profile contains the query instead. `Settings()` is now `Limits()` plus `readonly = 2`.
+
+- **Alert rules, declared per env: `forge.AlertRule`, `forge.AlertRoute`,
+  `forge.AlertDefault`.** On `forge.Observability.alerts = forge.Alerts {rules,
+  defaults, routes}`. A rule is the Prometheus shape with the condition inside
+  `expr`, a single native ClickHouse SELECT over the OpenTelemetry tables whose
+  every row is a firing instance (non-`value` columns are labels, `value` the
+  sample); `severity` is a label (critical | warning | info, default warning).
+  Render refuses: missing fields, a non-duration `for`/`interval`, an interval
+  under 1m, an `expr` that is not one SELECT, reserved labels (`alertname`,
+  `reliant_*`), duplicate names, a route receiver that is a URL or a token, and
+  routes with no default (empty-`match`) route. Routes name receivers; secrets
+  live in the control plane.
+  `forge generate` writes `deploy/observability/alert-defaults_gen.json` and
+  `forge env shape` resolves four **generated defaults** per env from it (error
+  rate and p95 latency from the unsampled `rpc.server.*` metrics, service silent
+  only for services with steady traffic over the previous 24h, frontend JS error
+  spike against the 1h baseline), each tunable or disabled with
+  `Alerts.defaults`. They route to in-app + Slack, never a pager. The release
+  shape gains optional `alerts` (rules from the user and the enabled defaults,
+  `source: user|default`, `pkg/alerting`'s RuleSpec JSON) and `alert_routes`, for
+  the control plane to evaluate; a shape that declares none encodes and hashes as
+  before. `output.observability.alerts` is a new optional render-contract key.
+  See `observability/alerts` and `migrations/v0.1.45` section 9.
+
 - **`pkg/alerting`: a SQL alert-rule evaluator in the Prometheus shape.** A
   rule's `expr` is one ClickHouse SELECT; every row it returns is a firing
   instance, its non-value columns the labels and its `value` column the sample.
@@ -54,6 +78,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   See `deploy/shape` and `migrations/v0.1.45` section 8.
 
 ### Removed
+
+- **The pending alert definitions in `dashboard-spec_gen.json`** (#644): the
+  `alerts` array (`status: pending`) and `obsdash.Alert`. The three definitions
+  became the `error-rate`, `p95-latency` and `service-silent` defaults.
 
 - **The dead in-cluster Flux pointer path.** #461 made `reconcilesThroughFlux()`
   unconditionally false and asked for the follow-up that deletes the rest. Gone:

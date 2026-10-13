@@ -236,6 +236,8 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 		Objects:   objects,
 
 		ControlPlaneSecrets: in.Shape.ControlPlaneSecrets,
+		Alerts:              in.Shape.Alerts,
+		AlertRoutes:         in.Shape.AlertRoutes,
 		Applier:             in.Shape.Applier,
 	}.Canonical()
 	if err := shape.Validate(); err != nil {

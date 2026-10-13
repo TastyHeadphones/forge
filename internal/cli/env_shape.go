@@ -326,6 +326,10 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 	if serr != nil {
 		return envShapeDoc{}, fmt.Errorf("project env %q: %w", envName, serr)
 	}
+	alerts, alertRoutes, aerr := resolveShapeAlerts(projectDir, envName, entities)
+	if aerr != nil {
+		return envShapeDoc{}, fmt.Errorf("project env %q: %w", envName, aerr)
+	}
 	shape, err := bundle.ProjectShape(bundle.ShapeInput{
 		Kind:              shapeEnvKindOf(entities),
 		Workloads:         shapeWorkloadsOf(entities),
@@ -337,6 +341,8 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		StatefulWorkloads: shapeStatefulWorkloadsOf(entities),
 
 		ControlPlaneSecrets: shapeControlPlaneSecretsOf(entities),
+		Alerts:              alerts,
+		AlertRoutes:         alertRoutes,
 		Applier:             shapeApplierOf(entities),
 	})
 	if err != nil {
@@ -730,6 +736,15 @@ func writeShapeSummary(w io.Writer, doc envShapeDoc) {
 		for _, c := range doc.Shape.ControlPlaneSecrets {
 			fmt.Fprintf(w, "    %s/%s [%s] on %s via %s\n", c.Namespace, c.Name, c.Kind, c.Cluster, c.ConnectedCluster)
 		}
+	}
+	if len(doc.Shape.Alerts) > 0 {
+		user := 0
+		for _, a := range doc.Shape.Alerts {
+			if a.Source == release.AlertSourceUser {
+				user++
+			}
+		}
+		fmt.Fprintf(w, "  alerts:    %d (%d yours, %d generated defaults), %d route(s) (rules only; receivers' secrets live in the control plane)\n", len(doc.Shape.Alerts), user, len(doc.Shape.Alerts)-user, len(doc.Shape.AlertRoutes))
 	}
 	if len(doc.Shape.Domains) > 0 {
 		fmt.Fprintf(w, "  domains:   %s\n", strings.Join(doc.Shape.Domains, ", "))

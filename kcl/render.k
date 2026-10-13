@@ -1172,6 +1172,33 @@ _render_observability = lambda b: Bundle -> any {
             "image": _o.agent.image
             "memory_limit_mib": _o.agent.memory_limit_mib
         }
+        # Alerting is a declaration only: the author's rules (severity
+        # defaulted), the tuning of the generated defaults, and the routes. Go
+        # resolves the defaults and, absent routes, the in-app + Slack fan-out.
+        if _o.alerts.rules or _o.alerts.defaults or _o.alerts.routes:
+            "alerts": _render_alerts(_o.alerts)
+    }
+}
+
+_render_alerts = lambda a: Alerts -> any {
+    {
+        "rules": [{
+            "alert": r.alert
+            "expr": r.expr
+            "for": r["for"]
+            "interval": r.interval
+            "keep_firing_for": r.keep_firing_for if r.keep_firing_for else None
+            "labels": {"severity": "warning"} | r.labels
+            "annotations": r.annotations
+            "enabled": r.enabled
+        } for r in a.rules]
+        "defaults": {id: {
+            "enabled": d.enabled
+            "labels": d.labels
+            "for": d["for"] if d["for"] else None
+            "params": d.params
+        } for id, d in a.defaults}
+        "routes": [{"match": r.match, "receiver": r.receiver, "continue": r.continue} for r in a.routes]
     }
 }
 

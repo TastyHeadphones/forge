@@ -137,20 +137,12 @@ func TestEveryDashboardFiltersOnServiceAndEnvironment(t *testing.T) {
 	}
 }
 
-func TestAlertsAreRecordedAsPendingAndReferenceRealPanels(t *testing.T) {
-	sp := Build(fixture())
-	if len(sp.Alerts) != 3 {
-		t.Fatalf("alerts = %d, want error-rate, p99 and no-data", len(sp.Alerts))
+func TestSpecCarriesNoAlerts(t *testing.T) {
+	b, _ := json.Marshal(Build(fixture()))
+	if strings.Contains(string(b), `"alerts"`) {
+		t.Errorf("the dashboard spec still carries alerts; they are forge.AlertRule defaults now (alert-defaults_gen.json): %s", b)
 	}
-	for _, a := range sp.Alerts {
-		if a.Status != AlertPending {
-			t.Errorf("%s: status %q, want pending", a.ID, a.Status)
-		}
-		if _, ok := panelByRef(sp, a.Panel); !ok {
-			t.Errorf("%s references missing panel %q", a.ID, a.Panel)
-		}
-	}
-	files, _ := RenderHyperDX(sp)
+	files, _ := RenderHyperDX(Build(fixture()))
 	for _, f := range files {
 		if strings.Contains(string(f.Content), `"alert"`) {
 			t.Errorf("%s embeds an alert; provisioned alerts never fire in %s and must not be faked", f.File, PinnedHyperDX)
@@ -213,7 +205,7 @@ func TestCustomMetricsDashboardGolden(t *testing.T) {
 	if !ok {
 		t.Fatal("no custom metrics dashboard for a schema that declares metrics")
 	}
-	sp := Spec{Version: SpecVersion, Project: "shop", Dashboards: []Dashboard{d}, SavedSearches: []SavedSearch{}, Alerts: []Alert{}}
+	sp := Spec{Version: SpecVersion, Project: "shop", Dashboards: []Dashboard{d}, SavedSearches: []SavedSearch{}}
 	files, err := RenderHyperDX(sp)
 	if err != nil {
 		t.Fatal(err)

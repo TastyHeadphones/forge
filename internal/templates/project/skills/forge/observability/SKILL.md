@@ -66,6 +66,8 @@ Run it after `forge env up dev` to verify the pipeline before investigating.
 
 HyperDX dashboard JSON dropped into `deploy/observability/dashboards/` is loaded automatically, within about 15 seconds and without a restart (HyperDX's file provisioner, `DASHBOARD_PROVISIONER_DIR`). A provisioned dashboard is read-only in the UI and replaced by name on the next load: edit the file, not the browser copy. A dashboard you build by hand in the UI is separate and never overwritten. `forge generate` writes an overview, a dashboard per service and a frontend dashboard into it as `*_gen.json`; every other file there is yours. Depth, and how to override a generated one: `observability/dashboards`.
 
+**Alerts** are declared in KCL, not in HyperDX: `forge.AlertRule` (a native ClickHouse SQL `expr`; every returned row is a firing instance), `forge.AlertRoute` (labels to a receiver name) and `forge.AlertDefault` (tune or disable the four generated defaults), under `forge.Observability.alerts`. Render refuses a malformed rule; the resolved rules land in the release shape for the control plane to evaluate. Depth: `observability/alerts`.
+
 ## Querying Logs
 
 In HyperDX → Search → Logs, filter on the service (the workload name), severity, or any attribute the log line carried:

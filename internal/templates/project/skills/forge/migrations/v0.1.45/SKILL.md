@@ -1,6 +1,6 @@
 ---
 name: v0.1.45
-description: Upgrade a project to forge v0.1.45. One section per change — (1) the typed `forge.Observability` declaration replaces the bare `_observability` toggle; (2) continuous profiles, on by default beside the local ClickStack (`profiles_port`, the `otel-profiles` collector); (3) `gen/go.mod` requiring the retired `github.com/reliant-labs/forge/pkg` module, which `forge generate` now rewrites (the root `go.mod` is yours to fix); (4) the gitignored `.npmrc` (`legacy-peer-deps`) that stops `npm install` crashing in a `--link-forge` project; (5) `serve.go` opens the otelconnect span OUTSIDE auth (`chainDeps.Trace`), so rejected calls have spans and request logs carry `trace_id`; (6) lean CI over a local gate — `task ci` / `task ci:checks`, a consolidated `.github/workflows/ci.yml`; (7) `forge.ControlPlaneSecret`, a Secret the control plane delivers and renews, replacing a `secret_optional` env var or a hand-minted Secret for a control-plane OTLP token; (8) `Bundle.applier = "forge"` for a self-applied platform env, and the deleted Flux pointer path. Use when deploy/kcl/<env>/main.k has `_observability` but no `observability =` on its forge.Bundle or no `profiles_port`, when `grep forge/pkg gen/go.mod go.mod` matches or `forge env up` reports "go module graph is stale" on every start, when a bridged frontend's `npm install` dies with "Cannot read properties of null (reading 'edgesOut')", or when `grep -n 'Extras = append(\[\]connect.Interceptor{otelInt}' cmd/*/cmd/serve.go` matches, or when Taskfile.yml has no `ci:checks` task or `.github/workflows/ci.yml` runs one job per check instead of calling `task ci:checks`, or when `deploy/kcl/<env>/main.k` mounts an OTLP token Secret a control plane writes after the deploy (`secret_optional = True` on a `SecretRef`, or a `required_secrets` entry for a Secret the control plane mints), or when an env declares `forge.ControlPlane` over bound clusters it applies itself and sets no `applier`, or when `cmd/<bin>/cmd/metrics.go` is missing.
+description: Upgrade a project to forge v0.1.45. One section per change — (1) the typed `forge.Observability` declaration replaces the bare `_observability` toggle; (2) continuous profiles, on by default beside the local ClickStack (`profiles_port`, the `otel-profiles` collector); (3) `gen/go.mod` requiring the retired `github.com/reliant-labs/forge/pkg` module, which `forge generate` now rewrites (the root `go.mod` is yours to fix); (4) the gitignored `.npmrc` (`legacy-peer-deps`) that stops `npm install` crashing in a `--link-forge` project; (5) `serve.go` opens the otelconnect span OUTSIDE auth (`chainDeps.Trace`), so rejected calls have spans and request logs carry `trace_id`; (6) lean CI over a local gate — `task ci` / `task ci:checks`, a consolidated `.github/workflows/ci.yml`; (7) `forge.ControlPlaneSecret`, a Secret the control plane delivers and renews, replacing a `secret_optional` env var or a hand-minted Secret for a control-plane OTLP token; (8) `Bundle.applier = "forge"` for a self-applied platform env, and the deleted Flux pointer path; (10) `forge.AlertRule` alert rules replacing the pending alerts in the dashboard spec. Use when deploy/kcl/<env>/main.k has `_observability` but no `observability =` on its forge.Bundle or no `profiles_port`, when `grep forge/pkg gen/go.mod go.mod` matches or `forge env up` reports "go module graph is stale" on every start, when a bridged frontend's `npm install` dies with "Cannot read properties of null (reading 'edgesOut')", or when `grep -n 'Extras = append(\[\]connect.Interceptor{otelInt}' cmd/*/cmd/serve.go` matches, or when Taskfile.yml has no `ci:checks` task or `.github/workflows/ci.yml` runs one job per check instead of calling `task ci:checks`, or when `deploy/kcl/<env>/main.k` mounts an OTLP token Secret a control plane writes after the deploy (`secret_optional = True` on a `SecretRef`, or a `required_secrets` entry for a Secret the control plane mints), or when an env declares `forge.ControlPlane` over bound clusters it applies itself and sets no `applier`, or when `cmd/<bin>/cmd/metrics.go` is missing, or when `deploy/observability/dashboard-spec_gen.json` still has an `alerts` array.
 version: v0.1.45
 detection: grep -qs 'Extras = append(\[\]connect.Interceptor{otelInt}' cmd/*/cmd/serve.go || (grep -qs '^_observability = ' deploy/kcl/*/main.k && ! grep -qs '^    observability = ' deploy/kcl/*/main.k) || (grep -qs '^_observability = ' deploy/kcl/dev/main.k && ! grep -qs 'profiles_port' deploy/kcl/dev/main.k) || grep -qsE '^[[:space:]]*(require[[:space:]]+)?github\.com/reliant-labs/forge/pkg[[:space:]]+v' go.mod gen/go.mod || (test -f Taskfile.yml && ! grep -qs '^  ci:checks:' Taskfile.yml) || (test -f .github/workflows/ci.yml && ! grep -qs 'task ci:checks' .github/workflows/ci.yml) || (ls cmd/*/cmd/root.go >/dev/null 2>&1 && ! ls cmd/*/cmd/metrics.go >/dev/null 2>&1)
 ---
@@ -18,7 +18,7 @@ Where an environment's telemetry goes is now **declared** on the Bundle as `forg
 ### What changed
 
 - `_observability = True/False` still works as the local switch, but it now feeds a typed declaration instead of being read by `forge env up` directly. A scaffolded `deploy/kcl/dev/main.k` ends its Bundle with `observability = _observability_decl`.
-- `forge env up` exports `OTEL_EXPORTER_OTLP_ENDPOINT`/`_PROTOCOL` to host processes **from `output.observability`**, not from the clickstack workload's port. The result is the same pair, now in KCL's render, so `forge env render dev` shows it on each workload.
+- `forge env up` exports `OTEL_EXPORTER_OTLP_ENDPOINT`/`_PROTOCOL` to host processes **from `output.observability`**, so `forge env render dev` shows the pair on each workload.
 - `forge.OTEL_ENV`'s endpoint was `http://otel-collector.observability:4317`, which nothing deployed. It now points at the node agent Service (`otel-agent.forge-observability`), and no longer sets a sampler (sampling is `Observability.sampling`).
 - New: a destination other than local ClickStack, with a node-agent DaemonSet on cluster runtimes.
 
@@ -51,7 +51,6 @@ Use when `deploy/kcl/dev/main.k` declares `_observability` but no `profiles_port
 - `pkg/observe` profiles every process that has an OTLP endpoint (10s CPU + heap + goroutine, about once a minute) and pushes OTLP profiles; `OTEL_PROFILES_EXPORTER=none` turns one process off.
 - They go to a second collector, `otel-profiles` (contrib 0.162.0), which writes into ClickStack's ClickHouse. `profiles-schema` applies `deploy/observability/profiles-schema.sql` on every up.
 - `forge.Observability` gained `profiles_port`, and `signals.profiles` is now unset by default: **on** with the local ClickStack (no destination and a `profiles_port`), off elsewhere, where the render sets `OTEL_PROFILES_EXPORTER=none`. An explicit `True`/`False` wins. The declaration, not `forge env up`, derives `OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT` for host processes.
-- Without `profiles_port` nothing breaks: profiles stay off (`OTEL_PROFILES_EXPORTER=none`) until you add it.
 
 ### Steps
 
@@ -145,16 +144,9 @@ resolving any tree holding vitest >= 4.1:
 npm error Cannot read properties of null (reading 'edgesOut')
 ```
 
-Reproducible without forge: a `package.json` containing only
-`"vitest": "^4.1.11"` crashes the same way (npm 11.21.0 installs it).
-Unbridged projects are unaffected: the scaffolded frontends pin vitest `^3`.
+Unbridged projects are unaffected (scaffolded frontends pin vitest `^3`).
 
-`forge generate` now writes a gitignored `/.npmrc` containing
-`legacy-peer-deps=true` next to the bridge's root `package.json`, before it
-installs anything. Nothing to do. If the project already has its own
-`.npmrc`, forge leaves it alone and warns: add `legacy-peer-deps=true` to it,
-or use a newer npm. Dropping the bridge (delete `.forge-link/` and the root
-`package.json`) removes the need.
+`forge generate` now writes a gitignored `/.npmrc` with `legacy-peer-deps=true` next to the bridge's root `package.json`. Nothing to do. If the project has its own `.npmrc`, forge leaves it alone and warns: add `legacy-peer-deps=true` to it, or use a newer npm.
 
 ## 5. Tracing outside auth: `serve.go` sets `chainDeps.Trace`
 
@@ -194,7 +186,7 @@ If you set `Deps.Tracer` (forge's own `TracingInterceptor`) as well as `Deps.Tra
 
 ### Frontends
 
-Nothing to edit. `@reliantlabs/forge-web-runtime` (next release) makes the first RPCs a page makes wait, up to 2 seconds, for the HyperDX SDK to start, so their `traceparent` names a span the browser really exports (before, it was a synthesized id no browser span matched). Bump the dependency when it is published.
+Nothing to edit; bump `@reliantlabs/forge-web-runtime` when the next release is published (it waits up to 2s for the HyperDX SDK, so early RPCs carry a real `traceparent`).
 
 ### Verify
 
@@ -203,12 +195,9 @@ curl -si -X POST localhost:<port>/<pkg>.<Service>/<Method> -H 'content-type: app
   -H 'traceparent: 00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01' | head -1   # 401
 ```
 
-Then, in ClickHouse (`forge observe` or the HyperDX search): a span for that call with `TraceId = 0af7651916cd43dd8448eb211c80319c`, status error or unset, and an `otel_logs` row `rpc failed` with the same `TraceId`.
+Then, in ClickHouse or the HyperDX search: a span for that call with `TraceId = 0af7651916cd43dd8448eb211c80319c`, status error or unset, and an `otel_logs` row `rpc failed` with the same `TraceId`.
 
-Also covers `forge env up`:
-
-- A scaffold with no commits yet now tags images `uncommitted` instead of failing with "git tag resolution: exit status 128".
-- With `air` missing, `forge env up` installs forge's pinned air (v1.67.4) into its tool cache, or runs the API under `go-run` with a one-line notice if it cannot. Nothing to change.
+Also covers `forge env up`: a scaffold with no commits tags images `uncommitted`, and a missing `air` is installed at forge's pinned version (or the API runs under `go-run`). Nothing to change.
 
 ## 6. Lean CI over a local gate
 
@@ -218,10 +207,10 @@ Use when `Taskfile.yml` has no `ci:checks` task, or `.github/workflows/ci.yml` h
 
 `ci.yml` is scaffold-once (yours), so `forge generate` never rewrites it and your project keeps the old nine-job shape until you adopt the new one. Worth adopting: GitHub bills each job rounded up to the whole minute, and every job repeats checkout, toolchain setup, cache restore and the forge install; for the one project generated from the old layout that was roughly half its Actions minutes.
 
-- **A local gate: `forge ci gate`**, behind two new Taskfile tasks. `task ci` runs everything CI runs (`ci:checks`, then `test`, then `test:integration`) in one summary table; `task ci:checks` is the static and build lane. Run `task ci` before you push and you have the verdict CI would give.
-- **The workflow became a thin wrapper.** Jobs are `changes` (skips the heavy jobs for a docs-only change), `checks` (one setup, then `task ci:checks`), `test` (`task test`), `integration-test` (`task test:integration`, PRs only, only when the repo has `//go:build integration` files), plus `docker-build` and `e2e` where you already had them. `lint`, `build`, `verify-generated`, `deployability`, `vuln-scan` and `license-check` are no longer jobs: they are rows in the gate. Every job has `timeout-minutes`.
-- **Gate semantics.** Every check runs even if an earlier one failed, then one table; non-zero exit if any failed. A check that could not run (missing tool, dirty tree) is `SKIPPED`, which is not a pass and fails the gate unless you name it: `CI_SKIP=vuln-go task ci`. Under Actions the table is appended to the job summary.
-- **Tools run at the versions CI pins** (golangci-lint, buf, govulncheck, go-licenses), built into forge's tool cache on first use. A copy on PATH at another version, or a golangci-lint built with a Go older than your `go.mod`, is not used.
+- **A local gate: `forge ci gate`**, behind two new Taskfile tasks. `task ci` runs everything CI runs (`ci:checks`, then `test`, then `test:integration`) in one summary table; `task ci:checks` is the static and build lane. `task ci` before you push gives CI's verdict.
+- **The workflow became a thin wrapper.** Jobs are `changes` (skips heavy jobs for docs-only changes), `checks` (one setup, then `task ci:checks`), `test` (`task test`), `integration-test` (`task test:integration`, PRs only, only when the repo has `//go:build integration` files), plus `docker-build` and `e2e` where you already had them. `lint`, `build`, `verify-generated`, `deployability`, `vuln-scan` and `license-check` are no longer jobs: they are rows in the gate. Every job has `timeout-minutes`.
+- **Gate semantics.** Every check runs even if an earlier one failed, then one table; non-zero exit if any failed. A check that could not run (missing tool, dirty tree) is `SKIPPED`, which fails the gate unless you name it: `CI_SKIP=vuln-go task ci`. Under Actions the table goes in the job summary.
+- **Tools run at the versions CI pins**, built into forge's tool cache on first use; a copy on PATH at another version is not used.
 - **Your own checks** go under `ci.gate.extra_checks` in forge.yaml (name, command, optional `dir` and `requires`) instead of a new job or a script copied into the repo. They run in `checks`, so `task ci` runs them too.
 
 ### Steps
@@ -241,11 +230,10 @@ Use when `Taskfile.yml` has no `ci:checks` task, or `.github/workflows/ci.yml` h
 
    `test` and `test:integration` already exist; if `test:integration` does not, add it (`go test -race -tags=integration -count=1 -timeout=10m ./...`).
 
-2. **ci.yml.** Move your project's own jobs and steps aside, then adopt forge's current file: delete `.github/workflows/ci.yml` and run `forge project rescaffold .github/workflows/ci.yml` (or `forge project upgrade --check .github/workflows/ci.yml` to read the diff, then `--force` to adopt it). Re-apply what was yours:
+2. **ci.yml.** Set your own jobs and steps aside, then adopt forge's file: delete `.github/workflows/ci.yml` and run `forge project rescaffold .github/workflows/ci.yml` (or `forge project upgrade --check .github/workflows/ci.yml` to read the diff, then `--force`). Re-apply what was yours:
 
-   - a step you added to `lint` / `build` / `vuln-scan` becomes an `extra_checks` entry (step 4) or, if it needs the runner's own environment, a step in `checks` before `task ci:checks`;
-   - a job with its own runner requirement (a service container, another OS) stays a separate job: copy it back;
-   - a repo whose code `go:embed`s a Markdown file narrows the docs-only filter in `changes`.
+   - a step you added to `lint` / `build` / `vuln-scan` becomes an `extra_checks` entry (step 4), or a step in `checks` before `task ci:checks` if it needs the runner's environment;
+   - a job with its own runner requirement (service container, another OS) stays a separate job;
 
 3. **Branch protection.** The required checks were the old job names. Require `Checks`, `Test` and (if you have an integration lane) `Integration Tests` instead; `changes` and the skipped jobs report as satisfied.
 
@@ -277,8 +265,7 @@ Use when an env declares a control plane (`control_plane = forge.ControlPlane {}
 - New primitive `forge.ControlPlaneSecret` on `Bundle.control_plane_secrets`. It declares a Secret whose value the control plane supplies and renews. It is **recorded in the env shape** (`shape.control_plane_secrets`: name, namespace, cluster, connected cluster, kind, keys; never a value), **never blocks a first deploy**, and is **refused without a connected-cluster binding** (and without `control_plane`). There is no k3d exemption: delivery is the control plane dialing the cluster.
 - A cluster workload in the same cluster and namespace as a `telemetry_token` gets, automatically, an **optional** Secret volume `forge-otlp-auth` at `/var/run/secrets/forge/otlp` and `OTEL_EXPORTER_OTLP_HEADERS_FILE=/var/run/secrets/forge/otlp/headers`. `pkg/observe` re-reads that file, so a renewal needs **no restart**.
 - `forge.ObservabilityDestination` gained `token_from_control_plane = True`: for a destination that is the control plane's OTLP ingest, forge declares the node agent's `ControlPlaneSecret` (`forge-otlp-token` in `agent.namespace`, key `token`) on every cluster that runs the agent. Exclusive with `headers_secret` / `token_secret`.
-- The Secret volume source gained `optional` (`v1alpha1.SecretVolumeSource.Optional`, `tiers.SecretVolumeSource.optional`), which an author can also set on a volume of their own.
-- `output.control_plane_secrets[]` is a new key in the render contract (an empty list when none). Every `render_contract` golden gained `"control_plane_secrets": []`.
+- The Secret volume source gained `optional` (an author can set it on a volume of their own). `output.control_plane_secrets[]` is a new render-contract key (empty when none); every `render_contract` golden gained `"control_plane_secrets": []`.
 
 ### Steps
 
@@ -292,13 +279,13 @@ Use when an env declares a control plane (`control_plane = forge.ControlPlane {}
    ```
 
    `_prod` needs `connected_cluster = "<name>"` (or `connected_clusters = {"<context>": "<name>"}` on the Bundle); register the cluster once with `forge cluster connect <name> --context <ctx> --env <env>`.
-3. Drop the env var that carried the headers (`OTEL_EXPORTER_OTLP_HEADERS` from a `SecretRef`). forge wires the file mount for you; a workload that still sets `OTEL_EXPORTER_OTLP_HEADERS` or `OTEL_EXPORTER_OTLP_HEADERS_FILE` itself is left alone, and gets no volume.
+3. Drop the env var that carried the headers (`OTEL_EXPORTER_OTLP_HEADERS` from a `SecretRef`). A workload that still sets it, or `OTEL_EXPORTER_OTLP_HEADERS_FILE`, is left alone and gets no volume.
 4. For a node agent that exports to the control plane's ingest, replace `headers_secret` / `token_secret` plus the `required_secrets` entry with `token_from_control_plane = True` on the destination.
-5. `forge env render <env>`, then `forge env deploy <env> --dry-run`: the preflight no longer asks for the Secret, and the pod spec gains the `forge-otlp-auth` volume (one rolling restart on the deploy that adds it).
+5. `forge env render <env>`, then `forge env deploy <env> --dry-run`: the preflight no longer asks for the Secret, and the pod spec gains the `forge-otlp-auth` volume (one rolling restart).
 
 ### Verify
 
-`forge env shape <env> --json | jq .shape.control_plane_secrets` lists the Secret with its `connected_cluster`. `forge env render <env> | grep -A6 forge-otlp-auth` shows `optional: true`. A first `forge env deploy` against a cluster where the Secret does not exist yet passes the preflight.
+`forge env shape <env> --json | jq .shape.control_plane_secrets` lists the Secret; a first `forge env deploy` where it does not exist yet passes the preflight.
 
 ## 8. `Bundle.applier = "forge"`: a declared self-applied platform env
 
@@ -307,8 +294,7 @@ Use when an env declares `forge.ControlPlane`, binds its clusters to connected c
 ### What changed
 
 - New `Bundle.applier?: "forge"`: a **real** env forge applies on purpose. It is exempt from the planned F-REFUSE-DIRECT, is **never recorded hub-converged** (`hubConverged = false`, however fully its clusters are bound), and is recorded as `shape.applier = "forge"`. Setting it beside `lifecycle` is refused at render. Detail: `deploy/shape`.
-- **Deleted**: the dead in-cluster Flux pointer path (`forge cluster up` installing Flux; `forge env deploy` writing an OCIRepository/Kustomization; Flux convergence in `env status`). `forge.flux_chart()` and declared bootstrap charts stay. See `deploy/flux`.
-- The direct-apply notice now names both `lifecycle` and `applier`.
+- **Deleted**: the dead in-cluster Flux pointer path (Flux install in `forge cluster up`, the OCIRepository/Kustomization `env deploy` wrote, Flux convergence in `env status`). `forge.flux_chart()` and declared bootstrap charts stay. See `deploy/flux`.
 
 ### Steps
 
@@ -321,3 +307,22 @@ Add `applier = "forge"` to the env's `forge.Bundle`, and remove `lifecycle` if b
 ## 9. Declared metrics registry
 
 Use when `<bin> metrics schema --json` is an unknown command, or `internal/metrics/metrics.go` does not exist: `forge generate` births both; detail in `migrations/v0.1.45/metrics-schema`.
+
+## 10. Alert rules: `forge.AlertRule`, and the pending alerts are retired
+
+Use when an env should alert, or when something reads the `alerts` array of `deploy/observability/dashboard-spec_gen.json` (the v0.1.44 "pending" definitions).
+
+### What changed
+
+- New `forge.Observability.alerts = forge.Alerts {rules, defaults, routes}`: the Prometheus rule shape with the condition inside a ClickHouse SQL `expr`. Depth: `observability/alerts`.
+- `forge generate` writes `deploy/observability/alert-defaults_gen.json`; `forge env shape` resolves four default rules per env from it into `shape.alerts` (`source: default`), routed to in-app + Slack, never a pager.
+- **Retired:** the `alerts` array of `dashboard-spec_gen.json` and `obsdash.Alert`. `error-rate` became default `error-rate` (now server errors over rpc metrics, with a request floor), `p99-latency` became `p95-latency`, `no-data` became `service-silent` (only for services with steady traffic).
+- New optional `output.observability.alerts`; the shape gains optional `alerts` and `alert_routes`.
+
+### Steps
+
+Run `forge generate`. Opt a default out with `defaults = {"service-silent": forge.AlertDefault {enabled = False}}`. Read `shape.alerts` instead of the old array.
+
+### Verify
+
+`forge env shape <env> --json | jq '.shape.alerts[].alert'` lists the rules.
