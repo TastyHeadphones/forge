@@ -63,7 +63,7 @@ func chartSourceLabel(name string) string { return "helm chart " + name }
 // renderEnvCharts templates the env's selected charts the way a deploy would
 // and returns their documents. An env with no charts costs nothing: no helm,
 // no network.
-func renderEnvCharts(ctx context.Context, entities *KCLEntities, groups []deploytarget.ServiceGroup, opts envRenderOptions) (renderedCharts, error) {
+func renderEnvCharts(ctx context.Context, entities *KCLEntities, groups []deploytarget.ServiceGroup, opts envRenderOptions, owner string) (renderedCharts, error) {
 	var out renderedCharts
 	if entities == nil {
 		return out, nil
@@ -87,7 +87,7 @@ func renderEnvCharts(ctx context.Context, entities *KCLEntities, groups []deploy
 			strings.Join(names, ", "))
 	}
 
-	specs, err := resolveDeployHelmSpecs(ctx, entities, opts.targets)
+	specs, err := resolveDeployHelmSpecs(ctx, entities, opts.targets, owner)
 	if err != nil {
 		return out, err
 	}

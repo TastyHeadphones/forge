@@ -326,3 +326,7 @@ Run `forge generate`. Opt a default out with `defaults = {"service-silent": forg
 ### Verify
 
 `forge env shape <env> --json | jq '.shape.alerts[].alert'` lists the rules.
+
+## 11. HelmChart prunes
+
+See `migrations/v0.1.45/helm-chart-prune`.

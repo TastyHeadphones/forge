@@ -669,7 +669,7 @@ func renderSelectedCharts(ctx context.Context, specs []HelmChartSpec) ([]rendere
 		// route as part of the same named platform dep.
 		var extra string
 		if strings.TrimSpace(spec.Manifests) != "" {
-			extra = stampAppLabel(spec.Manifests, spec.Name)
+			extra = stampAppLabel(spec.Manifests, spec.Name, spec.Owner)
 		}
 		// The FULL CRD set: forge's pinned forge-supplied bundle (spec.CRDs)
 		// PLUS the chart's OWN CRDs that forge does not own (the chart's
@@ -730,32 +730,46 @@ func applyRenderedCharts(ctx context.Context, kctx string, charts []renderedChar
 		// controllers so the controller (envoy-gateway / cert-manager) is up
 		// before the instances it reconciles. applyCRDsThenRest two-passes
 		// any CRD-then-rest within them too (harmless: these carry none).
-		if strings.TrimSpace(rc.extra) == "" {
-			continue
-		}
-		// WAIT for the chart's Deployments to be Available before applying
-		// its riding manifests. cert-manager ships a ValidatingWebhook
-		// (failurePolicy: Fail) that REJECTS ClusterIssuers until the
-		// webhook Deployment is Ready + cainjector has injected the
-		// caBundle — without this gate the issuer apply fails `failed
-		// calling webhook ... no endpoints available`. A namespace with no
-		// Deployments returns immediately.
-		if rc.spec.Namespace != "" {
-			if !quiet {
-				fmt.Printf("Waiting for %q controller Deployments to be Available...\n", rc.spec.Name)
-			}
-			if err := waitChartDeploymentsAvailable(ctx, chartCtx, rc.spec.Namespace, 180*time.Second); err != nil {
-				return fmt.Errorf("platform dependency %q: wait controllers Available: %w", rc.spec.Name, err)
+		if strings.TrimSpace(rc.extra) != "" {
+			if err := applyChartRidingManifests(ctx, chartCtx, rc, quiet); err != nil {
+				return err
 			}
 		}
+		// The chart is fully applied: only now is its render a proven account
+		// of what it declares, so only now can an object it dropped be pruned.
+		// A failed prune never fails the deploy (it is maintenance, like the
+		// Deployment and CRD prunes), but it is never silent.
+		if _, err := PruneChartObjects(ctx, chartCtx, rc); err != nil {
+			fmt.Printf("Warning: platform dependency %q: %v\n", rc.spec.Name, err)
+		}
+	}
+	return nil
+}
+
+// applyChartRidingManifests applies a chart's riding manifests once its
+// controllers are Available.
+func applyChartRidingManifests(ctx context.Context, chartCtx string, rc renderedChart, quiet bool) error {
+	// WAIT for the chart's Deployments to be Available before applying its
+	// riding manifests. cert-manager ships a ValidatingWebhook (failurePolicy:
+	// Fail) that REJECTS ClusterIssuers until the webhook Deployment is Ready
+	// + cainjector has injected the caBundle — without this gate the issuer
+	// apply fails `failed calling webhook ... no endpoints available`. A
+	// namespace with no Deployments returns immediately.
+	if rc.spec.Namespace != "" {
 		if !quiet {
-			fmt.Printf("Applying platform dependency %q owned manifests...\n", rc.spec.Name)
+			fmt.Printf("Waiting for %q controller Deployments to be Available...\n", rc.spec.Name)
 		}
-		// Bounded retry: the webhook Service's endpoints can lag a few
-		// seconds after the Deployment reports Available.
-		if err := applyRidingManifestsWithRetry(ctx, chartCtx, rc.spec.Namespace, rc.extra); err != nil {
-			return fmt.Errorf("platform dependency %q manifests: %w", rc.spec.Name, err)
+		if err := waitChartDeploymentsAvailable(ctx, chartCtx, rc.spec.Namespace, 180*time.Second); err != nil {
+			return fmt.Errorf("platform dependency %q: wait controllers Available: %w", rc.spec.Name, err)
 		}
+	}
+	if !quiet {
+		fmt.Printf("Applying platform dependency %q owned manifests...\n", rc.spec.Name)
+	}
+	// Bounded retry: the webhook Service's endpoints can lag a few seconds
+	// after the Deployment reports Available.
+	if err := applyRidingManifestsWithRetry(ctx, chartCtx, rc.spec.Namespace, rc.extra); err != nil {
+		return fmt.Errorf("platform dependency %q manifests: %w", rc.spec.Name, err)
 	}
 	return nil
 }
@@ -2596,8 +2610,9 @@ func splitDocs(manifests string) []string {
 // helpers below need: the document's kind, its metadata.name, and its
 // metadata.labels.
 type parsedDoc struct {
-	Kind     string `yaml:"kind"`
-	Metadata struct {
+	APIVersion string `yaml:"apiVersion"`
+	Kind       string `yaml:"kind"`
+	Metadata   struct {
 		Name        string            `yaml:"name"`
 		Namespace   string            `yaml:"namespace"`
 		Labels      map[string]string `yaml:"labels"`

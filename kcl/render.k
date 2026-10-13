@@ -2028,6 +2028,11 @@ _render_helm_chart = lambda h: HelmChart -> any {
         # runs `kubectl --context` with — never the bare name. Null =>
         # the env's primary cluster (every pre-existing declaration).
         "cluster": h.cluster.context if h.cluster else None
+        # Metadata forge writes onto the Namespace it creates for the chart,
+        # and whether a re-apply prunes the chart's departed objects.
+        "namespace_labels": h.namespace_labels if h.namespace_labels else None
+        "namespace_annotations": h.namespace_annotations if h.namespace_annotations else None
+        "prune": h.prune
     }
 }
 

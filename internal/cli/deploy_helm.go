@@ -81,6 +81,9 @@ func selectedHelmChartEntities(charts []HelmChartEntity, targets []string) []Hel
 // nil for an env that declares no charts (the common case) so the apply
 // path is byte-identical for app-only envs.
 //
+// owner is cluster.ChartOwner(project, env): the stamp every rendered object
+// carries and the prune after the apply keys on. Empty disables both.
+//
 // CRD bundle selection (HelmChartEntity.CRDs), each Established-gated by
 // cluster.Apply before the chart's controllers:
 //   - ""             — no forge CRDs (the chart needs none).
@@ -91,7 +94,7 @@ func selectedHelmChartEntities(charts []HelmChartEntity, targets []string) []Hel
 //     chart's bundled (skipped) experimental CRDs the wrong source.
 //   - "cert-manager" — cert-manager's CRDs at the chart's OWN Version
 //     (the chart and its CRDs move in lockstep).
-func helmChartSpecsFromEntities(ctx context.Context, charts []HelmChartEntity, declaredClusters []ClusterEntity) ([]cluster.HelmChartSpec, error) {
+func helmChartSpecsFromEntities(ctx context.Context, charts []HelmChartEntity, declaredClusters []ClusterEntity, owner string) ([]cluster.HelmChartSpec, error) {
 	if len(charts) == 0 {
 		return nil, nil
 	}
@@ -124,6 +127,11 @@ func helmChartSpecsFromEntities(ctx context.Context, charts []HelmChartEntity, d
 			CRDBundle: c.CRDs,
 			Manifests: extra,
 			Cluster:   c.Cluster,
+
+			NamespaceLabels:      c.NamespaceLabels,
+			NamespaceAnnotations: c.NamespaceAnnotations,
+			Owner:                owner,
+			Prune:                c.PruneEnabled(),
 		})
 	}
 	return specs, nil

@@ -587,7 +587,18 @@ type HelmChartEntity struct {
 	// the chart itself doesn't ship. Stamped with the chart's app-label and
 	// applied AFTER its controllers; excluded from a bare app deploy.
 	Manifests []any `json:"manifests,omitempty"`
+	// NamespaceLabels / NamespaceAnnotations are written onto the Namespace
+	// forge creates for the chart (e.g. Pod Security Admission labels).
+	NamespaceLabels      map[string]string `json:"namespace_labels,omitempty"`
+	NamespaceAnnotations map[string]string `json:"namespace_annotations,omitempty"`
+	// Prune says whether a re-apply deletes the chart's objects that left the
+	// render. A pointer so a contract that omits it (an older render) reads as
+	// the schema default, true, rather than as false.
+	Prune *bool `json:"prune,omitempty"`
 }
+
+// PruneEnabled reports the chart's prune setting: on unless declared off.
+func (c HelmChartEntity) PruneEnabled() bool { return c.Prune == nil || *c.Prune }
 
 // ExternalSecretEntity mirrors the kcl/schema.k ExternalSecret — an
 // out-of-band Secret a deploy DEPENDS ON but forge does NOT create. forge

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/reliant-labs/forge/internal/kclplugin"
 )
 
@@ -98,6 +100,7 @@ _bundle = forge.Bundle {
         version = "2.14.1"
         namespace = "flux-system"
         values = {sourceController.create = True}
+        namespace_labels = {"pod-security.kubernetes.io/enforce" = "restricted"}
     }]
 }
 
@@ -228,5 +231,60 @@ func TestEnvRender_TargetSelectsOnlyThatChart(t *testing.T) {
 	}
 	if strings.Contains(stdout, "Deployment  charttest-prod  api") {
 		t.Errorf("--target flux must not list the app:\n%s", stdout)
+	}
+}
+
+// The chart's Namespace in `forge env render` carries the declared labels, and
+// every chart document carries the owner stamp the prune keys on: the preview
+// shows what the deploy will apply, including the metadata a re-apply
+// converges.
+//
+// Mutation that fails it: stop passing the owner to renderEnvCharts, or drop
+// the labels from namespaceManifest.
+func TestEnvRender_ChartNamespaceCarriesLabelsAndOwnerStamp(t *testing.T) {
+	if testing.Short() {
+		t.Skip("renders KCL and drives a fake helm through shell subprocesses; runs in task test")
+	}
+	kclplugin.Register()
+	fakeHelmOnPath(t)
+	dir := writeChartRenderProject(t)
+
+	stdout, stderr, err := runRenderCapturingProcessStdout(t, dir, "prod")
+	if err != nil {
+		t.Fatalf("forge env render prod: %v\nstderr:\n%s", err, stderr)
+	}
+	assertYAMLManifestStream(t, stdout)
+
+	var sawNS, sawController bool
+	dec := yaml.NewDecoder(strings.NewReader(stdout))
+	for {
+		var d struct {
+			Kind     string `yaml:"kind"`
+			Metadata struct {
+				Name   string            `yaml:"name"`
+				Labels map[string]string `yaml:"labels"`
+			} `yaml:"metadata"`
+		}
+		if derr := dec.Decode(&d); derr != nil {
+			break
+		}
+		switch d.Kind + "/" + d.Metadata.Name {
+		case "Namespace/flux-system":
+			sawNS = true
+			if got := d.Metadata.Labels["pod-security.kubernetes.io/enforce"]; got != "restricted" {
+				t.Errorf("the chart Namespace is missing its declared PSA label (got %q):\n%s", got, stdout)
+			}
+			if got := d.Metadata.Labels["forge.dev/chart-owner"]; got != "charttest.prod" {
+				t.Errorf("the chart Namespace owner stamp = %q, want charttest.prod", got)
+			}
+		case "Deployment/source-controller":
+			sawController = true
+			if got := d.Metadata.Labels["forge.dev/chart-owner"]; got != "charttest.prod" {
+				t.Errorf("chart Deployment owner stamp = %q, want charttest.prod", got)
+			}
+		}
+	}
+	if !sawNS || !sawController {
+		t.Errorf("render is missing the chart Namespace or Deployment: ns=%v controller=%v\n%s", sawNS, sawController, stdout)
 	}
 }

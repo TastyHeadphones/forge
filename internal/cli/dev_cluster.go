@@ -864,7 +864,11 @@ var ensureEnvPlatformChartsInstalledFn = func(ctx context.Context, env string, c
 		// transient.
 		return nil
 	}
-	return ensureEnvPlatformChartsInstalled(ctx, env, entities, clusters)
+	project := ""
+	if store, serr := loadProjectStore(); serr == nil {
+		project = store.Meta().Name
+	}
+	return ensureEnvPlatformChartsInstalled(ctx, env, project, entities, clusters)
 }
 
 // envClusterDeleteOrder orders an env's declared clusters for deletion:

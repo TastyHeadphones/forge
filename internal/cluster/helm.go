@@ -130,6 +130,24 @@ type HelmChartSpec struct {
 	// Empty => the env's primary cluster, so every pre-existing chart
 	// declaration applies through the identical argv it did before.
 	Cluster string
+
+	// NamespaceLabels and NamespaceAnnotations are written onto the Namespace
+	// forge creates for the chart (helm template never emits it). The
+	// Namespace rides the chart's server-side apply, so a re-apply sets
+	// exactly the declared keys, drops a key that is no longer declared (the
+	// same field manager owned it), and leaves every key another manager set.
+	NamespaceLabels      map[string]string
+	NamespaceAnnotations map[string]string
+	// Owner is the (project, env) that applies this chart — ChartOwner's
+	// value. Every object the chart renders is stamped with it
+	// (ChartOwnerLabel), and the prune after a successful apply deletes only
+	// objects carrying it. Empty disables both the stamp and the prune: an
+	// owner that cannot be named cannot be proven.
+	Owner string
+	// Prune enables that prune for this chart. The zero value is OFF so a
+	// spec built by hand never deletes anything by accident; the KCL
+	// declaration defaults it to on.
+	Prune bool
 }
 
 // renderedChart pairs a chart spec with its rendered (stamped,
@@ -426,7 +444,7 @@ func RenderHelmChart(ctx context.Context, spec HelmChartSpec) (string, error) {
 	// forge EMITS the Namespace itself, stamped with the chart's group so it
 	// rides the chart's --target, and applyCRDsThenRest promotes it into the
 	// early (CRD) batch so it lands+waits BEFORE the namespaced resources.
-	withNS := joinNonEmpty(namespaceManifest(spec.Namespace), rendered)
+	withNS := joinNonEmpty(namespaceManifest(spec.Namespace, spec.NamespaceLabels, spec.NamespaceAnnotations), rendered)
 	// Drop helm POST-phase / test hooks (cert-manager-startupapicheck): a
 	// `helm template` render carries `helm.sh/hook`-annotated docs that are
 	// meaningless under a declarative reconcile and, being immutable Jobs,
@@ -435,21 +453,33 @@ func RenderHelmChart(ctx context.Context, spec HelmChartSpec) (string, error) {
 	// Secret) are KEPT — they produce prerequisite cluster state the
 	// workloads mount, not a post-facto check. See dropPostHelmHooks.
 	withNS = dropPostHelmHooks(withNS)
-	return stampAppLabel(withNS, spec.Name), nil
+	return stampAppLabel(withNS, spec.Name, spec.Owner), nil
 }
 
-// namespaceManifest renders a bare `kind: Namespace` document for ns, or ""
-// when ns is empty (a chart with no namespace renders into whatever the
-// apply default is — nothing to create). The Namespace carries no labels
-// here; stampAppLabel adds the chart group + managed-by afterwards so it
-// rides the chart's --target and applyCRDsThenRest promotes it ahead of the
-// namespaced resources. Idempotent at apply time (already-exists is fine
-// under server-side apply).
-func namespaceManifest(ns string) string {
+// namespaceManifest renders the `kind: Namespace` document for ns, or "" when
+// ns is empty (a chart with no namespace renders into whatever the apply
+// default is — nothing to create). labels and annotations are the chart's
+// declared NamespaceLabels / NamespaceAnnotations; stampAppLabel adds the chart
+// group + managed-by afterwards so it rides the chart's --target and
+// applyRenderedCharts promotes it ahead of the namespaced resources.
+// Idempotent at apply time (already-exists is fine under server-side apply).
+func namespaceManifest(ns string, labels, annotations map[string]string) string {
 	if strings.TrimSpace(ns) == "" {
 		return ""
 	}
-	return "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: " + ns
+	meta := map[string]any{"name": ns}
+	if len(labels) > 0 {
+		meta["labels"] = labels
+	}
+	if len(annotations) > 0 {
+		meta["annotations"] = annotations
+	}
+	b, err := yaml.Marshal(map[string]any{"apiVersion": "v1", "kind": "Namespace", "metadata": meta})
+	if err != nil {
+		// A map[string]string and two strings always marshal; this is unreachable.
+		return "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: " + ns
+	}
+	return strings.TrimRight(string(b), "\n")
 }
 
 // dropPostHelmHooks removes docs whose `helm.sh/hook` annotation is
@@ -717,10 +747,14 @@ func helmTemplateIncludeCRDs(ctx context.Context, spec HelmChartSpec) (string, e
 // the selector, which is only safe by accident. It is defaulted to the chart
 // name when the chart set none, so every document still carries the
 // recommended label. See WorkloadLabel for why routing cannot share that key.
-func stampAppLabel(manifests, name string) string {
+//
+// A non-empty owner additionally stamps ChartOwnerLabel on every document: the
+// proof the prune after the apply (chart_prune.go) needs that forge applied the
+// object, and for which (project, env).
+func stampAppLabel(manifests, name, owner string) string {
 	var out []string
 	for _, doc := range splitDocs(manifests) {
-		out = append(out, stampDocAppLabel(doc, name))
+		out = append(out, stampDocAppLabel(doc, name, owner))
 	}
 	return strings.Join(out, docDelimiter)
 }
@@ -729,7 +763,7 @@ func stampAppLabel(manifests, name string) string {
 // YAML document and defaults AppNameLabel / managed-by when absent,
 // preserving every other field and label (see stampAppLabel). Unparseable docs
 // pass through verbatim.
-func stampDocAppLabel(doc, name string) string {
+func stampDocAppLabel(doc, name, owner string) string {
 	var m map[string]any
 	if err := yaml.Unmarshal([]byte(doc), &m); err != nil || m == nil {
 		return doc
@@ -745,6 +779,9 @@ func stampDocAppLabel(doc, name string) string {
 	// FORCE the group — the whole chart is one --target unit. The chart's
 	// own name label is only defaulted: its selectors depend on it.
 	labels[WorkloadLabel] = name
+	if owner != "" {
+		labels[ChartOwnerLabel] = owner
+	}
 	if _, ok := labels[AppNameLabel]; !ok {
 		labels[AppNameLabel] = name
 	}
