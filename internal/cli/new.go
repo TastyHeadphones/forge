@@ -292,18 +292,8 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 		fmt.Printf("Go module path: %s (no --mod given; pass --mod github.com/<you>/%s to set the path you will publish under)\n", modulePath, projectName)
 	}
 
-	// Validate service names
-	for _, svcName := range serviceNames {
-		if err := validateServiceName(svcName); err != nil {
-			return fmt.Errorf("invalid service name %q: %w", svcName, err)
-		}
-	}
-
-	// Validate frontend names
-	for _, feName := range frontendNames {
-		if err := validateFrontendName(feName); err != nil {
-			return fmt.Errorf("invalid frontend name %q: %w", feName, err)
-		}
+	if err := validateComponentNames(serviceNames, frontendNames); err != nil {
+		return err
 	}
 
 	// An in-place target may already hold a frontend app. Refuse to scaffold
@@ -329,43 +319,11 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 		fmt.Printf("  Frontend: %s\n", strings.Join(frontendNames, ", "))
 	}
 
-	// Clean up on failure. To guard against TOCTOU where another process
-	// might have created files at targetPath in the meantime, we drop a
-	// marker file immediately after creating the directory and only run
-	// cleanup when that marker is still present.
-	// In --in-place mode, we never RemoveAll the target directory since it
-	// is an existing directory the user owns. We only remove the marker.
-	var success bool
-	markerPath := filepath.Join(targetPath, ".forge", ".scaffold-in-progress")
-	defer func() {
-		if success {
-			return
-		}
-		if _, err := os.Stat(markerPath); err != nil {
-			return
-		}
-		if inPlace {
-			// In --in-place mode, only remove the marker — don't nuke the user's directory.
-			if rmErr := os.Remove(markerPath); rmErr != nil && !os.IsNotExist(rmErr) {
-				fmt.Fprintf(os.Stderr, "warning: failed to remove scaffold marker: %v\n", rmErr)
-			}
-			return
-		}
-		if rmErr := os.RemoveAll(targetPath); rmErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to clean up %s: %v\n", targetPath, rmErr)
-		}
-	}()
-
-	// Create the target directory and drop the in-progress marker before
-	// invoking the generator. The generator is expected to populate the
-	// directory; creating it up-front is safe because the generator uses
-	// MkdirAll internally.
-	if err := os.MkdirAll(filepath.Dir(markerPath), 0o755); err != nil {
-		return fmt.Errorf("failed to create project directory: %w", err)
+	scaffold, err := beginScaffold(targetPath, inPlace)
+	if err != nil {
+		return err
 	}
-	if err := os.WriteFile(markerPath, []byte("forge scaffold in progress\n"), 0o644); err != nil {
-		return fmt.Errorf("failed to write scaffold marker: %w", err)
-	}
+	defer scaffold.undoUnlessFinished()
 
 	merged, err := writeScaffoldFiles(scaffoldFilesInput{
 		gen: newGeneratorConfig{
@@ -410,10 +368,10 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 		bufPlugins:    bufPluginsNormalized,
 		skipTools:     skipTools,
 		frontendNames: frontendNames,
-		markerPath:    markerPath,
+		markerPath:    scaffold.markerPath,
 	})
 
-	success = true
+	scaffold.finish()
 	fmt.Printf("\n✅ Project '%s' created successfully!\n", projectName)
 	printNewNextSteps(projectName, inPlace, kindNormalized, serviceNames, len(frontendNames) > 0)
 	for _, line := range inPlaceMergeSummary(merged) {
@@ -431,6 +389,23 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 			"Review `git status` and commit the scaffold yourself.\n", where)
 	}
 
+	return nil
+}
+
+// validateComponentNames refuses a --service or --frontend name that cannot
+// name the directories, packages and proto files scaffolded for it, before
+// anything is written.
+func validateComponentNames(serviceNames, frontendNames []string) error {
+	for _, svcName := range serviceNames {
+		if err := validateServiceName(svcName); err != nil {
+			return fmt.Errorf("invalid service name %q: %w", svcName, err)
+		}
+	}
+	for _, feName := range frontendNames {
+		if err := validateFrontendName(feName); err != nil {
+			return fmt.Errorf("invalid frontend name %q: %w", feName, err)
+		}
+	}
 	return nil
 }
 
