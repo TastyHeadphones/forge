@@ -119,13 +119,17 @@ func runRequireContract(pass *analysis.Pass) (interface{}, error) {
 	// handlers/mocks/*_mock.go that don't use the _gen.go suffix, plus the
 	// `// forge:hash=` self-certification marker), AND the `*_gen.go`
 	// filename convention as a belt-and-suspenders fallback.
+	//
+	// Test files are skipped for the same reason (testfiles.go): a fake
+	// with exported methods in a _test.go file is not a surface anything
+	// that imports the package can call.
 	hasExportedMethods := false
 	for _, file := range pass.Files {
 		if hasExportedMethods {
 			break
 		}
 		filename := pass.Fset.Position(file.Pos()).Filename
-		if strings.HasSuffix(filename, "_gen.go") || isForgeGeneratedFile(file) {
+		if strings.HasSuffix(filename, "_gen.go") || isForgeGeneratedFile(file) || isTestFile(filename) {
 			continue
 		}
 		for _, decl := range file.Decls {
@@ -235,7 +239,8 @@ var workerLifecycleMethods = []string{"Name", "Start"}
 // exemption to the directory forge's architecture reserves for workers, and
 // the method check makes it structural, so a helper package someone files
 // under internal/workers/ is an ordinary package and stays subject to the
-// require-contract rule.
+// require-contract rule. Only the package's own source counts: a fake worker
+// in a test file does not make the package a worker (testfiles.go).
 func isSupervisedWorkerPackage(pass *analysis.Pass, pkgPath string) bool {
 	if !strings.Contains(pkgPath, "/internal/workers/") &&
 		!strings.HasPrefix(pkgPath, "internal/workers/") {
@@ -243,6 +248,9 @@ func isSupervisedWorkerPackage(pass *analysis.Pass, pkgPath string) bool {
 	}
 	found := map[string]bool{}
 	for _, file := range pass.Files {
+		if isTestFile(pass.Fset.Position(file.Pos()).Filename) {
+			continue
+		}
 		for _, decl := range file.Decls {
 			funcDecl, ok := decl.(*ast.FuncDecl)
 			if !ok || funcDecl.Recv == nil || len(funcDecl.Recv.List) == 0 {

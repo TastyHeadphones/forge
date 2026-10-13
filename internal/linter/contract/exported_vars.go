@@ -61,9 +61,10 @@ func runExportedVars(pass *analysis.Pass) (interface{}, error) {
 	// the documented `<Entity>Columns` allowlist in Tier-1 `_orm.go`
 	// files, the data-only `Inventory` descriptor in mounts_services.go.
 	// Those shapes are forge's responsibility; the user cannot durably
-	// change them. The skip is per-FILE, so hand-written vars elsewhere
-	// in the same package are still flagged.
-	genFiles := generatedFilenames(pass)
+	// change them. Test files are exempt too (see testfiles.go): a var in
+	// one exists only in the test binary. The skip is per-FILE, so
+	// hand-written vars elsewhere in the same package are still flagged.
+	exempt := exemptFilenames(pass)
 
 	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
@@ -73,7 +74,7 @@ func runExportedVars(pass *analysis.Pass) (interface{}, error) {
 		if genDecl.Tok != token.VAR {
 			return
 		}
-		if genFiles[pass.Fset.Position(genDecl.Pos()).Filename] {
+		if exempt[pass.Fset.Position(genDecl.Pos()).Filename] {
 			return
 		}
 

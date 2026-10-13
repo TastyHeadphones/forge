@@ -118,8 +118,10 @@ func runContractAnalysisInProcess(ctx context.Context, paths, excludes []string,
 			packages.NeedSyntax | packages.NeedTypesInfo | packages.NeedTypesSizes |
 			packages.NeedModule,
 		Env: env,
-		// Parity with the retired multichecker driver (-test=true):
-		// test files are analyzed too.
+		// Parity with the retired multichecker driver (-test=true) and
+		// `go vet -vettool`: test variants are loaded too. The analyzers
+		// skip test files themselves (contract/testfiles.go) — a test
+		// file is not a package's API — so every driver agrees.
 		Tests: true,
 	}
 	pkgs, err := packages.Load(cfg, paths...)

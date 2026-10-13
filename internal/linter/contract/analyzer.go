@@ -109,9 +109,11 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	// Methods declared in generated files are exempt (see generated.go):
 	// codegen output (mock methods, observability wrappers) is forge's
 	// responsibility — the user cannot durably remove a method the next
-	// `forge generate` re-emits. Hand-written methods on the same types
+	// `forge generate` re-emits. So are methods declared in test files
+	// (see testfiles.go): a test fake that satisfies a contract interface
+	// is not the package's API. Hand-written methods on the same types
 	// are still enforced.
-	genFiles := generatedFilenames(pass)
+	exempt := exemptFilenames(pass)
 
 	insp.Preorder(nodeFilter, func(n ast.Node) {
 		funcDecl := n.(*ast.FuncDecl)
@@ -121,7 +123,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			return
 		}
 
-		if genFiles[pass.Fset.Position(funcDecl.Pos()).Filename] {
+		if exempt[pass.Fset.Position(funcDecl.Pos()).Filename] {
 			return
 		}
 

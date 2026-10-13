@@ -383,6 +383,19 @@ tag resolution: exit status 128`; it tags images `uncommitted`.
   `force` → `up` was refused with every version of the failed run "missing".
   A database the old CLI migrated after `AutoMigrate` created the record still
   refuses those versions; the error prints the `INSERT` that records them.
+- **`forge lint --contract` no longer judges test files as a package's API.**
+  Every driver hands `_test.go` files to the contract analyzers (`go vet` and
+  multichecker analyze test variants; the in-process lane loads with
+  `Tests: true`), and the analyzers read them as API. In reliant,
+  `internal/mcpserver/http_test.go`'s `memStore` fake satisfied the package's
+  `BindingStore` contract, and the single-seam rule flagged every other
+  exported method on it: 14 findings, none of them about the API. Methods and
+  vars declared in test files are now skipped by the single-seam,
+  require-contract and exported-vars rules, so a package whose only exported
+  methods are a test fake needs no `contract.go`, and a fake `Name`/`Start` in
+  a test no longer buys an ordinary `internal/workers/` package the worker
+  exemption. The skip is per file: the package's own source stays strict. No
+  rule read tests on purpose; the exclusion gate already skipped them.
 
 ### Added
 

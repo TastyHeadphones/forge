@@ -21,6 +21,11 @@ Three categories of internal package, three answers:
 
 The contract linter enforces this. By default, every `internal/` package with exported methods needs `contract.go`.
 
+It judges a package's API, which is its non-test, hand-written source. Methods
+and vars in `_test.go` files are never flagged, so a test fake that satisfies a
+contract interface may carry whatever helpers the test needs. Generated files
+are skipped too.
+
 ## Set the linter floor
 
 In `forge.yaml`:

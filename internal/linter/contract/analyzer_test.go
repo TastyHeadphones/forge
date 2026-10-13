@@ -292,3 +292,56 @@ func TestExportedVars_KubebuilderControllerRuntimeAPIExempt(t *testing.T) {
 	testdata := analysistest.TestData()
 	analysistest.Run(t, testdata, contract.ExportedVarsAnalyzer, "varsoperatorcr")
 }
+
+// TEST FILES ARE NOT A PACKAGE'S API. A _test.go file compiles only into the
+// package's test binary, so nothing that imports the package can reach what
+// it declares — yet every driver hands test files to the analyzers (`go vet`
+// and multichecker analyze each package's test variant, and `forge lint
+// --contract` loads with Tests: true). Measured in reliant:
+// internal/mcpserver/http_test.go declares memStore, a fake satisfying the
+// package's BindingStore contract, and the single-seam rule flagged every
+// other exported method on the fake — 14 findings, none about the API.
+//
+// The fixture mirrors it: a fake satisfying the contract with three extra
+// exported methods and an export_test.go-style method on the real type, all
+// in store_test.go and none expected; plus a rogue method in store.go that IS
+// expected, proving the skip is per file.
+func TestAnalyzer_TestFilesAreNotTheAPI(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs analysistest, which loads packages via go list; runs in task test")
+	}
+	testdata := analysistest.TestData()
+	analysistest.Run(t, testdata, contract.Analyzer, "internal/testfake")
+}
+
+// An exported var in a test file is no more the package's API than an
+// exported method is: the one in vars_test.go is not flagged, while the one
+// in vars.go still is.
+func TestExportedVars_TestFilesAreNotTheAPI(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs analysistest, which loads packages via go list; runs in task test")
+	}
+	testdata := analysistest.TestData()
+	analysistest.Run(t, testdata, contract.ExportedVarsAnalyzer, "varsintest")
+}
+
+// A package whose only exported methods live in a test file (a fake clock)
+// has no behavioral surface, so it needs no contract.go. Zero findings.
+func TestRequireContract_TestOnlyMethodsNeedNoContract(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs analysistest, which loads packages via go list; runs in task test")
+	}
+	testdata := analysistest.TestData()
+	analysistest.Run(t, testdata, contract.RequireContractAnalyzer, "internal/requiretestonly")
+}
+
+// The worker exemption reads the package's own surface: a fake worker in a
+// test file does not make an ordinary package under internal/workers/ a
+// worker. One finding expected.
+func TestRequireContract_FakeWorkerInATestIsNotAWorker(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs analysistest, which loads packages via go list; runs in task test")
+	}
+	testdata := analysistest.TestData()
+	analysistest.Run(t, testdata, contract.RequireContractAnalyzer, "internal/workers/fakeworkerintest")
+}
