@@ -98,10 +98,9 @@ forge env new cloud --from prod --bind item=cluster         # item on your clust
 forge env new cloud --check                                 # no placeholder left, renders, admissible
 ```
 
-`Bundle.lifecycle` declares WHO APPLIES an env — `"local"` / `"ephemeral"`
-means forge applies directly, unset means it is reconciled from a bundle (no
-control plane: in-cluster Flux, deploy/flux). Scaffolded `dev` is `local`. See
-deploy/shape.
+`Bundle.lifecycle` (`"local"` / `"ephemeral"`) and `Bundle.applier = "forge"`
+declare WHO APPLIES an env: forge, directly. Scaffolded `dev` is `local`; the
+platform's own env is `applier = "forge"`. See deploy/shape.
 
 ### What forge writes into every spec
 

@@ -72,18 +72,16 @@ func TestDeployRelease_HubConvergedRecordsWhenTheHubCanApply(t *testing.T) {
 func TestDeployApplyPath(t *testing.T) {
 	for _, tc := range []struct {
 		ledger envLedger
-		flux   bool
 		want   string
 	}{
-		{envLedger{Hosted: true, HubConverged: true}, false, "hub converge"},
-		{envLedger{Hosted: true, Mixed: true, HostedTiers: []hostedTier{{Name: "api", Kind: hostedTierWorkload}}}, false, "mixed"},
-		{envLedger{Hosted: true, Mixed: true}, false, "ledger only"},
-		{envLedger{Hosted: true}, false, "hosted"},
-		{envLedger{}, true, "flux"},
-		{envLedger{}, false, "client apply"},
+		{envLedger{Hosted: true, HubConverged: true}, "hub converge"},
+		{envLedger{Hosted: true, Mixed: true, HostedTiers: []hostedTier{{Name: "api", Kind: hostedTierWorkload}}}, "mixed"},
+		{envLedger{Hosted: true, Mixed: true}, "ledger only"},
+		{envLedger{Hosted: true}, "hosted"},
+		{envLedger{}, "client apply"},
 	} {
-		if got := deployApplyPath(tc.ledger, tc.flux); !strings.HasPrefix(got, tc.want) {
-			t.Errorf("deployApplyPath(%+v, flux=%v) = %q, want %q…", tc.ledger, tc.flux, got, tc.want)
+		if got := deployApplyPath(tc.ledger); !strings.HasPrefix(got, tc.want) {
+			t.Errorf("deployApplyPath(%+v) = %q, want %q…", tc.ledger, got, tc.want)
 		}
 	}
 }

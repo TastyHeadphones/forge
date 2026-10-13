@@ -236,6 +236,7 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 		Objects:   objects,
 
 		ControlPlaneSecrets: in.Shape.ControlPlaneSecrets,
+		Applier:             in.Shape.Applier,
 	}.Canonical()
 	if err := shape.Validate(); err != nil {
 		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)

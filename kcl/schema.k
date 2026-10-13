@@ -3985,10 +3985,34 @@ schema Bundle:
     #
     # TODAY THIS REFUSES NOTHING. forge parses it, reports it
     # (`forge env shape --json`, `forge env status --json`) and prints a
-    # notice on a direct apply to an env that declares none. The refusal
-    # lands once the bundle→Flux path is proven end to end; declaring it
-    # now is what makes that change a flag flip rather than a migration.
+    # notice on a direct apply to an env that declares neither this nor
+    # `applier`. The refusal (F-REFUSE-DIRECT) is planned; declaring one of
+    # the two now is what makes that change a flag flip rather than a
+    # migration.
     lifecycle?: "local" | "ephemeral"
+    # A REAL environment that FORGE applies, by declaration. The answer for an
+    # env whose own control plane must not apply it: the platform's own env
+    # (control-plane's prod) is bound to clusters its hub could converge, and a
+    # hub applying the env that runs the hub is circular. `forge env deploy`
+    # (an operator or CI) is its applier, permanently, not as a stopgap.
+    #
+    #     applier = "forge"
+    #
+    # What it changes, all by construction:
+    #   * direct apply is allowed (DirectApplyAllowed), so it is exempt from
+    #     the planned F-REFUSE-DIRECT and prints no "undeclared" notice;
+    #   * the env is never hub-converged (`hubConverged = false` is what the
+    #     control plane records), however fully its clusters are bound, so the
+    #     hub cannot become a second applier over objects forge applies;
+    #   * it is recorded in the env shape (`shape.applier`), so the control
+    #     plane and a reader can see WHO applies without a render.
+    #
+    # It is NOT `lifecycle`. lifecycle = "local" | "ephemeral" says the
+    # cluster is forge's scratch (a developer's own, or a per-run one) and is
+    # checked against every cluster the env targets. This says the opposite:
+    # the cluster is real, and forge is deliberately the applier. Declaring
+    # both is refused: they answer the same question differently.
+    applier?: "forge"
     # TYPED OVERRIDES of forge's own rendered objects, keyed by the object.
     # The 20%'s escape hatch: forge renders an opinionated object and the
     # author changes ONE field of it, without forking the template and
@@ -4143,6 +4167,8 @@ schema Bundle:
         # never declare itself local to keep direct apply, which is the
         # whole point: that would be a cloud environment opting out of
         # reconciliation by editing one line.
+        not (applier and lifecycle), \
+            "Bundle sets both applier = \"${applier}\" and lifecycle = \"${lifecycle}\". They answer one question opposite ways: lifecycle says this env's clusters are scratch that forge creates and deletes; applier says the clusters are REAL and forge is deliberately the one that applies them. Declare the one that is true"
         not lifecycle or len(_unmanaged_contexts(clusters, workloads, databases, \
                 cluster_target, gateways, http_routes, grpc_routes, helm_charts, \
                 manifests, generated, rendered_secrets)) == 0, \

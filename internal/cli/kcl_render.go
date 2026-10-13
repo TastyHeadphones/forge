@@ -80,6 +80,13 @@ type KCLEntities struct {
 	// no-cluster case stays in one place.
 	Lifecycle string `json:"lifecycle,omitempty"`
 
+	// Applier is "forge" when the env DECLARES that forge applies it
+	// (Bundle.applier): a real environment, not a scratch one, whose own
+	// control plane must not apply it. Empty otherwise. Read it through
+	// [Applier] helpers (DirectApplyAllowed, envConvergedByHub) rather than
+	// comparing strings.
+	Applier string `json:"applier,omitempty"`
+
 	// Clusters are the k3d clusters forge ensures exist at the head of
 	// `forge env up` before any workload deploys. Empty for an env that
 	// declares no clusters. Ownership is implicit via Cluster.Network /
@@ -1199,6 +1206,7 @@ type kclRenderRaw struct {
 	Env                 string                     `json:"env,omitempty"`
 	ImageTag            string                     `json:"image_tag,omitempty"`
 	Lifecycle           string                     `json:"lifecycle,omitempty"`
+	Applier             string                     `json:"applier,omitempty"`
 	Clusters            []ClusterEntity            `json:"clusters,omitempty"`
 	ClusterTarget       *ClusterTargetEntity       `json:"cluster_target,omitempty"`
 	KubeconfigSecrets   []KubeconfigSecretEntity   `json:"kubeconfig_secrets,omitempty"`
@@ -1482,6 +1490,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		Env:                  raw.Env,
 		ImageTag:             raw.ImageTag,
 		Lifecycle:            raw.Lifecycle,
+		Applier:              raw.Applier,
 		Clusters:             raw.Clusters,
 		ClusterTarget:        raw.ClusterTarget,
 		KubeconfigSecrets:    raw.KubeconfigSecrets,

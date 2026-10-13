@@ -4,14 +4,12 @@ package cli
 // Envoy Gateway, CNPG, cert-manager — every forge.HelmChart with the default
 // `delivery = "bootstrap"`).
 //
-// WHY THIS EXISTS. An env that reconciles through Flux ships its bundle as a
-// pointer, and the bundle needs these charts' CRDs and controllers already in
+// WHY THIS EXISTS. A bundle needs these charts' CRDs and controllers already in
 // the cluster. Bootstrap charts stay OUT of the bundle on purpose (a prune must
-// never own platform state), so nothing in the pointer path installs them. The
-// gap was a fresh cluster with a declared Flux: `forge cluster up` skipped its
-// own Flux install (the declared one is supposed to win), and nothing else
-// installed the declared one, so the first pointer write failed with
-// `no matches for kind OCIRepository`.
+// never own platform state), so nothing that applies the bundle installs them.
+// A fresh cluster would otherwise fail on the first object of a kind whose CRD
+// was never installed (`no matches for kind ...`). That includes a Flux the env
+// declares for its own reasons: forge installs no Flux of its own.
 //
 // THE FIX IS CLUSTER BOOTSTRAP, not a second deploy mechanism: rendering with
 // `helm template` and applying directly is how these charts have always
@@ -21,7 +19,7 @@ package cli
 //   - `forge cluster up <env>` installs every bootstrap chart whose cluster is
 //     a forge-managed k3d cluster of the env;
 //   - `forge env deploy <env> <ver> --target <chart>` installs just that chart
-//     and writes no pointer.
+//     and applies nothing else.
 //
 // ORDER IS LOAD-BEARING: Flux first, then charts that ship a CRD bundle, then
 // the rest, each group in declaration order. A chart's Manifests (a

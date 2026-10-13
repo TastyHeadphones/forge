@@ -812,8 +812,7 @@ func runDeployExplain(ctx context.Context, envName string, report *deployReport)
 	// a narrower one. Said from the same ledger the deploy reads.
 	applyPath := ""
 	if ledger, lerr := ledgerFor(ctx, projectDirForKCL(), envName); lerr == nil {
-		reconciled, _ := fluxReconciledEnv(ctx, envName, ledger)
-		applyPath = deployApplyPath(ledger, reconciled)
+		applyPath = deployApplyPath(ledger)
 		report.setApplyPath(applyPath)
 		if !report.Enabled() {
 			fmt.Printf("forge env deploy %s — apply path: %s\n", envName, applyPath)
@@ -868,7 +867,6 @@ func runDeployExplain(ctx context.Context, envName string, report *deployReport)
 	if guard.Verdict == deployGuardVerdictRefuse {
 		return nil
 	}
-	printFluxSecretExplain(ctx, envName)
 	return printDeployExplainHostSkip(cfg, envName)
 }
 
@@ -1742,16 +1740,12 @@ type deployApplyInput struct {
 func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
 	frontendOnly := len(in.groups) == 0 && !in.hasK8sServices && hasShippableFrontend(in.entities)
 	// ONE notice, at the one place a direct cluster apply happens, for an
-	// env that declares no lifecycle. Printed here rather than at the top
+	// env that declares neither a lifecycle nor an applier. Printed here rather than at the top
 	// of runDeploy because a frontend-only or host-only run applies to no
 	// cluster, and a notice about retiring direct apply would be noise for
 	// a deploy that never touches one.
 	if !in.directApplyAllowed && !frontendOnly {
-		if in.entities != nil && in.entities.ControlPlane == nil {
-			fmt.Println(realClusterNoticeLine)
-		} else {
-			fmt.Println(lifecycleNoticeLine)
-		}
+		fmt.Println(lifecycleNoticeLine)
 	}
 	if len(in.groups) == 0 && !frontendOnly {
 		return cluster.Apply(ctx, cluster.ApplyOpts{

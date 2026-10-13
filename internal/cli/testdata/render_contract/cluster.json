@@ -1,5 +1,6 @@
 {
   "output": {
+    "applier": null,
     "cluster_target": {
       "cluster": "k3d-acme",
       "connected_cluster": null,

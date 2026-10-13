@@ -151,6 +151,15 @@ type envStatusBinding struct {
 	Note               string `json:"note,omitempty"`
 }
 
+// convergenceObserver names who saw a convergence, defaulting to the control
+// plane — which is what every record written before the field existed is.
+func convergenceObserver(c envStatusConvergence) string {
+	if strings.TrimSpace(c.ObservedBy) != "" {
+		return c.ObservedBy
+	}
+	return "the control plane"
+}
+
 // envStatusConvergence is what the reconciler did, as the control plane's
 // observer reported it.
 //
@@ -186,10 +195,10 @@ type envStatusConvergence struct {
 	//
 	//   "the control plane" — a hosted env's reconcile, as that control
 	//     plane's own observer recorded it. Forge is relaying a report.
-	//   "the in-cluster reconciler" — the Flux in this env's own cluster,
-	//     read by forge from the Kustomizations it wrote the pointer to
-	//     (env_status_flux.go). Still not forge's own work — Flux applied
-	//     it — but read first-hand from the apiserver rather than relayed.
+	//   any other name — a reconciler observed by something other than the
+	//     control plane. Nothing writes one today; the field is read so a
+	//     record that carries one is attributed correctly rather than
+	//     defaulted to the control plane.
 	//
 	// Empty renders as the control-plane phrasing, which is what every
 	// pre-existing record is.
@@ -252,33 +261,16 @@ func readEnvRecords(ctx context.Context, projectDir, env string, now time.Time) 
 	if target.Hosted {
 		return readHostedEnvRecords(ctx, env, entities, now)
 	}
-	records, rerr := readMachineEnvRecords(env, projectDir, target, now)
-	// CONVERGENCE, for a machine-ledger env that HAS a reconciler. An env
-	// declaring no lifecycle while targeting a cluster is converged by the
-	// Flux in that cluster, and its verdict is readable from the
-	// Kustomizations forge's pointer created — so the "no reconciler for
-	// this env" default readMachineEnvRecords sets is replaced with the
-	// real answer. See env_status_flux.go, including why this can never
-	// fail the status.
-	if rerr == nil && reconcilesThroughFlux() {
-		records.Convergence, records.ConvergenceDetail = fluxConvergenceFor(ctx, env, projectDir, entities, now)
-	}
-	return records, rerr
+	return readMachineEnvRecords(env, projectDir, target, now)
 }
 
 // readMachineEnvRecords reads the file ledger: provenance and sessions.
 //
 // NO CONVERGENCE FROM HERE. This function reads RECORDS, and a machine ledger
-// holds none about convergence: forge does not apply on the reconciled path,
-// so it never wrote one, and a record forge wrote would be a claim about work
-// it did not do. The default detail says "no reconciler for this env", which
+// holds none about convergence: nothing watches a jsonl file, so forge never
+// wrote one, and a record forge wrote would be a claim about work it did not do. The default detail says "no reconciler for this env", which
 // is the truth for an env that declares a lifecycle — forge's own apply is the
 // whole story there.
-//
-// An env that DOES have an in-cluster reconciler has its convergence filled in
-// by the caller, from the cluster rather than from a record. That split is
-// deliberate: a record is something that was written down, and this one is
-// read live.
 //
 // It reuses F7's ledgerShow rather than walking the store again, so
 // `forge ledger show` and `forge env status` cannot come to disagree about

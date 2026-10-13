@@ -5,8 +5,8 @@ description: Getting your own Kubernetes YAML into an env's bundle — forge.Man
 
 # Bringing your own YAML
 
-A real env deploys ONE bundle per env, applied by Flux. Anything not in the
-bundle does not deploy there. Three ways to put your own objects in it, all
+A real env deploys ONE bundle per env, applied by its reconciler or by forge.
+Anything not in the bundle does not deploy there. Three ways to put your own objects in it, all
 placed the same way (own `cluster`/`namespace`, stamped
 `forge.dev/workload = <name>`, so `--target <name>` selects them and
 `Bundle.overrides` can patch them). `forge env render`, `env shape`, a local
@@ -39,8 +39,8 @@ helm_charts = [forge.HelmChart {
 `helm template --skip-crds` runs at build time; the output ships in the
 bundle. Default `"bootstrap"` is for PLATFORM charts (cert-manager, Envoy
 Gateway, CNPG): installed by `forge env deploy <env> --target <name>`, kept OUT
-of the bundle because Flux pruning one would delete its CRDs and orphan their
-data. A bundled chart may not set `crds`.
+of the bundle because a reconciler's prune would delete its CRDs and orphan
+their data. A bundled chart may not set `crds`.
 
 ## 3. Anything that prints YAML: `forge.Generated`
 

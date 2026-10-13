@@ -85,9 +85,11 @@ the env itself, and it says WHO APPLIES it:
 
 | `Bundle.lifecycle` | Means |
 |---|---|
-| unset | **A REAL ENVIRONMENT.** Reconciled from a bundle (`forge env build` → Flux), never direct-applied. |
+| unset | **A REAL ENVIRONMENT that declared nothing.** Direct apply works today and prints one notice; it will be refused (F-REFUSE-DIRECT) for an env that declares neither this nor `applier`. |
 | `"local"` | A developer's OWN cluster — the `forge env up` inner loop. |
 | `"ephemeral"` | A THROWAWAY per-run cluster (CI / e2e), deleted inside the run, so nothing could converge it. |
+
+`lifecycle` has a sibling for the opposite case, a real env that **forge** applies:
 
 ```kcl
 _bundle = forge.Bundle {
@@ -118,11 +120,33 @@ least local target, so a cloud env cannot declare itself local to keep direct
 apply: the render fails, naming the offending context.
 
 `forge env shape --json` and `forge env status --json` both report
-`lifecycle` (on `env status`: top-level `lifecycle` for one env, `environments[].lifecycle` for the all-envs view; empty string when unset), and a direct cluster apply to an env that declares none prints
-one notice saying it will be reconciled from its bundle once direct apply is
-retired. That is the field's whole effect today — it refuses nothing, and no
-behaviour changes — and declaring it now is what makes retiring direct apply
-a flag flip rather than a migration.
+`lifecycle` (on `env status`: top-level `lifecycle` for one env, `environments[].lifecycle` for the all-envs view; empty string when unset), and a direct cluster apply to an env that declares neither `lifecycle` nor `applier` prints
+one notice saying direct apply will be refused once F-REFUSE-DIRECT lands. That
+is the fields' whole effect today — they refuse nothing — and declaring one now
+is what makes retiring direct apply a flag flip rather than a migration.
+
+## `applier = "forge"`: a real env that forge applies on purpose
+
+`lifecycle` says the clusters are scratch. The platform's own env is the opposite:
+**real** clusters, applied by forge (an operator or CI running `forge env deploy`),
+because the control plane that would converge it is the very thing running there.
+A hub applying the env that runs the hub is circular, so for that env forge is the
+applier permanently, not as a stopgap.
+
+```kcl
+control_plane = forge.ControlPlane {}
+applier = "forge"
+```
+
+| effect | how |
+|---|---|
+| exempt from F-REFUSE-DIRECT | `DirectApplyAllowed` is true; no notice is printed |
+| never hub-converged | `hubConverged = false` is recorded however fully the clusters are bound to connected clusters; binding says WHERE an env lands, not who puts it there |
+| recorded in the shape | `shape.applier = "forge"` in `forge env shape --json`; an env that declares nothing records nothing, so "undeclared" and "applied on purpose" stay distinguishable |
+
+Declaring both `applier` and `lifecycle` is refused at render: they answer one
+question opposite ways. Unlike `lifecycle` it is **not** checked against the
+clusters, because a real cluster is exactly what it is for.
 
 ## Recording it is what makes the console work offline
 

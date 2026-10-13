@@ -115,7 +115,7 @@ func TestLifecycleNoticeIsOneLine(t *testing.T) {
 	if strings.ContainsAny(lifecycleNoticeLine, "\n\r") {
 		t.Errorf("lifecycleNoticeLine spans lines — it is printed with fmt.Println into an apply's output: %q", lifecycleNoticeLine)
 	}
-	for _, want := range []string{"not declared local/ephemeral", "reconciled from its bundle", "direct apply is retired"} {
+	for _, want := range []string{"neither `lifecycle`", `applier = "forge"`, "will be refused"} {
 		if !strings.Contains(lifecycleNoticeLine, want) {
 			t.Errorf("lifecycleNoticeLine does not mention %q: %s", want, lifecycleNoticeLine)
 		}

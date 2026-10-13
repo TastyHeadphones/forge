@@ -43,7 +43,7 @@ func TestApplyDeployGroupsLifecycleNotice(t *testing.T) {
 		wantLine bool
 	}{
 		{
-			name:     "an undeclared env is told it will be reconciled",
+			name:     "an env that declares neither lifecycle nor applier is told direct apply will be refused",
 			allowed:  false,
 			wantLine: true,
 		},
@@ -66,15 +66,15 @@ func TestApplyDeployGroupsLifecycleNotice(t *testing.T) {
 					t.Fatalf("applyDeployGroups: %v", err)
 				}
 			})
-			got := strings.Contains(out, realClusterNoticeLine)
+			got := strings.Contains(out, lifecycleNoticeLine)
 			if got != tc.wantLine {
 				t.Errorf("notice printed = %v, want %v\nstdout:\n%s", got, tc.wantLine, out)
 			}
 			// The notice is ONE line, once — an apply that printed it per
 			// cluster group would bury the applies it annotates.
-			if tc.wantLine && strings.Count(out, realClusterNoticeLine) != 1 {
+			if tc.wantLine && strings.Count(out, lifecycleNoticeLine) != 1 {
 				t.Errorf("notice printed %d times, want exactly 1\nstdout:\n%s",
-					strings.Count(out, realClusterNoticeLine), out)
+					strings.Count(out, lifecycleNoticeLine), out)
 			}
 		})
 	}

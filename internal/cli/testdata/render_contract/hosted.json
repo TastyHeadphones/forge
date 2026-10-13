@@ -1,5 +1,6 @@
 {
   "output": {
+    "applier": null,
     "clusters": [],
     "config_maps": [],
     "connected_clusters": null,

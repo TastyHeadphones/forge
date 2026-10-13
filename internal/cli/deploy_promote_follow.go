@@ -181,29 +181,6 @@ func validatePromoteFollow(o promoteFollowOptions) error {
 // on, and spending the hosted wait's budget after it has already failed buys
 // nothing.
 func followPromote(ctx context.Context, env string, plan promotePlan, ledger envLedger, o promoteFollowOptions) error {
-	// A FOURTH SHAPE, and it is the one that applies NOTHING from here.
-	//
-	// RECONCILED (!Hosted, and the env declares no lifecycle while
-	// targeting a cluster): the env's version store is this machine's
-	// ledger, but a Flux in its cluster converges it. forge writes the
-	// desired-state pointer and waits; it does not apply the env's own
-	// objects at all.
-	//
-	// It is checked BEFORE appliesLocally, which would otherwise be true
-	// for it — a self-managed env always applies from this machine, and
-	// that is exactly the premise this path replaces. Running both would
-	// make forge and Flux two authorities over the same objects, and the
-	// one that lost would spend every interval reverting the other.
-	//
-	// ORDER: the promotion is already recorded by the time we get here
-	// (applyPromotePlan ran above, in runPromote), which is the required
-	// direction. The pointer is a cluster-side projection of that record,
-	// so a cluster converging to a release the ledger never recorded would
-	// be both unexplainable to a later reader and unrecoverable — nothing
-	// would know to re-point it.
-	if reconciled, entities := fluxReconciledEnv(ctx, env, ledger); reconciled {
-		return followFluxReconciled(ctx, env, entities, plan, o)
-	}
 	// QUEUED ON A PERSON? The control plane says so on the write itself
 	// (the Promote response's holds) — so this is known with no extra call,
 	// before anything waits. See deploy_queued.go.
@@ -401,9 +378,6 @@ func preflightBeforeRecord(ctx context.Context, env, version string, ledger envL
 	if !ledger.appliesLocally() || ledger.hubConverged() || o.clientDeploy.skipPreflight {
 		return nil
 	}
-	if reconciled, _ := fluxReconciledEnv(ctx, env, ledger); reconciled {
-		return nil
-	}
 	opts := o.clientDeploy
 	opts.dryRun = true
 	opts.preflightOnly = true
@@ -509,31 +483,6 @@ func applyHostedPublish(ctx context.Context, env string, o promoteFollowOptions)
 // file-ledger env, which is only observable here — the real apply needs a
 // cluster. Production is runDeploy, unchanged.
 var runPromoteClientDeploy = runDeploy
-
-// followFluxReconciled is the reconciled-env arm of followPromote.
-func followFluxReconciled(ctx context.Context, env string, entities *KCLEntities, plan promotePlan, o promoteFollowOptions) error {
-	// `--target <platform-chart>` is cluster bootstrap, not a release
-	// pointer: install the chart(s) and write no pointer when nothing
-	// else was asked for. See platform_charts.go.
-	charts, rest := splitPlatformChartTargets(entities, o.clientDeploy.targets)
-	if len(charts) > 0 {
-		if !o.clientDeploy.dryRun {
-			if err := installPlatformCharts(ctx, entities, platformChartInstalls(entities, charts, nil)); err != nil {
-				return err
-			}
-		}
-		if len(rest) == 0 {
-			return nil
-		}
-	}
-	return runFluxDeploy(ctx, env, entities, fluxDeployOptions{
-		Digest:  fluxDeployDigest(ctx, env, plan),
-		NoWait:  o.NoWait,
-		Timeout: o.Timeout,
-		DryRun:  o.clientDeploy.dryRun,
-		jsonOut: o.jsonOut,
-	})
-}
 
 // followHubConverged is the arm for an env whose bundle the control plane's
 // reconciler applies onto connected clusters. Recording the promotion and its
