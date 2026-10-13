@@ -46,7 +46,7 @@ func withinDeadline(t *testing.T, what string, fn func() error) error {
 	case err := <-done:
 		return err
 	case <-ctx.Done():
-		t.Fatalf("%s still running after %s on a one-connection pool: migratekit is holding the pool's only connection and waiting for a second", what, oneConnDeadline)
+		t.Fatalf("%s still running after %s: migratekit is waiting for a database session it cannot get — a run must need only the one it holds", what, oneConnDeadline)
 		return nil
 	}
 }
@@ -117,10 +117,9 @@ func TestAutoMigrateRunsOnAOneConnectionPool(t *testing.T) {
 	})
 }
 
-// openOneConn is Open with the Migrator's own pool capped at one connection.
-// Open's pool is private, so no caller can cap it; capping it here pins the
-// same invariant AutoMigrate depends on, from the CLI side: a run costs
-// migratekit one session (golang-migrate keeps its own), whatever it does.
+// openOneConn is Open, whose own pool is capped at one connection: a run
+// through it must never ask that pool for a second (sessions_pg_test.go pins
+// the session count itself).
 func openOneConn(t *testing.T, files map[string]string, dsn string) *Migrator {
 	t.Helper()
 	mg, err := Open(Options{FS: release(files), Dir: "migrations", DSN: dsn})
@@ -128,7 +127,9 @@ func openOneConn(t *testing.T, files map[string]string, dsn string) *Migrator {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { _ = mg.Close() })
-	mg.db.SetMaxOpenConns(1)
+	if max := mg.db.Stats().MaxOpenConnections; max != 1 {
+		t.Fatalf("Open's pool allows %d connections; want 1", max)
+	}
 	return mg
 }
 

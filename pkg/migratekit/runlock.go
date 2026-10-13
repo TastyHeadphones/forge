@@ -10,11 +10,11 @@ import (
 // ONE MIGRATION RUN PER DATABASE, WHICHEVER ENTRY POINT STARTED IT.
 //
 // golang-migrate serializes its own Up with a session advisory lock keyed on
-// a hash of (database name, schema, table). The two entry points build its
-// driver differently, and golang-migrate names the database differently in
-// each: Open goes through the pgx v5 driver's URL constructor, which takes the
-// URL PATH ("/app"); AutoMigrate wraps a pool connection, and that constructor
-// asks current_database() ("app"). Same database, two lock keys — so
+// a hash of (database name, schema, table). The two entry points built its
+// driver differently, and golang-migrate named the database differently in
+// each: Open went through the pgx v5 driver's URL constructor, which takes the
+// URL PATH ("/app"); AutoMigrate wrapped a pool connection, and that
+// constructor asks current_database() ("app"). Same database, two lock keys — so
 // `db migrate up` (a deploy initContainer, the dev loop's migrate job) never
 // excluded AutoMigrate (a server booting with AUTO_MIGRATE) at all. Measured
 // with six replicas, half through each entry point, against one database: two
@@ -33,20 +33,32 @@ import (
 //
 // The order is always this lock first, golang-migrate's second, so the two
 // cannot deadlock; a binary from before this lock takes only the second.
+// (Both entry points now build golang-migrate's driver the same way, over the
+// run's own session (session.go), so its key no longer differs between them
+// either; a binary from before that still uses the URL path.)
 const runLockKey = 7250513029716893483
 
 // ONE SESSION DOES THE WHOLE RUN.
 //
-// Every statement migratekit issues during a run executes on the connection
-// that holds the run lock, never on a second one from the pool. At boot that
-// connection is borrowed from the server's own pool, and a desktop or
-// monolith build running embedded postgres may cap that pool at ONE: a run
-// that held the run lock and then asked the pool for another connection
-// waited forever for the one it was holding. The record helpers therefore
-// take a *sql.Conn, not a *sql.DB, so a pool cannot be handed to them.
+// A run is one Postgres session, through every entry point: the run lock,
+// golang-migrate's driver (bound to the session, session.go) and every record
+// migratekit keeps all use the connection that holds the lock, and a run that
+// is waiting for the lock holds that connection and nothing else.
 //
-// At boot golang-migrate's driver shares that session too, which adds one
-// rule: no migratekit transaction may be open across a call into
+// Two places cap sessions, and a run that took a second one deadlocked at
+// both. At boot the connection is borrowed from the server's own pool, which
+// a desktop or monolith build on embedded postgres may cap at ONE: a run that
+// held the run lock and asked the pool for another connection waited forever
+// for the one it was holding (#690). And a run through a session-mode
+// PgBouncer gets one server connection per client connection, and reliant's
+// prod pool has two per PgBouncer replica: a Migrator held its run-lock
+// session and a second one golang-migrate opened from the DSN, so two
+// `db migrate up` runs at once needed four, each sat on what it had, and
+// PgBouncer's query_wait_timeout killed one after 45s. The record helpers
+// take a *sql.Conn, not a *sql.DB, so a pool cannot be handed to them; and a
+// Migrator's own pool is capped at one connection.
+//
+// golang-migrate's driver sharing the session adds one rule: no migratekit transaction may be open across a call into
 // golang-migrate. Its SetVersion (behind Force, and every step of Up) opens a
 // transaction of its own on the same session, and postgres does not nest
 // them — the inner BEGIN is a warning, and golang-migrate's COMMIT commits
@@ -69,19 +81,14 @@ func unlockRun(ctx context.Context, conn *sql.Conn) {
 	advisoryUnlock(ctx, conn, runLockKey)
 }
 
-// withRunLock runs fn holding the run lock on a connection of its own from
-// db. fn does the run's work on that connection (see ONE SESSION above).
-func withRunLock(ctx context.Context, db *sql.DB, fn func(conn *sql.Conn) error) error {
-	conn, err := db.Conn(ctx)
-	if err != nil {
-		return fmt.Errorf("connect: %w", err)
-	}
-	defer func() { _ = conn.Close() }()
+// withRunLock runs fn while conn, the run's session, holds the run lock. fn
+// does the run's work on conn (see ONE SESSION above).
+func withRunLock(ctx context.Context, conn *sql.Conn, fn func() error) error {
 	if err := lockRun(ctx, conn); err != nil {
 		return err
 	}
 	defer unlockRun(ctx, conn)
-	return fn(conn)
+	return fn()
 }
 
 // withSessionLock runs fn while conn's session holds the advisory lock key:

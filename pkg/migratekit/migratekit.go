@@ -48,6 +48,8 @@ import (
 	// rewrite from here and the registration from somewhere else would
 	// produce a DSN with no driver behind it.
 	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5"
+	"github.com/golang-migrate/migrate/v4/database/postgres"
+	"github.com/golang-migrate/migrate/v4/source"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 )
 
@@ -71,9 +73,12 @@ const (
 //
 // It exists because the SAME DSN has to work for two different consumers:
 // the application's own pool (database/sql + the pgx stdlib driver, which
-// wants postgres://) and the migrator (which resolves its database driver by
-// URL scheme). Rather than ask an operator to set a second DATABASE_URL in a
-// scheme they have never seen, the one they wrote is translated here.
+// wants postgres://) and golang-migrate's URL constructor (migrate.New, which
+// resolves its database driver by URL scheme). Rather than ask an operator to
+// set a second DATABASE_URL in a scheme they have never seen, the one they
+// wrote is translated here. Open itself no longer goes through that
+// constructor — it would open a second session (session.go) — but accepts
+// either spelling.
 //
 // A DSN in any other scheme is returned unchanged: this is a translation for
 // a known pair, not a validator. An unusable DSN produces a loud driver
@@ -104,26 +109,34 @@ type Options struct {
 	DSN string
 }
 
-// Migrator is an open migration session. Always Close it.
+// Migrator is an open migration session — ONE Postgres session, from Open to
+// Close, whatever it does in between (runlock.go, ONE SESSION). Always Close
+// it.
 type Migrator struct {
 	m *migrate.Migrate
-	// db is where a run takes its one session — the run lock and every
-	// record (applied.go, ahead.go, adopt.go) — see runlock.go.
-	// golang-migrate's driver owns its own connection and exposes no query
-	// surface, so the records need one of their own. Nil on a Migrator
-	// built around a bare *migrate.Migrate (stateOf), which only ever reads
-	// the version.
+	// conn is that session. golang-migrate's driver is bound to it
+	// (session.go), and the run lock and every record (applied.go,
+	// ahead.go, adopt.go) use it. Nil on a Migrator built around a bare
+	// *migrate.Migrate (stateOf), which only ever reads the version.
+	conn *sql.Conn
+	// db is the pool conn came from when the Migrator owns it (Open):
+	// capped at one connection, and closed by Close. Nil when the session
+	// is borrowed from a caller's pool (Apply), which stays the caller's.
 	db *sql.DB
 	// source is what this binary embeds, parsed once at Open.
 	source sourceSet
 }
 
-// Open builds a Migrator over the embedded migration set in opts.FS.
+// Open builds a Migrator over the embedded migration set in opts.FS, on one
+// session to opts.DSN that it holds until Close.
 //
 // Both failure modes are LOUD and distinguishable, because they call for
 // different fixes: a nil FS means the binary shipped without migrations
 // (regenerate), while an unusable DSN means the database is unreachable or
 // misaddressed (fix the environment).
+//
+// Open takes the run lock while it builds golang-migrate's driver, so behind
+// a running migration it waits — on its one session, which is all it holds.
 func Open(opts Options) (*Migrator, error) {
 	if opts.FS == nil {
 		return nil, fmt.Errorf("migratekit: no migration source: this binary embeds no migrations")
@@ -136,38 +149,58 @@ func Open(opts Options) (*Migrator, error) {
 		dir = "."
 	}
 
-	source, err := iofs.New(opts.FS, dir)
+	cfg, err := driverConfig(opts.DSN)
+	if err != nil {
+		return nil, fmt.Errorf("open migrator: %w", err)
+	}
+	src, err := iofs.New(opts.FS, dir)
 	if err != nil {
 		return nil, fmt.Errorf("open embedded migrations (%s): %w", dir, err)
 	}
 	embedded, err := scanSource(opts.FS, dir)
 	if err != nil {
-		_ = source.Close()
+		_ = src.Close()
 		return nil, fmt.Errorf("open embedded migrations (%s): %w", dir, err)
 	}
 	db, err := sql.Open("pgx/v5", sqlDSN(opts.DSN))
 	if err != nil {
-		_ = source.Close()
+		_ = src.Close()
 		return nil, fmt.Errorf("open migrator: %w", err)
 	}
-	// Building golang-migrate's driver creates schema_migrations, so it
-	// happens under the run lock: a server's AutoMigrate building its own
-	// against the same database would otherwise race the CREATE. See
-	// runlock.go.
-	var m *migrate.Migrate
-	err = withRunLock(context.Background(), db, func(*sql.Conn) (err error) {
-		m, err = migrate.NewWithSourceInstance("iofs", source, NormalizeDSN(opts.DSN))
-		return err
-	})
+	// The cap states the invariant, so a second session is a deadlock in
+	// every test rather than a surprise behind a production pooler.
+	db.SetMaxOpenConns(1)
+	mg, err := openSession(context.Background(), db, src, embedded, cfg)
 	if err != nil {
-		// The source instance owns an open handle even though the
-		// migrator never took ownership of it, so close it here or a
-		// failed Open leaks it.
-		_ = source.Close()
 		_ = db.Close()
 		return nil, fmt.Errorf("open migrator: %w", err)
 	}
-	return &Migrator{m: m, db: db, source: embedded}, nil
+	mg.db = db
+	return mg, nil
+}
+
+// openSession checks one connection out of db and binds golang-migrate to it,
+// under the run lock: building the driver creates schema_migrations, which a
+// concurrent run building its own would otherwise race. See runlock.go. On
+// error it closes the connection and src (whose handle golang-migrate never
+// took ownership of); db stays the caller's.
+func openSession(ctx context.Context, db *sql.DB, src source.Driver, embedded sourceSet, cfg *postgres.Config) (*Migrator, error) {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		_ = src.Close()
+		return nil, fmt.Errorf("connect: %w", err)
+	}
+	var m *migrate.Migrate
+	err = withRunLock(ctx, conn, func() (err error) {
+		m, err = bindMigrate(ctx, conn, src, cfg)
+		return err
+	})
+	if err != nil {
+		_ = src.Close()
+		_ = conn.Close()
+		return nil, err
+	}
+	return &Migrator{m: m, conn: conn, source: embedded}, nil
 }
 
 // sqlDSN turns the DSN a caller handed Open into one database/sql's pgx
@@ -192,21 +225,24 @@ func sqlDSN(dsn string) string {
 	return u.String()
 }
 
-// Close releases the migration source and the database connection.
+// Close releases the migration source and the session, and closes the pool
+// the session came from when Open made it.
 //
-// golang-migrate reports the two independently and either can fail; both are
-// joined into one error so a caller cannot report one and silently drop the
-// other. Safe on a zero Migrator.
+// golang-migrate reports the source and the session independently and either
+// can fail; every error is joined into one so a caller cannot report one and
+// silently drop the other. Safe on a zero Migrator.
 func (mg *Migrator) Close() error {
 	if mg == nil || mg.m == nil {
 		return nil
 	}
-	srcErr, dbErr := mg.m.Close()
-	var recErr error
+	// Closing golang-migrate's driver closes the session it is bound to,
+	// which hands it back to its pool.
+	srcErr, sessionErr := mg.m.Close()
+	var poolErr error
 	if mg.db != nil {
-		recErr = mg.db.Close()
+		poolErr = mg.db.Close()
 	}
-	return errors.Join(srcErr, dbErr, recErr)
+	return errors.Join(srcErr, sessionErr, poolErr)
 }
 
 // State is what the schema currently reports.
@@ -286,6 +322,11 @@ type Result struct {
 	// migrations that ran on top of it. A caller should say so: it is the
 	// one run in a database's life where the version moved and no SQL did.
 	Adopted *Adopted
+	// NothingEmbedded is set by Apply when the binary embeds no migrations
+	// (a nil FS, or a directory with no .sql in it): a project that has not
+	// written its first one. Nothing was read or applied. Open refuses that
+	// instead; see AutoMigrate.
+	NothingEmbedded bool
 }
 
 // Up applies every pending migration.
@@ -318,54 +359,52 @@ type Result struct {
 // *AdoptionError and nothing runs. See adopt.go.
 //
 // The whole run holds migratekit's run lock, shared with AutoMigrate, so
-// replicas racing a release through either entry point take turns, and does
-// all of its own work on the one connection that holds it. See runlock.go.
+// replicas racing a release through either entry point take turns, on the
+// Migrator's one session: a run waiting its turn holds that session and
+// nothing else. See runlock.go.
+//
+// On error the Result still says what the run did before it failed: Before,
+// and Adopted when an adoption committed — a later refusal does not undo it.
 func (mg *Migrator) Up() (res Result, err error) {
 	ctx := context.Background()
-	err = withRunLock(ctx, mg.db, func(conn *sql.Conn) error {
-		res, err = mg.up(ctx, conn)
+	err = withRunLock(ctx, mg.conn, func() error {
+		res, err = mg.up(ctx)
 		return err
 	})
 	return res, err
 }
 
-// up is Up's body, run on conn, which holds the run lock.
-func (mg *Migrator) up(ctx context.Context, conn *sql.Conn) (Result, error) {
-	before, err := mg.State()
-	if err != nil {
-		return Result{}, err
+// up is Up's body, run on mg.conn while it holds the run lock. Apply runs it
+// too, after its dirty refusal.
+func (mg *Migrator) up(ctx context.Context) (res Result, err error) {
+	if res.Before, err = mg.State(); err != nil {
+		return res, err
 	}
-	before, adopted, err := adopt(ctx, conn, mg.m, mg.source, before)
-	if err != nil {
-		return Result{}, err
+	if res.Before, res.Adopted, err = adopt(ctx, mg.conn, mg.m, mg.source, res.Before); err != nil {
+		return res, err
 	}
 	// Settled: a schema left dirty is checked as of the last version that
 	// finished, so it reaches golang-migrate's dirty refusal instead of
 	// reporting the half-applied version as missing.
-	if err := checkApplied(ctx, conn, mg.source, before.settled()); err != nil {
-		return Result{}, err
+	if err := checkApplied(ctx, mg.conn, mg.source, res.Before.settled()); err != nil {
+		return res, err
 	}
-	if ahead, err := classifyAhead(ctx, conn, mg.source, before); err != nil || ahead != nil {
-		if err != nil {
-			return Result{}, err
-		}
-		return Result{Before: before, After: before, Ahead: ahead}, nil
+	if res.Ahead, err = classifyAhead(ctx, mg.conn, mg.source, res.Before); err != nil || res.Ahead != nil {
+		res.After = res.Before
+		return res, err
 	}
-	if err := recordCompat(ctx, conn, mg.source); err != nil {
-		return Result{}, err
+	if err := recordCompat(ctx, mg.conn, mg.source); err != nil {
+		return res, err
 	}
-	res, err := mg.apply(mg.m.Up)
+	applied, err := mg.apply(mg.m.Up)
 	if err != nil {
-		if recErr := recordFailedRun(ctx, conn, mg.m, mg.source, before); recErr != nil {
-			return Result{}, errors.Join(err, recErr)
+		if recErr := recordFailedRun(ctx, mg.conn, mg.m, mg.source, res.Before); recErr != nil {
+			err = errors.Join(err, recErr)
 		}
-		return Result{}, err
+		return res, err
 	}
-	if err := recordApplied(ctx, conn, mg.source, res.Before, res.After); err != nil {
-		return Result{}, err
-	}
-	res.Adopted = adopted
-	return res, nil
+	res.Changed, res.Before, res.After = applied.Changed, applied.Before, applied.After
+	return res, recordApplied(ctx, mg.conn, mg.source, res.Before, res.After)
 }
 
 // Force sets the recorded version and CLEARS the dirty flag without running
@@ -397,8 +436,8 @@ func (mg *Migrator) up(ctx context.Context, conn *sql.Conn) (Result, error) {
 // from already claims the forced one, so it records nothing new.
 func (mg *Migrator) Force(version int) error {
 	ctx := context.Background()
-	err := withRunLock(ctx, mg.db, func(conn *sql.Conn) error {
-		return mg.force(ctx, conn, version)
+	err := withRunLock(ctx, mg.conn, func() error {
+		return mg.force(ctx, version)
 	})
 	if err != nil {
 		return fmt.Errorf("force migration version %d: %w", version, err)
@@ -406,14 +445,14 @@ func (mg *Migrator) Force(version int) error {
 	return nil
 }
 
-// force is Force's body, run on conn, which holds the run lock.
-func (mg *Migrator) force(ctx context.Context, conn *sql.Conn, version int) error {
-	return withSessionLock(ctx, conn, appliedLockKey, func() error {
+// force is Force's body, run on mg.conn while it holds the run lock.
+func (mg *Migrator) force(ctx context.Context, version int) error {
+	return withSessionLock(ctx, mg.conn, appliedLockKey, func() error {
 		before, err := mg.State()
 		if err != nil {
 			return err
 		}
-		tx, err := conn.BeginTx(ctx, nil)
+		tx, err := mg.conn.BeginTx(ctx, nil)
 		if err != nil {
 			return err
 		}
