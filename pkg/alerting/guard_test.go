@@ -93,3 +93,13 @@ func TestQueryOptionsSettings(t *testing.T) {
 		t.Fatal("a zero timeout must not emit max_execution_time=0 (unlimited)")
 	}
 }
+
+func TestLimitsOmitReadonly(t *testing.T) {
+	l := QueryOptions{MaxExecutionTime: 3 * time.Second, MaxResultRows: 9}.Limits()
+	if _, bad := l["readonly"]; bad {
+		t.Fatal("Limits must not send readonly: a readonly session refuses EXECUTE AS")
+	}
+	if l["max_execution_time"] != 3 || l["max_result_rows"] != 9 || l["result_overflow_mode"] != "throw" {
+		t.Fatalf("limits = %v", l)
+	}
+}

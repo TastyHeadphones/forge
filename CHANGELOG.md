@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`alerting.QueryOptions.Limits` and `chquery.Scan`**: the per-query limits without `readonly`, and the row reader behind `chquery.Run`, for a `Querier` that runs as an impersonated ClickHouse user (`EXECUTE AS`). Such a Querier cannot send `readonly` (a readonly session refuses the `EXECUTE AS` statement itself); the target user's profile contains the query instead. `Settings()` is now `Limits()` plus `readonly = 2`.
 - **`pkg/alerting`: a SQL alert-rule evaluator in the Prometheus shape.** A
   rule's `expr` is one ClickHouse SELECT; every row it returns is a firing
   instance, its non-value columns the labels and its `value` column the sample.
