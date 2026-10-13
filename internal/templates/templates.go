@@ -758,6 +758,12 @@ type WebhookTemplateData struct {
 	ServiceName    string // target service display name (may contain hyphens)
 	ServicePackage string // Go-package-safe form of ServiceName (snake_case)
 	Module         string // Go module path
+	// ConfigImport is the import path of the config the service's Deps
+	// takes (`Config *config.Config`), "" when it takes none; the test
+	// passes a Config only then. ConfigImportAlias is "config" when the
+	// path's last segment is not, so the test can spell config.Config.
+	ConfigImport      string
+	ConfigImportAlias string
 }
 
 // WebhookRoutesTemplateData holds data for the webhook_routes_gen.go template.

@@ -21,8 +21,10 @@ import (
 
 	"github.com/robfig/cron/v3"
 	"go.opentelemetry.io/otel"
+{{- if .HasConfig}}
 
 	"{{.Module}}/pkg/config"
+{{- end}}
 )
 
 // tracer is the OTel tracer for this worker, named after the package so
@@ -35,7 +37,9 @@ const Schedule = "{{.Schedule}}"
 // Deps contains the dependencies for the {{.Name}} cron worker.
 type Deps struct {
 	Logger *slog.Logger
+{{- if .HasConfig}}
 	Config *config.Config
+{{- end}}
 }
 
 // Worker implements a cron-scheduled background worker for {{.Name}}.

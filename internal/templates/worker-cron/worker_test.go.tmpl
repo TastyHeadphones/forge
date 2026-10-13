@@ -7,14 +7,18 @@ import (
 	"log/slog"
 	"testing"
 	"time"
+{{- if .HasConfig}}
 
 	"{{.Module}}/pkg/config"
+{{- end}}
 )
 
 func TestCronWorkerStartStop(t *testing.T) {
 	w := New(Deps{
 		Logger: slog.Default(),
+{{- if .HasConfig}}
 		Config: &config.Config{},
+{{- end}}
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -49,7 +53,9 @@ func TestCronWorkerStartStop(t *testing.T) {
 func TestCronWorkerName(t *testing.T) {
 	w := New(Deps{
 		Logger: slog.Default(),
+{{- if .HasConfig}}
 		Config: &config.Config{},
+{{- end}}
 	})
 
 	if got := w.Name(); got != "{{.Name | kebabCase}}" {
@@ -64,7 +70,9 @@ func TestCronWorkerName(t *testing.T) {
 func TestCronWorkerRunAcceptsContext(t *testing.T) {
 	w := New(Deps{
 		Logger: slog.Default(),
+{{- if .HasConfig}}
 		Config: &config.Config{},
+{{- end}}
 	})
 
 	// A cancelled context is the contract's simplest exercise: Run must

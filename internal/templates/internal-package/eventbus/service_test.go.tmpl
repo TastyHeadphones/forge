@@ -6,14 +6,18 @@ import (
 	"context"
 	"log/slog"
 	"testing"
+{{- if .HasConfig}}
 
 	"{{.Module}}/pkg/config"
+{{- end}}
 )
 
 func TestPublishSubscribe(t *testing.T) {
 	bus, err := New(Deps{
 		Logger: slog.Default(),
+{{- if .HasConfig}}
 		Config: &config.Config{},
+{{- end}}
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

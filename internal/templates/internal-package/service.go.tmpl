@@ -4,8 +4,10 @@ package {{.Name}}
 
 import (
 	"log/slog"
+{{- if .HasConfig}}
 
 	"{{.Module}}/pkg/config"
+{{- end}}
 )
 
 // Deps holds dependencies for the {{.Name}} package.
@@ -15,12 +17,15 @@ import (
 // Service. `Store *db.PostgresRepository` compiles and then forces
 // every test of this package to open a real database;
 // `Store Store` takes the mock forge already generated. This is
-// lint-enforced (forgeconv-deps-are-interfaces). Logger and Config are
-// the carve-outs: one shared singleton each, supplied by the
+// lint-enforced (forgeconv-deps-are-interfaces). {{if .HasConfig}}Logger and Config are
+// the carve-outs: one shared singleton each{{else}}Logger is the
+// carve-out: one shared singleton{{end}}, supplied by the
 // composition, not worth an interface.
 type Deps struct {
 	Logger *slog.Logger
+{{- if .HasConfig}}
 	Config *config.Config
+{{- end}}
 	// Add your dependencies here.
 }
 

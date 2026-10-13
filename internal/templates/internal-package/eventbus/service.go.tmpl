@@ -6,14 +6,18 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+{{- if .HasConfig}}
 
 	"{{.Module}}/pkg/config"
+{{- end}}
 )
 
 // Deps contains the dependencies for the event bus.
 type Deps struct {
 	Logger *slog.Logger
+{{- if .HasConfig}}
 	Config *config.Config
+{{- end}}
 }
 
 // inMemoryBus is a simple in-memory implementation suitable for development and testing.

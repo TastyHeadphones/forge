@@ -8,6 +8,7 @@ import (
 
 	"golang.org/x/mod/modfile"
 
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/naming"
 )
@@ -53,11 +54,16 @@ func GenerateWorkerFiles(root, modulePath, workerName, kind, schedule string) er
 		Package  string // Go-package-safe form
 		Module   string
 		Schedule string
+		// HasConfig: Deps takes Config, and the worker imports
+		// <module>/pkg/config, only when the project has typed config — the
+		// rule service.go follows. A project adopted in place has none.
+		HasConfig bool
 	}{
-		Name:     workerName,
-		Package:  workerPackage,
-		Module:   modulePath,
-		Schedule: schedule,
+		Name:      workerName,
+		Package:   workerPackage,
+		Module:    modulePath,
+		Schedule:  schedule,
+		HasConfig: codegen.ProjectHasTypedConfig(root),
 	}
 
 	// -- worker.go --
