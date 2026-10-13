@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-
-	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // Root-cause attribution for the failed-generate report.
@@ -110,6 +108,10 @@ type rollbackReport struct {
 // A build failure here is not an error condition for the pipeline: the run
 // has already failed, and this only decides which message is truthful.
 // Anything that prevents a verdict returns Checked=false.
+//
+// Like the validate step it compiles and links nothing (compileTree): the
+// verdict is `go build ./...`'s, without the link of every main package that
+// made this check take minutes on a large project.
 func goBuildRestoredTree(projectDir string) rollbackConsistency {
 	if _, err := os.Stat(filepath.Join(projectDir, "go.mod")); err != nil {
 		return rollbackConsistency{}
@@ -117,16 +119,18 @@ func goBuildRestoredTree(projectDir string) rollbackConsistency {
 	if _, err := exec.LookPath("go"); err != nil {
 		return rollbackConsistency{}
 	}
-	// -o os.DevNull: a compile check must never write a binary into the
-	// project (see runGoBuildValidate).
-	cmd := exec.Command("go", "build", "-o", os.DevNull, "./...")
-	cmd.Dir = projectDir
-	cmd.Env = goexec.Env()
-	out, err := cmd.CombinedOutput()
-	if err == nil {
+	rep, err := compileTree(projectDir, false)
+	if err != nil {
+		out, buildErr := goBuildFallback(projectDir, nil)
+		if buildErr == nil {
+			return rollbackConsistency{Checked: true, Builds: true}
+		}
+		return rollbackConsistency{Checked: true, Builds: false, Output: out}
+	}
+	if rep.Build == "" {
 		return rollbackConsistency{Checked: true, Builds: true}
 	}
-	return rollbackConsistency{Checked: true, Builds: false, Output: string(out)}
+	return rollbackConsistency{Checked: true, Builds: false, Output: rep.Build}
 }
 
 // classifyPostRollbackErrors splits post-rollback compiler output into the

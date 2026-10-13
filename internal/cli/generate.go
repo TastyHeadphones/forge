@@ -15,14 +15,12 @@ import (
 	"sync"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/tools/go/packages"
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/contractcheck"
 	"github.com/reliant-labs/forge/internal/generator"
-	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // generateMu protects the generation pipeline from concurrent runs.
@@ -185,7 +183,7 @@ forensics, parallel-lane and migration escape hatches); run
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "Discard hand-edits to Tier-1 files and regenerate from current templates")
 	cmd.Flags().BoolVar(&explain, "explain", false, "Print a per-file provenance log after generate")
 	cmd.Flags().BoolVar(&explainDrift, "explain-drift", false, "On Tier-1 drift, run the pipeline with drifted files redirected to .forge/render/ side renders, print a bounded diff of on-disk vs fresh render per file, then fail with the drift report (explains; never overwrites or approves)")
-	cmd.Flags().BoolVar(&skipValidate, "skip-validate", false, "Skip the final 'go build ./...' validate step (useful during multi-lane migrations when the tree is in a partial-build state)")
+	cmd.Flags().BoolVar(&skipValidate, "skip-validate", false, "Skip the final validate step — compiling every package and _test.go, as 'go build ./...' would, without linking (useful during multi-lane migrations when the tree is in a partial-build state)")
 	cmd.Flags().BoolVar(&skipPreChecks, "skip-pre-checks", false, "Bypass the pre-codegen contract-shape check (useful when a parallel lane's contract violation would otherwise block regen of this lane)")
 	cmd.Flags().BoolVar(&checkOnly, "check", false, "Run generate into a tmpdir and diff against the current tree; exit 1 on drift (for CI guards)")
 	cmd.Flags().BoolVar(&forceCleanup, "force-cleanup", false, "Actually delete stale generated files. Default is report-only: print which files WOULD be deleted and leave them in place.")
@@ -398,7 +396,7 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	defer setGenerateVerbosity(flags.Verbose)()
 
 	if flags.SkipValidate {
-		fmt.Println("⏩ --skip-validate: final 'go build ./...' step will be skipped")
+		fmt.Println("⏩ --skip-validate: the final compile check (validate generated code) will be skipped")
 	}
 	if flags.SkipPreChecks {
 		fmt.Println("⚠️  pre-codegen contract check skipped via --skip-pre-checks")
@@ -831,13 +829,13 @@ func writeFailedGenerateErrorFile(absPath string, stepErr error) {
 }
 
 // validateBuildError is the error returned by runGoBuildValidate. It
-// carries the captured `go build ./...` stderr so the pipeline's
+// carries the captured compiler output so the pipeline's
 // failure path can repeat the compiler output at the END of the run
 // (reprintCompilerOutput) and preserve it next to the failing sources
 // (writeFailedGenerateErrorFile). Unwraps to the user-facing wrapped
 // error so errors.Is/As and the printed message are unchanged.
 type validateBuildError struct {
-	Output string // full captured go build stderr
+	Output string // full captured compiler output
 	err    error  // the cliutil-wrapped user-facing error
 }
 
@@ -847,26 +845,29 @@ func (e *validateBuildError) Unwrap() error { return e.err }
 // runGoBuildValidate is the body of stepGoBuildValidate (was Step 9 in
 // the pre-refactor pipeline). Kept as a non-step helper so unit tests
 // can invoke it directly without spinning up the full GenStep loop.
+//
+// It compiles every package and every test variant in one pass and links
+// nothing (compileTree, generate_validate_compile.go): it fails exactly
+// where `go build ./...` would, plus where a forge-owned _test.go does not
+// compile.
 func runGoBuildValidate(projectDir string) error {
 	fmt.Println("\n🔨 Validating generated code...")
-	// `-o os.DevNull` makes this a pure compile check. Bare `go build ./...`
-	// WRITES a binary when the pattern matches exactly one main package,
-	// named after its directory — so a project whose only main is `./echo`
-	// failed validation with `build output "echo" already exists and is a
-	// directory`, and one whose main sits elsewhere got a stray binary
-	// dropped in its root.
-	validateCmd := exec.Command("go", "build", "-o", os.DevNull, "./...")
-	validateCmd.Dir = projectDir
-	// Never the caller's -mod=mod: a validate build that may edit go.sum
-	// makes generate's output depend on who ran it (see goexec.Env).
-	validateCmd.Env = goexec.Env()
-	var buildStderr strings.Builder
-	validateCmd.Stdout = os.Stdout
-	validateCmd.Stderr = io.MultiWriter(os.Stderr, &buildStderr)
-	if err := validateCmd.Run(); err != nil {
-		return goBuildValidateFailure(projectDir, buildStderr.String(), err)
+	rep, err := compileTree(projectDir, true)
+	if err != nil {
+		// go list could not run at all. Its verdict is unknown, so ask the
+		// build it replaced, whose report of the same problem (a broken
+		// go.mod, an unusable toolchain) is the familiar one.
+		out, buildErr := goBuildFallback(projectDir, os.Stderr)
+		if buildErr != nil {
+			return goBuildValidateFailure(projectDir, out, buildErr)
+		}
+		return nil
 	}
-	return validateTestFilesTypecheck(projectDir)
+	if rep.Build != "" {
+		fmt.Fprint(os.Stderr, rep.Build)
+		return goBuildValidateFailure(projectDir, rep.Build, errors.New("the tree does not compile"))
+	}
+	return validateTestFiles(projectDir, rep.TestFiles)
 }
 
 // goBuildValidateFailure builds the error a failed validate build returns.
@@ -957,32 +958,29 @@ func goSourceOriginOf(path string) goSourceOrigin {
 	return originHandWritten
 }
 
-// validateTestFilesTypecheck closes the hole `go build ./...` leaves:
-// it does not compile _test.go files, so a GENERATED test helper that
-// is not valid Go passes validation and `forge generate` reports
-// "✅ Code generation complete" over a tree that cannot build. The user
-// then meets the failure far from its cause — as `packages failed to
-// load` from the contract linter and `[build failed]` from their next
-// test run, neither of which names the generated file. Those helpers
-// are Tier-1 (regenerated, forge:hash), so the user cannot even edit
-// their way out.
+// validateTestFiles closes the hole `go build ./...` leaves: it does not
+// compile _test.go files, so a GENERATED test helper that is not valid Go
+// passed validation and `forge generate` reported "✅ Code generation
+// complete" over a tree that cannot build. The user then met the failure
+// far from its cause — as `packages failed to load` from the contract
+// linter and `[build failed]` from their next test run, neither of which
+// names the generated file. Those helpers are Tier-1 (regenerated,
+// forge:hash), so the user cannot even edit their way out.
 //
-// This is a pure TYPECHECK, deliberately not `go vet ./...`. Vet does
+// diags are compileTree's TestFiles: the compiler's diagnostics from the
+// test builds that cite a _test.go file, relative to projectDir. They come
+// from the same `go list -export -test` pass as the non-test verdict, so
+// the tree is loaded once; it used to be loaded a second time through
+// go/packages, which type-checked every dependency from source to answer
+// this.
+//
+// This is a COMPILE check, deliberately not `go vet ./...`. Vet does
 // typecheck test files, but it also runs its analyzer suite over
 // HAND-WRITTEN code, and those findings are not build failures: a
 // fmt.Printf arity bug in a user's own file makes `go vet` exit 1 while
 // `go build` exits 0. Wiring vet in here would fail generation on
 // projects that are perfectly valid, so the check is scoped to the one
 // question validation should ask — does it compile?
-//
-// Cost measured on a real 8-entity project: ~2.2s warm, against ~5.1s
-// for the `go build` above. It runs in-process via go/packages (already
-// a forge dependency) rather than spawning a toolchain command.
-//
-// Failure to LOAD is soft. A loader that cannot run (no toolchain in
-// PATH, a transient module-cache fault) proves nothing about the
-// generated code, and turning that into a failed generate would be the
-// same class of false positive as the vet findings above.
 //
 // ONLY A FORGE-OWNED TEST FILE FAILS THE RUN. The paragraph above names
 // the subject exactly — a file forge regenerates and stamps, which "the
@@ -1002,48 +1000,26 @@ func goSourceOriginOf(path string) goSourceOrigin {
 // filename list, so it stays true as emitters are added or renamed, and
 // a `forge project disown` (which strips the marker) correctly moves a
 // file from fail to warn along with the ownership it transferred.
-func validateTestFilesTypecheck(projectDir string) error {
-	cfg := &packages.Config{
-		Mode: packages.NeedName | packages.NeedFiles | packages.NeedTypes |
-			packages.NeedTypesInfo | packages.NeedDeps | packages.NeedImports |
-			packages.NeedSyntax,
-		Dir:   projectDir,
-		Env:   goexec.Env(),
-		Tests: true,
-	}
-	pkgs, err := packages.Load(cfg, "./...")
-	if err != nil || len(pkgs) == 0 {
-		return nil
-	}
-
-	// Report only diagnostics that cite a _test.go file. Everything
-	// else in this tree already survived `go build` above, so a
-	// non-test error here is either a duplicate of something already
-	// reported or an artifact of the loader's wider view — repeating it
-	// would bury the actionable line.
-	//
+func validateTestFiles(projectDir string, diags []string) error {
 	// Split by OWNERSHIP, because the two halves warrant opposite
 	// responses: forge's own output failing to compile is forge's bug and
 	// fails the run, while a user-owned test is the user's to fix and must
 	// never block the generate that would refresh what it compiles against.
 	var owned, theirs []string
 	seen := map[string]bool{}
-	for _, p := range pkgs {
-		for _, e := range p.Errors {
-			file, _, ok := strings.Cut(e.Pos, ":")
-			if !ok || !strings.HasSuffix(file, "_test.go") {
-				continue
-			}
-			line := e.Error()
-			if seen[line] {
-				continue
-			}
-			seen[line] = true
-			if isForgeOwnedFile(file) {
-				owned = append(owned, line)
-			} else {
-				theirs = append(theirs, line)
-			}
+	for _, d := range diags {
+		if seen[d] {
+			continue
+		}
+		seen[d] = true
+		file := filepath.FromSlash(errorLineFile(d))
+		if !filepath.IsAbs(file) {
+			file = filepath.Join(projectDir, file)
+		}
+		if isForgeOwnedFile(file) {
+			owned = append(owned, d)
+		} else {
+			theirs = append(theirs, d)
 		}
 	}
 
@@ -1065,16 +1041,17 @@ func validateTestFilesTypecheck(projectDir string) error {
 	sort.Strings(owned)
 	output := strings.Join(owned, "\n") + "\n"
 	fmt.Fprintf(os.Stderr, "\n%s", output)
-	// Quote the first error on the ROOT CAUSE line, as goBuildValidateFailure does.
-	quoted := owned[0]
+	// Quote the first error on the ROOT CAUSE line, as goBuildValidateFailure
+	// does: its first line, without the continuation lines that follow it.
+	quoted, _, _ := strings.Cut(owned[0], "\n")
 	if more := len(owned) - 1; more > 0 {
-		quoted += fmt.Sprintf(" (+%d more typecheck error(s) in the output)", more)
+		quoted += fmt.Sprintf(" (+%d more compile error(s) in the output)", more)
 	}
 	return &validateBuildError{
 		Output: output,
 		err: cliutil.WrapUserErr("forge generate (validate generated code)",
 			"generated test files do not compile", "",
-			"a forge-generated _test.go file in this tree fails to typecheck — this is a forge codegen bug worth reporting",
+			"a forge-generated _test.go file in this tree does not compile — this is a forge codegen bug worth reporting",
 			errors.New(quoted)),
 	}
 }
