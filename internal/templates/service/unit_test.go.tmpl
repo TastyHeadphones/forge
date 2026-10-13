@@ -77,7 +77,16 @@ func Test{{$m.Name | goName}}_Generated(t *testing.T) {
 	// {{.ServicePackage}}.NewTest{{.TestHelperName}} (helpers_gen_test.go) returns the
 	// {{.ServicePackage}} *Service wired with stubbed dependencies. Override one
 	// with {{.ServicePackage}}.With{{.TestHelperName}}Deps(...), or per-row via Case.Setup.
+{{- if .UnfilledDeps}}
+	//
+	// WithPlaceholderDeps stands in for {{joinStrings .UnfilledDeps ", "}}, which
+	// the harness cannot construct. The scaffold row is answered before the
+	// handler reaches it; supply a real one through With{{.TestHelperName}}Deps
+	// before adding a row that does.
+	svc := {{.ServicePackage}}.NewTest{{.TestHelperName}}(t, {{.ServicePackage}}.WithPlaceholderDeps())
+{{- else}}
 	svc := {{.ServicePackage}}.NewTest{{.TestHelperName}}(t)
+{{- end}}
 
 	tdd.RunRPCCases(t, []tdd.RPCCase[pb.{{$m.InputType | goName}}, pb.{{$m.OutputType | goName}}]{
 		{

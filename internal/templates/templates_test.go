@@ -70,6 +70,7 @@ func TestComponentTestHelpersTemplate_MinimalService(t *testing.T) {
 			NeedsTime, NeedsULID bool
 		}
 		FuncTodos    []struct{ FieldName, TypeExpr string }
+		UnfilledDeps []struct{ FieldName, TypeExpr string }
 		ExtraImports []struct{ Alias, Path string }
 	}{
 		Module:                 "example.com/myproject",
@@ -535,6 +536,7 @@ func TestComponentTestHelpersTemplate_PackageContractName(t *testing.T) {
 			NeedsTime, NeedsULID bool
 		}
 		FuncTodos    []struct{ FieldName, TypeExpr string }
+		UnfilledDeps []struct{ FieldName, TypeExpr string }
 		ExtraImports []struct{ Alias, Path string }
 	}{
 		Module:          "example.com/myproject",

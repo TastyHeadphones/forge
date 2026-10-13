@@ -197,6 +197,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `WithXDeps(Deps{Repo: &StubRepo{GetChatFunc: ...}})`. A test that called
   through an unprogrammed stub and relied on the zero answer now gets the
   error, which names the method to program.
+- **A handler whose Deps require something the test harness cannot build
+  gets scaffolded tests that pass as written.** The harness fills Logger,
+  Config, an `orm.Context` DB, Clock and IDGen, and stubs interfaces; a
+  required `*sql.DB` (reliant's account handler), any other pointer, map,
+  slice or channel, or a func with no framework default stayed nil, so
+  `NewTest<Svc>(t)` died in `validateDeps` with "Deps.SQL is required". That
+  included every test forge scaffolded beside the handler, which could not
+  pass without an edit. Now:
+  - the harness has a `WithPlaceholderDeps()` option that fills each such
+    field the test left nil with a never-initialised stand-in
+    (`testkit.Placeholder`): `new(T)` for a pointer, an empty map or slice,
+    an unbuffered channel, a func that panics naming the field. It is for
+    rows that never reach the dependency;
+  - the scaffolded per-RPC tests and CRUD lifecycle test of such a service
+    pass it, with a comment naming the fields, so they pass as written;
+  - a construction failure appends which of those fields are still nil, and
+    both remedies: `With<Svc>Deps(Deps{...})`, or `WithPlaceholderDeps()`
+    (`testkit.UnfilledDepsHint`). Optional deps are never touched.
 - **A failed `forge generate` that changed no Go file no longer builds the
   project to report on its rollback.** After reverting a failed run, generate
   ran `go build ./...` over the restored tree to say whether it compiles. It

@@ -114,6 +114,8 @@ type testConfig struct {
 	// on every call; anonymous skips it. Only the server factory reads these.
 	principal []testkit.ClaimsOption
 	anonymous bool
+	// placeholders is WithPlaceholderDeps.
+	placeholders bool
 {{- end}}
 }
 
@@ -156,6 +158,17 @@ func WithPrincipal(opts ...testkit.ClaimsOption) TestOption {
 func WithoutPrincipal() TestOption {
 	return func(c *testConfig) { c.anonymous = true }
 }
+
+// WithPlaceholderDeps fills every required Deps field this harness cannot
+// construct{{if .UnfilledDeps}} ({{range $i, $d := .UnfilledDeps}}{{if $i}}, {{end}}{{$d.FieldName}}{{end}}){{else}} (this service has none){{end}}, and that the test left
+// nil, with a never-initialised stand-in: new(T) for a pointer, an empty map
+// or slice, an unbuffered channel, or a func that panics naming the field.
+// It is for a test whose rows never reach those dependencies — the scaffolded
+// tests, whose rows are answered before the handler touches one. Supply a
+// real one through With{{.FieldName}}Deps before adding a row that does.
+func WithPlaceholderDeps() TestOption {
+	return func(c *testConfig) { c.placeholders = true }
+}
 {{- end}}
 {{if .IsService}}
 // NewTest{{.FieldName}} creates a test instance of the {{.FieldName}} service with
@@ -174,12 +187,41 @@ func WithoutPrincipal() TestOption {
 func NewTest{{.FieldName}}(t *testing.T, opts ...TestOption) *Service {
 	t.Helper()
 	cfg := testkit.ApplyOptions(defaultTestConfig(t), opts...)
-	svc, err := {{.ConstructorName}}(newTest{{.FieldName}}Deps(cfg))
+	return newTest{{.FieldName}}Service(t, cfg)
+}
+
+// newTest{{.FieldName}}Service constructs the service both factories return.
+{{- if .UnfilledDeps}}
+// A construction failure names any dependency this harness cannot build that
+// is still nil, and how to supply it.
+{{- end}}
+func newTest{{.FieldName}}Service(t *testing.T, cfg *testConfig) *Service {
+	t.Helper()
+	deps := newTest{{.FieldName}}Deps(cfg)
+	svc, err := {{.ConstructorName}}(deps)
 	if err != nil {
+{{- if .UnfilledDeps}}
+		t.Fatalf("creating {{.Name}} service: %v%s", err, testkit.UnfilledDepsHint("With{{.FieldName}}Deps", unfilled{{.FieldName}}Deps(deps)...))
+{{- else}}
 		t.Fatalf("creating {{.Name}} service: %v", err)
+{{- end}}
 	}
 	return svc
 }
+{{- if .UnfilledDeps}}
+
+// unfilled{{.FieldName}}Deps names the required Deps fields this harness
+// cannot construct that are still nil in deps.
+func unfilled{{.FieldName}}Deps(deps Deps) []string {
+	var unfilled []string
+{{- range .UnfilledDeps}}
+	if deps.{{.FieldName}} == nil {
+		unfilled = append(unfilled, {{printf "%q" (printf "Deps.%s (%s)" .FieldName .TypeExpr)}})
+	}
+{{- end}}
+	return unfilled
+}
+{{- end}}
 
 // newTest{{.FieldName}}Deps resolves the effective Deps for a test
 // {{.FieldName}} instance: start from the With{{.FieldName}}Deps override
@@ -235,8 +277,15 @@ func newTest{{.FieldName}}Deps(cfg *testConfig) Deps {
 	// TODO: no test default for func-typed dep {{.FieldName}} ({{.TypeExpr}}).
 	// forge can only default a Clock (func() time.Time) or IDGen (func() string);
 	// supply this func via With{{$parent.FieldName}}Deps, or mark the field
-	// `//forge:optional-dep` if nil is acceptable — otherwise NewTest{{$parent.FieldName}}
-	// fails at validateDeps.
+	// `//forge:optional-dep` if nil is acceptable. WithPlaceholderDeps fills it
+	// with one that panics when called.
+{{- end}}
+{{- if .UnfilledDeps}}
+	if cfg.placeholders {
+{{- range .UnfilledDeps}}
+		testkit.Placeholder(&deps.{{.FieldName}}, "Deps.{{.FieldName}}")
+{{- end}}
+	}
 {{- end}}
 	return deps
 }
@@ -309,10 +358,7 @@ func ({{.Receiver}} *{{$stub}}) {{.Name}}({{.NamedParams}}){{if .Results}} {{.Re
 func NewTest{{.FieldName}}Server(t *testing.T, opts ...TestOption) (*httptest.Server, {{.ProtoConnectPkg}}.{{.ConnectServiceGoName}}Client) {
 	t.Helper()
 	cfg := testkit.ApplyOptions(defaultTestConfig(t), opts...)
-	svc, err := {{.ConstructorName}}(newTest{{.FieldName}}Deps(cfg))
-	if err != nil {
-		t.Fatalf("creating {{.Name}} service: %v", err)
-	}
+	svc := newTest{{.FieldName}}Service(t, cfg)
 	var handlerOpts []connect.HandlerOption
 	if !cfg.anonymous {
 		handlerOpts = append(handlerOpts, testkit.ServerPrincipal(middleware.ContextWithClaims, cfg.principal...))

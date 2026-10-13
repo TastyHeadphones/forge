@@ -54,6 +54,11 @@ type ServiceTemplateData struct {
 	HandlerName         string               // connect-go's base for the service: "EchoService" (Unimplemented<base>Handler)
 	ProtoFileSymbol     string               // e.g. "File_services_echo_v1_echo_proto"
 	Methods             []MethodTemplateData // method data for handlers.go.tmpl and test templates
+	// UnfilledDeps describes the required Deps fields the test harness
+	// cannot construct ("Deps.SQL (*sql.DB)", UnfilledDepsFor). When any
+	// exist, the scaffolded tests pass WithPlaceholderDeps() so they pass
+	// as written.
+	UnfilledDeps []string
 	// TestHelperName is the disambiguated suffix that the bootstrap testing
 	// generator uses for `app.NewTest<X>` and `app.NewTest<X>Server` helpers.
 	// Equal to PascalCase(ServicePackage) when there's no cross-role

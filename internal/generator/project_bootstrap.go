@@ -157,6 +157,7 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 			UnresolvedStubs []unresolvedStub
 			FuncDefaults    []funcDefault
 			FuncTodos       []unresolvedStub
+			UnfilledDeps    []unresolvedStub
 
 			ExtraImports []extraImport
 		}{
