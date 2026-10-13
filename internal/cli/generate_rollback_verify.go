@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/checksums"
 )
 
 // "Your tree is back to its pre-run state" is a claim about the WHOLE tree,
@@ -173,6 +175,17 @@ func fileSum(root, rel string) ([sha256.Size]byte, bool) {
 // installs.
 var verifyRootExcluded = map[string]bool{".forge": true, ".git": true, "node_modules": true}
 
+// verifyKeptState are the files under an excluded .forge/ that are still
+// the project's: the committed ownership state and birth ledger. A run that
+// rewrites one has changed the project, and both verdicts must see it.
+var verifyKeptState = func() map[string]bool {
+	out := map[string]bool{}
+	for _, rel := range checksums.CommittedStateFiles() {
+		out[rel] = true
+	}
+	return out
+}()
+
 // listWorkTree returns the project's files, slash-separated and relative to
 // root.
 func listWorkTree(root string) ([]string, bool) {
@@ -200,6 +213,11 @@ func listWorkTree(root string) ([]string, bool) {
 	if err != nil {
 		return nil, false
 	}
+	for rel := range verifyKeptState {
+		if info, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); statErr == nil && info.Mode().IsRegular() {
+			out = append(out, rel)
+		}
+	}
 	return out, true
 }
 
@@ -225,7 +243,7 @@ func gitListWorkTree(root string) ([]string, bool) {
 			continue
 		}
 		top, _, _ := strings.Cut(rel, "/")
-		if verifyRootExcluded[top] {
+		if verifyRootExcluded[top] && !verifyKeptState[rel] {
 			continue
 		}
 		seen[rel] = true

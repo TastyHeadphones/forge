@@ -403,11 +403,14 @@ type WriteSummary struct {
 	Created []string
 	// Updated are paths that existed and whose bytes differ now.
 	Updated []string
+	// Deleted are paths that existed and are gone now — a retired
+	// generated file (RemoveJournaled) is a change like any write.
+	Deleted []string
 }
 
 // Changed returns the number of paths whose on-disk bytes differ from
-// their pre-run state.
-func (s WriteSummary) Changed() int { return len(s.Created) + len(s.Updated) }
+// their pre-run state: created, updated or deleted.
+func (s WriteSummary) Changed() int { return len(s.Created) + len(s.Updated) + len(s.Deleted) }
 
 // SummarizeWrites compares every journaled path's CURRENT bytes against
 // the pre-run bytes the journal captured, and reports what changed. It
@@ -429,11 +432,14 @@ func SummarizeWrites(root string) WriteSummary {
 		sum.Touched++
 		current, err := os.ReadFile(filepath.Join(root, relPath))
 		if err != nil {
-			// Targeted but not readable now: the write failed, or a later
-			// step removed it. Either way the bytes are not what they
-			// were, and silence would be the wrong answer — but we cannot
-			// call it created or updated, so it stays counted in Touched
-			// only.
+			// Gone now. A path that existed before the run was deleted —
+			// a retired generated file — and that is a change; one that
+			// did not exist was created and removed again, which is none.
+			// Unreadable-but-present cannot be called anything, so it
+			// stays counted in Touched only.
+			if os.IsNotExist(err) && entry.existed {
+				sum.Deleted = append(sum.Deleted, relPath)
+			}
 			continue
 		}
 		if !entry.existed {
@@ -452,6 +458,7 @@ func SummarizeWrites(root string) WriteSummary {
 	}
 	sort.Strings(sum.Created)
 	sort.Strings(sum.Updated)
+	sort.Strings(sum.Deleted)
 	return sum
 }
 

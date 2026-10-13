@@ -432,26 +432,28 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// we never persist manifest state describing writes we just undid.
 	checksums.BeginRollbackJournal(ctx.AbsPath)
 	rolledBack := false
-	// Fingerprint the tree BEFORE any step can write, so a failed run's
-	// "your tree is back to its pre-run state" is checked against what the
-	// tree actually was rather than asserted from the journal alone. Not
-	// taken under --no-revert, which never makes that claim.
-	var preRun *workTreeSnapshot
-	if !flags.NoRevert {
-		preRun = snapshotWorkTree(ctx.AbsPath)
-	}
+	// Fingerprint the tree BEFORE any step can write. Two claims are checked
+	// against it rather than asserted from the journal alone: a failed run's
+	// "your tree is back to its pre-run state", and a successful run's "N
+	// changed". The second is taken under --no-revert too: agents read that
+	// line as the fixed-point check, so it must count every write, whatever
+	// made it.
+	preRun := snapshotWorkTree(ctx.AbsPath)
 
 	// Save checksums on exit, even on partial failures: a step that
 	// successfully wrote files should have those tracked so the user's
 	// next `forge project audit` doesn't false-flag user-edited drift. EXCEPTION:
 	// a rolled-back run restored the tree to its pre-run state, so saving
 	// the post-write manifest would describe files that no longer exist on
-	// disk — skip it and let the pre-run state files stand.
+	// disk — skip it and let the pre-run state files stand. The success
+	// path saves before its completion line instead (checksumsSaved), so
+	// the line counts the state files.
+	checksumsSaved := false
 	defer func() {
 		if ctx.Checksums == nil {
 			return
 		}
-		if rolledBack {
+		if rolledBack || checksumsSaved {
 			return
 		}
 		if saveErr := generator.SaveChecksums(ctx.AbsPath, ctx.Checksums); saveErr != nil {
@@ -586,17 +588,80 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		return err
 	}
 
-	// Success: the writes stand. Read the write ledger BEFORE dropping the
-	// journal — it is the only record of what this run actually did, and
-	// the completion line is required to prove its claim from it.
-	summary := checksums.SummarizeWrites(ctx.AbsPath)
+	// Success: the writes stand. The ownership state files are the run's
+	// last writes; land them first, so the completion line counts them.
+	if ctx.Checksums != nil {
+		if saveErr := generator.SaveChecksums(ctx.AbsPath, ctx.Checksums); saveErr != nil {
+			log.Printf("Warning: failed to save checksums: %v", saveErr)
+		}
+		checksumsSaved = true
+	}
+	// Read the write ledger BEFORE dropping the journal — it is the record
+	// of what forge's writers did — and check it against the pre-run
+	// fingerprint, which sees every write, journaled or not.
+	summary, outside := completeWriteSummary(checksums.SummarizeWrites(ctx.AbsPath), ctx.AbsPath, preRun)
 	checksums.CommitRollback()
 	if err := os.RemoveAll(filepath.Join(ctx.AbsPath, failedGenerateDir)); err != nil {
 		fmt.Fprintf(os.Stderr, "⚠️  Warning: could not clean up %s: %v\n", failedGenerateDir, err)
 	}
 	fmt.Println()
-	printGenerateOutcome(os.Stdout, summary, flags, len(steps), totalSteps)
+	printGenerateOutcome(os.Stdout, summary, outside, flags, len(steps), totalSteps)
 	return nil
+}
+
+// completeWriteSummary adds to sum every file the pre-run fingerprint
+// shows changed that forge's write journal does not hold, and returns the
+// ones outside forge's own state directory (.forge/) separately, so the
+// completion line can name them.
+//
+// The journal records the writes that go through forge's chokepoints. A
+// write that does not — the scaffold birth ledger saving itself, a step's
+// raw os.WriteFile, a tool nobody declared — used to vanish from the count:
+// generate printed "0 changed" while rewriting .forge/scaffolded.json, and
+// the agent reading that line as its fixed point never saw the drift. The
+// fingerprint closes the class rather than the instance: any file whose
+// bytes differ from the pre-run tree counts, whatever wrote it.
+//
+// A nil snapshot (the tree could not be listed) leaves sum as the journal
+// alone reported it.
+func completeWriteSummary(sum checksums.WriteSummary, root string, pre *workTreeSnapshot) (checksums.WriteSummary, []string) {
+	if pre == nil {
+		return sum, nil
+	}
+	changed, ok := pre.changedSince(root, nil)
+	if !ok {
+		return sum, nil
+	}
+	counted := map[string]bool{}
+	for _, set := range [][]string{sum.Created, sum.Updated, sum.Deleted} {
+		for _, rel := range set {
+			counted[rel] = true
+		}
+	}
+	var outside []string
+	for _, rel := range changed {
+		if counted[rel] {
+			continue
+		}
+		sum.Touched++
+		_, existed := pre.files[rel]
+		_, exists := stampOf(root, rel, false)
+		switch {
+		case !existed:
+			sum.Created = append(sum.Created, rel)
+		case !exists:
+			sum.Deleted = append(sum.Deleted, rel)
+		default:
+			sum.Updated = append(sum.Updated, rel)
+		}
+		if !strings.HasPrefix(rel, ".forge/") {
+			outside = append(outside, rel)
+		}
+	}
+	sort.Strings(sum.Created)
+	sort.Strings(sum.Updated)
+	sort.Strings(sum.Deleted)
+	return sum, outside
 }
 
 // pipelineSteps is the step plan runGeneratePipelineFlags executes —
@@ -627,8 +692,8 @@ var pipelineSteps = generateSteps
 //	              is the normal, healthy re-run and stays a quiet one-liner.
 //	Changed > 0   real work landed. Name the counts; the file names are
 //	              already on screen from the per-step output above.
-func printGenerateOutcome(w io.Writer, sum checksums.WriteSummary, flags pipelineFlags, ranSteps, totalSteps int) {
-	if sum.Touched == 0 {
+func printGenerateOutcome(w io.Writer, sum checksums.WriteSummary, outside []string, flags pipelineFlags, ranSteps, totalSteps int) {
+	if sum.Touched == 0 && sum.Changed() == 0 {
 		fmt.Fprintf(w, "⚠️  Code generation ran %d of %d pipeline steps and WROTE NO FILES.\n", ranSteps, totalSteps)
 		switch {
 		case flags.Steps != "" || flags.TemplatesOnly:
@@ -647,8 +712,18 @@ func printGenerateOutcome(w io.Writer, sum checksums.WriteSummary, flags pipelin
 		fmt.Fprintf(w, "✅ Code generation complete — %d file(s) up to date, 0 changed.\n", sum.Touched)
 		return
 	}
-	fmt.Fprintf(w, "✅ Code generation complete — %d file(s) written, %d changed (%d new, %d updated).\n",
-		sum.Touched, sum.Changed(), len(sum.Created), len(sum.Updated))
+	detail := fmt.Sprintf("%d new, %d updated", len(sum.Created), len(sum.Updated))
+	if len(sum.Deleted) > 0 {
+		detail += fmt.Sprintf(", %d removed", len(sum.Deleted))
+	}
+	fmt.Fprintf(w, "✅ Code generation complete — %d file(s) written, %d changed (%s).\n",
+		sum.Touched, sum.Changed(), detail)
+	if len(outside) > 0 {
+		// Counted above, and named here: no forge writer recorded these, so
+		// either a step wrote them directly or another process did while
+		// generate ran. Either way the tree moved, and the reader decides.
+		fmt.Fprintf(w, "   %d of them changed outside forge's writers: %s\n", len(outside), strings.Join(outside, ", "))
+	}
 }
 
 // planFlagEcho reproduces the pipeline-narrowing flags so the suggested
