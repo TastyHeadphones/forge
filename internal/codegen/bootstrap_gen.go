@@ -553,6 +553,10 @@ type BootstrapTestServiceData struct {
 	// instead of hitting a silent nil-func validateDeps failure — the
 	// func-typed analog of UnresolvedStubs.
 	FuncTodos []UnresolvedAutoStub
+	// UnfilledDeps lists every required Deps field the harness leaves nil
+	// because it cannot construct one (see computeUnfilledDeps). Each gets
+	// a WithPlaceholderDeps fill and a line in the construction failure.
+	UnfilledDeps []UnresolvedAutoStub
 }
 
 // ConstructorName is the constructor selector the testing.go template must
@@ -755,6 +759,7 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 			UnresolvedStubs:        unresolvedStubs,
 			FuncDefaults:           funcDefaults,
 			FuncTodos:              funcTodos,
+			UnfilledDeps:           computeUnfilledDeps(handlerDir),
 		})
 	}
 
@@ -1042,6 +1047,7 @@ type componentTestHelperData struct {
 	UnresolvedStubs []UnresolvedAutoStub
 	FuncDefaults    []DepsFuncDefault
 	FuncTodos       []UnresolvedAutoStub
+	UnfilledDeps    []UnresolvedAutoStub
 	ExtraImports    []ExtraImport
 }
 
@@ -1079,6 +1085,7 @@ func writeComponentTestHelpers(data bootstrapTestingTemplateData, projectDir str
 			UnresolvedStubs:        svc.UnresolvedStubs,
 			FuncDefaults:           svc.FuncDefaults,
 			FuncTodos:              svc.FuncTodos,
+			UnfilledDeps:           svc.UnfilledDeps,
 		}
 		dir := filepath.Join(projectDir, "internal", "handlers", filepath.FromSlash(svc.ImportPath))
 		d.setConfigImport(dir)
@@ -1729,6 +1736,83 @@ func computeFuncDefaults(handlerDir string) ([]DepsFuncDefault, []UnresolvedAuto
 		}
 	}
 	return defaults, todos
+}
+
+// computeUnfilledDeps returns every REQUIRED Deps field of the handler in
+// handlerDir that the test harness leaves nil because it cannot construct
+// one: a pointer, slice, map or channel to something concrete (account's
+// `SQL *sql.DB`), and a func with no framework default.
+//
+// The harness fills Logger, Config, an orm.Context DB, Clock and IDGen
+// funcs, and auto-stubs interfaces. Everything here is a value only the
+// test can supply, so a bare NewTest<Svc>(t) used to die in validateDeps
+// with "Deps.SQL is required" and no word on what to do — including in the
+// scaffolded test forge itself wrote, which therefore could never pass
+// without an edit. Each field listed here gets:
+//
+//   - a fill under WithPlaceholderDeps(): a never-initialised stand-in
+//     (testkit.Placeholder) for a test whose rows never reach it, which is
+//     what the scaffolded tests pass;
+//   - a line in NewTest<Svc>'s construction failure naming the field, its
+//     type, and both ways to supply it.
+//
+// Only types that are nil-able BY SYNTAX qualify: the harness compares each
+// against nil, and a bare named type (a local struct, `sql.DB` by value)
+// may be a struct that does not compare — and that validateDeps cannot
+// reject as nil anyway. Unresolved interface selectors stay on the
+// UnresolvedStubs path for the same reason.
+func computeUnfilledDeps(handlerDir string) []UnresolvedAutoStub {
+	fields, err := ParseServiceDeps(handlerDir)
+	if err != nil || len(fields) == 0 {
+		return nil
+	}
+	var out []UnresolvedAutoStub
+	for _, f := range fields {
+		if f.Optional {
+			continue
+		}
+		t := strings.TrimSpace(f.Type)
+		switch f.Name {
+		case "Logger", "Config":
+			continue // the harness's own defaults
+		case "DB":
+			if strings.HasSuffix(t, "orm.Context") {
+				continue // the harness's ephemeral postgres
+			}
+		}
+		if t == frameworkClockType || t == frameworkIDGenType {
+			continue // computeFuncDefaults fills these
+		}
+		if !nilableBySyntax(t) {
+			continue
+		}
+		out = append(out, UnresolvedAutoStub{FieldName: f.Name, TypeExpr: t})
+	}
+	return out
+}
+
+// nilableBySyntax reports whether a rendered Deps field type is a pointer,
+// slice, map, channel or func type — nil-able whatever it points at.
+func nilableBySyntax(t string) bool {
+	for _, prefix := range []string{"*", "[]", "map[", "chan ", "chan<-", "<-chan", "func("} {
+		if strings.HasPrefix(t, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// UnfilledDepsFor describes each required Deps field of the handler in
+// handlerDir that the test harness cannot construct, as "Deps.SQL
+// (*sql.DB)". The scaffolded handler tests read it: a service with any
+// such field gets tests that pass WithPlaceholderDeps(), so the file forge
+// writes passes as written.
+func UnfilledDepsFor(handlerDir string) []string {
+	var out []string
+	for _, d := range computeUnfilledDeps(handlerDir) {
+		out = append(out, "Deps."+d.FieldName+" ("+d.TypeExpr+")")
+	}
+	return out
 }
 
 // ComponentTestHelperRelPath is the project-relative path of a service's

@@ -503,9 +503,11 @@ func IsScaffoldTestFile(name string) bool {
 // comment string in a user-owned file silently controlled whether forge
 // would overwrite it.
 func writeScaffoldTests(targetDir string, data ServiceTemplateData) error {
+	unfilled := UnfilledDepsFor(targetDir)
 	for _, m := range data.Methods {
 		one := data
 		one.Methods = []MethodTemplateData{m}
+		one.UnfilledDeps = unfilled
 		content, err := templates.ServiceTemplates().Render("unit_test.go.tmpl", one)
 		if err != nil {
 			return fmt.Errorf("render unit_test.go.tmpl for %s: %w", m.Name, err)

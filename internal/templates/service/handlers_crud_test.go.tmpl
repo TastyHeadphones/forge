@@ -116,7 +116,7 @@ func assertCleanError(t *testing.T, label string, err error, want connect.Code) 
 // path for {{.EntityName}} end to end.
 func TestCRUD_{{.EntityName}}_Lifecycle(t *testing.T) {
 	db := crudTestDB(t)
-	svc := {{$.Package}}.NewTest{{$.TestHelperName}}(t, {{$.Package}}.WithDB(db))
+	svc := {{$.Package}}.NewTest{{$.TestHelperName}}(t, {{$.Package}}.WithDB(db){{if $.UnfilledDeps}}, {{$.Package}}.WithPlaceholderDeps(){{end}})
 	ctx := crudTestCtx()
 
 	// Two creates must produce two rows with distinct, non-empty IDs.

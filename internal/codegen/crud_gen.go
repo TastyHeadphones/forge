@@ -1664,6 +1664,10 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, helperEntit
 
 // CRUDTestTemplateData holds all data needed to render the CRUD test template.
 type CRUDTestTemplateData struct {
+	// UnfilledDeps mirrors ServiceTemplateData.UnfilledDeps: when the
+	// harness cannot construct a required Deps field, the lifecycle test
+	// passes WithPlaceholderDeps() so it constructs as written.
+	UnfilledDeps []string
 	Package      string                   // Go package name, e.g. "patients"
 	Module       string                   // Go module path, e.g. "github.com/demo-project"
 	ProtoPackage string                   // e.g. "proto/services/patients"
@@ -1841,6 +1845,7 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 	data := buildCRUDTestTemplateData(svc, filteredMethods, modulePath, projectDir, fix)
 	data.Package = pkg
 	data.TestHelperName = ComputeTestHelperName(pkg, projectDir)
+	data.UnfilledDeps = UnfilledDepsFor(targetDir)
 	// relDir is internal/handlers/<leaf>; the import needs the leaf.
 	data.ServiceImportPath = filepath.ToSlash(filepath.Base(relDir))
 
