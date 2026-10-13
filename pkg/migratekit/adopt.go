@@ -50,6 +50,35 @@ import (
 // safe: goose finds every version it knows applied and does nothing. It also
 // means adoption never re-runs: once golang-migrate records a version, this
 // check never looks at goose again.
+//
+// ADOPTING A SQUASHED FORGE HISTORY (`-- forge:adopts forge <versions>`, which
+// `forge db squash` writes). The databases that history built have the
+// baseline's schema and a forge record of how they got it: schema_migrations
+// at the history's last version, and a schema_migrations_applied row for each
+// version applied. This binary carries none of those versions, and without
+// the declaration every check misreads them — "AHEAD" when the baseline is
+// numbered above the history, "MISSING" below it. With it, a database is a
+// candidate when its schema version is one the baseline lists, and it is
+// adopted when every listed version is recorded as applied: the baseline gets
+// its applied row and becomes the schema's version (Force), none of its SQL
+// runs, and the migrations after it apply as usual on the same run.
+//
+//   - A listed version with no applied row: the database is BEHIND the
+//     squash. The release before the squash still carries that migration;
+//     this one cannot.
+//   - A schema version the list does not hold (when the database shares no
+//     migration with this binary): the squash was cut before that migration
+//     merged.
+//
+// A database that predates the applied record has only golang-migrate's high
+// water mark, which golang-migrate never applies below: the listed versions
+// at or below it count as applied, as bootstrapApplied counts them.
+//
+// The old rows stay, like goose's table and for the same reason: the release
+// before the squash finds every version it knows recorded under its own
+// files. A squash numbered above its history, with `-- forge:backward-
+// compatible` (squash writes both), is then a version that release reads as
+// a compatible schema ahead of it, so rolling back to it keeps working.
 
 // gooseTable is goose's default version table. Unqualified, as goose itself
 // creates it: it resolves through the search_path, like every table here.
@@ -63,7 +92,8 @@ const adoptionListCap = 12
 // Adopted reports a database this call adopted: the baseline was recorded as
 // applied and none of its SQL ran.
 type Adopted struct {
-	// Tool is the migration tool whose history was adopted (compat.ToolGoose).
+	// Tool is the migration tool whose history was adopted (compat.ToolGoose,
+	// or compat.ToolForge for a squashed forge history).
 	Tool string
 	// Version is the baseline's version, now the schema's.
 	Version uint
@@ -71,6 +101,16 @@ type Adopted struct {
 	Name string
 	// Versions is how many of the tool's versions were verified applied.
 	Versions int
+}
+
+// String is the line a command prints for an adoption.
+func (a *Adopted) String() string {
+	if a.Tool == compat.ToolForge {
+		return fmt.Sprintf("ADOPTED a database the forge migrations %s squashed had built: %s recorded as applied without running its SQL "+
+			"(%d forge versions verified; their applied records left in place)", a.Name, a.Name, a.Versions)
+	}
+	return fmt.Sprintf("ADOPTED a database %s migrated: %s recorded as applied without running its SQL "+
+		"(%d %s versions verified; %s's own table left in place)", a.Tool, a.Name, a.Versions, a.Tool, a.Tool)
 }
 
 // AdoptionError is a database another tool migrated whose recorded history is
@@ -97,6 +137,9 @@ type AdoptionError struct {
 }
 
 func (e *AdoptionError) Error() string {
+	if e.Tool == compat.ToolForge {
+		return e.forgeError()
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "this database was migrated by %s (%s), and its history is not the one %s replaces", e.Tool, e.Table, e.Baseline)
 	if len(e.Missing) > 0 {
@@ -113,6 +156,27 @@ func (e *AdoptionError) Error() string {
 			len(e.Unexpected), e.Tool, capVersions(e.Unexpected), e.Tool, compat.AdoptsDirective, e.Tool, e.Table)
 	}
 	b.WriteString(". NOTHING WAS APPLIED. See the forge skill db/deploy-migrations, \"Adopting a database another tool migrated\"")
+	return b.String()
+}
+
+// forgeError is Error for a squashed forge history, whose remedies differ:
+// the release before the squash is the one that finishes the history, and a
+// short list is re-cut with `forge db squash`.
+func (e *AdoptionError) forgeError() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "this database was built by forge migrations, and its history is not the one %s squashed", e.Baseline)
+	if len(e.Missing) > 0 {
+		fmt.Fprintf(&b, "; it has NOT applied %d of the %d migration(s) the baseline lists: %s — this binary no longer carries them, "+
+			"so it cannot finish that history: run the release before the squash against this database first (it applies them), "+
+			"then this one, which adopts the database without re-running anything",
+			len(e.Missing), e.Declared, capVersions(e.Missing))
+	}
+	if len(e.Unexpected) > 0 {
+		fmt.Fprintf(&b, "; its schema is at version %s, which the baseline does not list — the squash was cut before that "+
+			"migration merged: re-run `forge db squash` over the full history, so its `%s %s` lines include it",
+			capVersions(e.Unexpected), compat.AdoptsDirective, compat.ToolForge)
+	}
+	b.WriteString(". NOTHING WAS APPLIED. See the forge skill db/deploy-migrations, \"Squashing a forge history\"")
 	return b.String()
 }
 
@@ -161,7 +225,26 @@ func validateAdoption(source sourceSet) error {
 			"a database %s migrated has run none of this project's migrations, and %s comes before it",
 			m.Name, compat.AdoptsDirective, m.Adopts.Tool, m.Adopts.Tool, source[0].Name)
 	}
+	if baseline, ok := source.adopter(); ok && baseline.Adopts.Tool == compat.ToolForge {
+		if carried := source.carried(baseline.Adopts.Versions); len(carried) > 0 {
+			return fmt.Errorf("migration %s declares `%s %s` for version(s) %s, which this binary still carries: a squash replaces "+
+				"the migrations it lists, so a listed version can be neither the baseline's own nor a file beside it — "+
+				"number the baseline outside the history it squashed, and move the squashed files out of the directory",
+				baseline.Name, compat.AdoptsDirective, compat.ToolForge, capVersions(carried))
+		}
+	}
 	return nil
+}
+
+// carried returns the versions in vs that the set embeds.
+func (s sourceSet) carried(vs []int64) []int64 {
+	var out []int64
+	for _, v := range vs {
+		if v > 0 && s.has(uint(v)) {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // adopt adopts a database another tool migrated, when the embedded baseline
@@ -191,7 +274,13 @@ func validateAdoption(source sourceSet) error {
 // the second time.
 func adopt(ctx context.Context, conn *sql.Conn, m *migrate.Migrate, source sourceSet, state State) (State, *Adopted, error) {
 	baseline, ok := source.adopter()
-	if !ok || state.Applied {
+	if !ok {
+		return state, nil, nil
+	}
+	if baseline.Adopts.Tool == compat.ToolForge {
+		return adoptForge(ctx, conn, m, source, baseline, state)
+	}
+	if state.Applied {
 		return state, nil, nil
 	}
 	tool := baseline.Adopts.Tool

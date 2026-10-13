@@ -255,6 +255,45 @@ goose's history into new forge versions. It suits only a project whose
 databases can be rebuilt, because a database goose already migrated would run
 every imported migration again.
 
+## Squashing a forge history
+
+`forge db squash` (no `--from-dsn`) replays the project's own migrations in a
+throwaway postgres and writes one baseline. Its header declares the forge
+versions it replaces, and declares the baseline backward-compatible: it builds
+exactly the schema the release before the squash runs on.
+
+```sql
+-- forge:adopts forge 20260101000001 20260101000002
+-- forge:backward-compatible
+CREATE TABLE accounts (...);
+```
+
+Move the squashed files out of the directory (the migrator refuses a baseline
+that lists a version still beside it, or its own). A database the squashed
+migrations built then **adopts** the baseline on its next `migrate up` or
+`AutoMigrate`, when its schema version is one the baseline lists:
+
+| the database's record | What happens |
+|---|---|
+| every listed version in `schema_migrations_applied` | **Adopted.** The baseline gets its applied row and becomes the schema's version; none of its SQL runs; later migrations apply on the same run. |
+| a listed version missing | `*migratekit.AdoptionError` (Missing): the database is behind. Run the release before the squash, then this one. |
+| schema at a version the list lacks | `*migratekit.AdoptionError` (Unexpected): the squash was cut before that migration merged. Re-run `forge db squash` over the full history. |
+| fresh | The baseline runs as SQL. |
+
+A database that predates the applied record is judged by its
+`schema_migrations` version, which golang-migrate never applies below.
+
+Without the declaration (a hand-cut baseline), that database is refused with
+`*migratekit.ForeignHistoryError` — "a migration history this binary does not
+carry" — and nothing changes.
+
+Number the baseline ABOVE the history (`--to <newer version>_baseline`). The
+history's applied rows stay, so the release before the squash, rolled back to,
+still finds its migrations recorded and reads the baseline as a compatible
+schema ahead of it. Numbered below (the `00001_baseline` default), adoption
+works but that rollback does not. `forge db migrate status` previews any
+database; never `migrate force` a baseline.
+
 ## Where AUTO_MIGRATE still fits
 
 `AUTO_MIGRATE=true` migrates **in-process at startup**. It is not a duplicate

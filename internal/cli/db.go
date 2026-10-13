@@ -13,6 +13,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/database"
+	"github.com/reliant-labs/forge/internal/migrationver"
 )
 
 // resolveDSN returns the explicit --dsn flag value, falling back to the
@@ -137,6 +138,15 @@ inserted values are kept byte for byte.
 The baseline is reproducible: its header names the squashed migrations (how
 many, first and last version), never a time or a path, so squashing the same
 history with the same --image writes the same bytes.
+
+The header declares the history it replaces ("-- forge:adopts forge <every
+squashed version>") and that the baseline is backward-compatible. So a
+database those migrations built ADOPTS the baseline on its next migrate up or
+AutoMigrate: the migrator checks it applied every listed version, records the
+baseline as applied, runs none of its SQL, and applies what follows. Move the
+squashed files out of the directory, and give the baseline a version ABOVE
+them (--to <version>_baseline) so the release before the squash can still roll
+back onto an adopted database; a --to inside the history is refused.
 
 This is the canonical "N migrations → one baseline" workflow used when
 pulling a long-lived schema into a new project, or when collapsing
@@ -263,6 +273,14 @@ func runDBSquash(ctx context.Context, opts squashOptions) error {
 	} else if len(squashed) == 0 {
 		return fmt.Errorf("--from-dir %q holds no migrations to squash", opts.FromDir)
 	}
+	stem := opts.Baseline
+	if stem == "" {
+		stem = "00001_baseline"
+	}
+	baselineVersion, haveVersion := migrationver.ParseVersion(stem + ".up.sql")
+	if err := checkSquashBaselineVersion(stem, baselineVersion, haveVersion, squashed); err != nil {
+		return err
+	}
 
 	outDir := opts.OutDir
 	if outDir == "" {
@@ -352,20 +370,23 @@ func runDBSquash(ctx context.Context, opts squashOptions) error {
 	// statements that build the database. See db_squash_dump.go.
 	cleaned := squashBaseline(string(dumpRaw))
 
-	stem := opts.Baseline
-	if stem == "" {
-		stem = "00001_baseline"
-	}
 	upPath := filepath.Join(outDir, stem+".up.sql")
 
 	// Deterministic: a re-squash of the same history writes the same bytes.
 	// See db_squash_output.go.
-	if err := os.WriteFile(upPath, []byte(squashHeader(squashed)+cleaned), 0o644); err != nil {
+	content := squashHeader(squashed) + cleaned
+	// Read the file back as the migrator will: a declaration it cannot
+	// parse, or one listing other versions, would refuse or skip adoption on
+	// every database the history built.
+	if err := checkWrittenForgeAdoption(content, squashed); err != nil {
+		return fmt.Errorf("the baseline for %s: %w", upPath, err)
+	}
+	if err := os.WriteFile(upPath, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("write baseline up: %w", err)
 	}
 
 	_, _ = fmt.Fprintf(os.Stdout, "\n  Wrote %s\n", upPath)
-	printSquashNextSteps(os.Stdout, absFrom)
+	printSquashNextSteps(os.Stdout, absFrom, stem+".up.sql", baselineVersion, haveVersion, squashed)
 
 	return nil
 }

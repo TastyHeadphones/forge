@@ -121,17 +121,31 @@ func verifyApplied(records map[uint]string, source sourceSet, state State) error
 // readApplied returns version → descriptor from appliedTable. An absent table
 // is an empty record: every database migrated before it existed has none.
 func readApplied(ctx context.Context, conn *sql.Conn) (map[uint]string, error) {
-	var exists bool
-	if err := conn.QueryRowContext(ctx, "SELECT to_regclass('"+appliedTable+"') IS NOT NULL").Scan(&exists); err != nil {
-		return nil, fmt.Errorf("read applied-migration record: %w", err)
+	_, out, err := readAppliedRecord(ctx, conn)
+	return out, err
+}
+
+// queryer is what reading a record needs: the session itself, or a
+// transaction open on it (database/sql blocks a Conn while its Tx is open).
+type queryer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// readAppliedRecord is readApplied that also says whether appliedTable
+// exists: no table (the database predates the record) and an empty one (it
+// applied nothing yet) are different facts to adoption.
+func readAppliedRecord(ctx context.Context, q queryer) (exists bool, records map[uint]string, err error) {
+	if err := q.QueryRowContext(ctx, "SELECT to_regclass('"+appliedTable+"') IS NOT NULL").Scan(&exists); err != nil {
+		return false, nil, fmt.Errorf("read applied-migration record: %w", err)
 	}
 	out := map[uint]string{}
 	if !exists {
-		return out, nil
+		return false, out, nil
 	}
-	rows, err := conn.QueryContext(ctx, "SELECT version, name FROM "+appliedTable)
+	rows, err := q.QueryContext(ctx, "SELECT version, name FROM "+appliedTable)
 	if err != nil {
-		return nil, fmt.Errorf("read applied-migration record: %w", err)
+		return true, nil, fmt.Errorf("read applied-migration record: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
@@ -140,11 +154,11 @@ func readApplied(ctx context.Context, conn *sql.Conn) (map[uint]string, error) {
 			name string
 		)
 		if err := rows.Scan(&v, &name); err != nil {
-			return nil, fmt.Errorf("read applied-migration record: %w", err)
+			return true, nil, fmt.Errorf("read applied-migration record: %w", err)
 		}
 		out[uint(v)] = name
 	}
-	return out, rows.Err()
+	return true, out, rows.Err()
 }
 
 // recordApplied records the descriptor of every embedded version in

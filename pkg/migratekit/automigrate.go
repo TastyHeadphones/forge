@@ -180,7 +180,7 @@ func logRun(logger *slog.Logger, res Result, err error) {
 		return
 	}
 	if a := res.Adopted; a != nil {
-		warnf(logger, "ADOPTED a database another migration tool migrated: its history matches the baseline exactly, so the baseline was recorded as applied WITHOUT running its SQL; the tool's own table is left in place",
+		warnf(logger, "ADOPTED a database whose migration history the baseline replaces: its history matches the baseline's declaration exactly, so the baseline was recorded as applied WITHOUT running its SQL; the history's own records are left in place",
 			"tool", a.Tool, "baseline", a.Name, "version", a.Version, "verified_versions", a.Versions)
 	}
 	switch {
