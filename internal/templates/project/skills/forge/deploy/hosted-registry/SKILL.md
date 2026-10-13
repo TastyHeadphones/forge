@@ -41,9 +41,21 @@ That is also what lets the in-app Deploy button push from a cloud daemon: the
 daemon's token is deposited where forge already looks, so no part of the flow
 needs a registry password it has no way to obtain.
 
-One `docker login` is enough for everything, because all three of forge's push
-paths read the docker credential store — `docker push` for images, oras for the
-config bundle, go-containerregistry for a static site release.
+Two of forge's push paths read the docker credential store — `docker push` for
+images and go-containerregistry for a static site — so the login above covers
+both. The env's **config bundle does not use the store at all**: it presents the
+env's control-plane credential to the registry's token realm itself, in memory,
+on every push. So a bundle reaches `registry.reliantapi.com` even when no image
+went there (control-plane-style envs push images to GAR and never log in to the
+platform host), and a stale `docker login` entry for that host can neither
+shadow the credential nor be written to.
+
+A refused bundle push names the registry, the repository, the identity that was
+presented (its source, never its value) and the fix. It fails the build; it is
+not degraded to a local bundle, because an answered refusal is a fact about the
+credential that a retry will not change. An *unreachable* registry is still
+tolerated for an env that keeps only a ledger, and refused for an env its
+control plane's hub converges, which deploys nothing but what it has recorded.
 
 ## Hosted images are built for the PLATFORM's arch, not yours
 

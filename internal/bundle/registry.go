@@ -75,15 +75,40 @@ type Resolver interface {
 }
 
 // NewRepository builds a registry client for `registry/repo` (no tag — the
-// tag or digest is passed to Resolve).
+// tag or digest is passed to Resolve), authenticated from the ambient docker
+// credential store — what a `docker push` to the same host would present.
 //
-// Credentials come from the ambient docker credential store, the same one a
-// `docker push` of a backend image to the same push base uses, and the
-// transport retries on the registry's own throttling responses. Both are
-// defaults rather than forge policy: a loop that polls a registry WILL
+// The transport retries on the registry's own throttling responses. That is a
+// default rather than forge policy: a loop that polls a registry WILL
 // eventually be rate-limited, and a client that treated a 429 as a hard
 // failure would report an env as unobservable for the duration.
+//
+// A hosted env's bundle does NOT come through here: its credential is the
+// control-plane identity, not whatever a store happens to hold for the host
+// (see NewRepositoryWithCredential).
 func NewRepository(ref string) (*remote.Repository, error) {
+	store, err := credentials.NewStoreFromDocker(credentials.StoreOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("bundle: read docker credentials: %w", err)
+	}
+	return NewRepositoryWithCredential(ref, credentials.Credential(store))
+}
+
+// NewRepositoryWithCredential is NewRepository with the credential supplied by
+// the caller instead of read from the docker credential store.
+//
+// THE STORE IS NEVER CONSULTED. That is the point: a store entry is a
+// long-lived value some earlier login left behind, and when it is stale it
+// shadows everything fresher — the registry's realm rejects it and the push
+// fails with a 401 no amount of correct credentials elsewhere can fix. A
+// caller that holds the right identity in memory passes it here and the store
+// cannot interfere, in either direction: nothing is read from it and nothing
+// is written to it.
+//
+// The credential is exchanged at the registry's token realm for a short-lived
+// access token on the first challenge; that token is what travels with the
+// blob and manifest requests.
+func NewRepositoryWithCredential(ref string, credential auth.CredentialFunc) (*remote.Repository, error) {
 	if strings.TrimSpace(ref) == "" {
 		return nil, errors.New("bundle: empty registry reference")
 	}
@@ -92,11 +117,7 @@ func NewRepository(ref string) (*remote.Repository, error) {
 		return nil, fmt.Errorf("bundle: parse registry reference %q: %w", ref, err)
 	}
 	repo.PlainHTTP = plainHTTPRegistry(repo.Reference.Registry)
-	store, err := credentials.NewStoreFromDocker(credentials.StoreOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("bundle: read docker credentials: %w", err)
-	}
-	repo.Client = &auth.Client{Client: retry.DefaultClient, Cache: auth.NewCache(), Credential: credentials.Credential(store)}
+	repo.Client = &auth.Client{Client: retry.DefaultClient, Cache: auth.NewCache(), Credential: credential}
 	return repo, nil
 }
 

@@ -36,7 +36,7 @@ const planFieldsShown = 6
 // annotateChangedFields names the changed fields of every config_changed and
 // object_changed finding, by comparing the applied bundle's document for the
 // subject with the candidate's.
-func annotateChangedFields(ctx context.Context, plan *release.Plan, appliedRef, candidateRef string) {
+func annotateChangedFields(ctx context.Context, projectDir, env string, plan *release.Plan, appliedRef, candidateRef string) {
 	if plan == nil || appliedRef == "" || candidateRef == "" {
 		return
 	}
@@ -51,11 +51,11 @@ func annotateChangedFields(ctx context.Context, plan *release.Plan, appliedRef, 
 	}
 	ctx, cancel := context.WithTimeout(ctx, planFieldBudget)
 	defer cancel()
-	applied, err := planBundleDocuments(ctx, appliedRef)
+	applied, err := planBundleDocuments(ctx, projectDir, env, appliedRef)
 	if err != nil {
 		return
 	}
-	candidate, err := planBundleDocuments(ctx, candidateRef)
+	candidate, err := planBundleDocuments(ctx, projectDir, env, candidateRef)
 	if err != nil {
 		return
 	}
@@ -75,8 +75,8 @@ func annotateChangedFields(ctx context.Context, plan *release.Plan, appliedRef, 
 
 // planBundleDocuments fetches one bundle and indexes its documents by the
 // subject string a plan finding carries.
-func planBundleDocuments(ctx context.Context, ref string) (map[string]any, error) {
-	fetched, err := fetchBundleRef(ctx, ref)
+func planBundleDocuments(ctx context.Context, projectDir, env, ref string) (map[string]any, error) {
+	fetched, err := fetchBundleRef(ctx, projectDir, env, ref)
 	if err != nil {
 		return nil, err
 	}

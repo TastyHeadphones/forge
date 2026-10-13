@@ -148,7 +148,7 @@ func TestWriteEnvBundle_HostedRelease_ReusesTheTaggedBundle(t *testing.T) {
 
 	registry := memory.New()
 	prevTarget := bundlePushTarget
-	bundlePushTarget = func(string) (bundle.Pusher, error) { return registry, nil }
+	bundlePushTarget = func(context.Context, string, string, string) (bundle.Pusher, error) { return registry, nil }
 	t.Cleanup(func() { bundlePushTarget = prevTarget })
 
 	var recorded []string

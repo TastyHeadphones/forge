@@ -286,6 +286,9 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 	// it cannot be resolved by the control plane and it has no admissible
 	// repository to validate.
 	if ledger.Hosted && placed.repository == "" {
+		if ledger.hubConverged() && in.Pushed {
+			return placed.bundleWriteOutcome, errHubBundleNotPushed(env, "it was not pushed to the hosted registry")
+		}
 		fmt.Fprintf(in.errWriter(),
 			"[bundle] Warning: env %s's bundle %s was written locally but not recorded because it was not pushed to the hosted registry.\n"+
 				"[bundle]   The build continues; re-run after platform registry access is restored.\n",
@@ -307,7 +310,7 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 	}
 	out, err := recordWrittenBundle(ctx, projectDir, env, ledger, record, blobs, placed, in)
 	if err == nil && in.Release != "" && out.Recorded && placed.repository != "" {
-		tagReleaseBundle(ctx, placed.repository, built.Manifest, in.Release, in)
+		tagReleaseBundle(ctx, projectDir, env, placed.repository, built.Manifest, in.Release, in)
 	}
 	return out, err
 }
@@ -409,13 +412,18 @@ func bundleShapeInputOf(doc envShapeDoc) bundle.ShapeInput {
 // repository, record the reference that push produced — and none of that is a
 // property of the network. internal/bundle's own tests cover Push against a
 // real oras store, including the blobs-before-manifest rule.
-var bundlePushTarget = func(reference string) (bundle.Pusher, error) {
-	return bundle.NewRepository(reference)
+//
+// It is given the project and env, not just the reference, because the
+// credential is the ENV's: its declared control plane, resolved in memory
+// (bundle_registry_auth.go). The docker credential store is not consulted for
+// the platform registry.
+var bundlePushTarget = func(ctx context.Context, projectDir, env, reference string) (bundle.Pusher, error) {
+	return openBundleRepository(ctx, projectDir, env, reference)
 }
 
 // pushBundleTo opens the repository and pushes, returning the digest.
-func pushBundleTo(ctx context.Context, repo string, built bundle.Bundle) (string, error) {
-	target, err := bundlePushTarget(repo)
+func pushBundleTo(ctx context.Context, projectDir, env, repo string, built bundle.Bundle) (string, error) {
+	target, err := bundlePushTarget(ctx, projectDir, env, repo)
 	if err != nil {
 		return "", err
 	}
@@ -440,51 +448,77 @@ type placedBundle struct {
 // bug.
 func placeBundleBytes(ctx context.Context, projectDir, env string, built bundle.Bundle, ledger envLedger, in bundleBuildInputs) (placedBundle, error) {
 	if ledger.Hosted && in.Pushed {
-		base := bundlePushBaseFor(ctx, projectDir, env)
-		if base == "" {
-			// No base to push under. NOT an error: the images were
-			// pushed to their own declared references and the build
-			// stands. The bundle goes to the local layout, which is
-			// where it stays — nothing later will learn an address the
-			// declaration does not state.
-			fmt.Fprintf(in.errWriter(),
-				"[bundle] Note: env %s declares no platform registry subtree, so its bundle was written locally.\n"+
-					"[bundle]   A hosted bundle's address is composed from the env's control-plane declaration\n"+
-					"[bundle]   (registry host + the org your credential acts for); authenticate to push one.\n", env)
-			return writeBundleLocally(ctx, projectDir, env, built)
-		}
-		repo := bundle.Repository(base, env)
-		digest, err := pushBundleTo(ctx, repo, built)
-		if err != nil {
-			// A FAILED PUSH DOES NOT FAIL THE BUILD, for the same reason a
-			// failed record does not: the images went to their own declared
-			// references and the release is cut, so the build's product
-			// stands. The bundle is a RECORD, and a missing one is
-			// recoverable — `forge env deploy` renders one on demand.
-			//
-			// Making it fatal would mean a build newly depended on the
-			// bundle subtree being reachable and writable, which is a
-			// different fact from the image registry being reachable: a
-			// registry can admit images and reject an artifact type, and a
-			// project can push images somewhere the control plane does not
-			// name as its base. Found exactly that way — two tests that
-			// push images to a stub and had no route to the declared
-			// registry started failing the whole build.
-			fmt.Fprintf(in.errWriter(),
-				"[bundle] Warning: env %s's bundle could not be pushed to %s (%v).\n"+
-					"[bundle]   It was written to this machine's ledger instead; the build continues, and the next\n"+
-					"[bundle]   build or deploy that can reach the registry pushes it (a bundle is content-addressed,\n"+
-					"[bundle]   so re-pushing identical bytes is free).\n", env, repo, err)
-			return writeBundleLocally(ctx, projectDir, env, built)
-		}
-		return placedBundle{
-			bundleWriteOutcome: bundleWriteOutcome{
-				Env: env, Digest: digest, Reference: repo + "@" + digest, Pushed: true,
-			},
-			repository: repo,
-		}, nil
+		return pushHostedBundle(ctx, projectDir, env, built, ledger, in)
 	}
 	return writeBundleLocally(ctx, projectDir, env, built)
+}
+
+// pushHostedBundle pushes a hosted env's bundle to its platform registry
+// subtree under the env's control-plane identity, and decides what a failure
+// means: a registry that REFUSED the identity fails the build; one that could
+// not be reached degrades to a local bundle, except where the env's hub
+// deploys only recorded bundles and a local one is worth nothing.
+func pushHostedBundle(ctx context.Context, projectDir, env string, built bundle.Bundle, ledger envLedger, in bundleBuildInputs) (placedBundle, error) {
+	base := bundlePushBaseFor(ctx, projectDir, env)
+	if base == "" {
+		// No base to push under. NOT an error: the images were
+		// pushed to their own declared references and the build
+		// stands. The bundle goes to the local layout, which is
+		// where it stays — nothing later will learn an address the
+		// declaration does not state.
+		if ledger.hubConverged() {
+			return placedBundle{}, errHubBundleNotPushed(env, "it declares no platform registry subtree (forge could not learn the organization its credential acts for)")
+		}
+		fmt.Fprintf(in.errWriter(),
+			"[bundle] Note: env %s declares no platform registry subtree, so its bundle was written locally.\n"+
+				"[bundle]   A hosted bundle's address is composed from the env's control-plane declaration\n"+
+				"[bundle]   (registry host + the org your credential acts for); authenticate to push one.\n", env)
+		return writeBundleLocally(ctx, projectDir, env, built)
+	}
+	repo := bundle.Repository(base, env)
+	digest, err := pushBundleTo(ctx, projectDir, env, repo, built)
+	if err != nil {
+		// A REFUSAL IS NOT A DEGRADATION. The registry read the identity
+		// and said no, which is a fact about credentials that a green
+		// build would bury; the unreachable-registry case below is the
+		// one a build tolerates. See bundleRegistryDeniedError.
+		var denied *bundleRegistryDeniedError
+		if errors.As(err, &denied) {
+			return placedBundle{}, denied
+		}
+		// A hub-converged env is deployed FROM its recorded bundle, so
+		// there is no "next build renders one on demand" to defer to:
+		// without the bundle the release is not deployable at all.
+		if ledger.hubConverged() {
+			return placedBundle{}, errHubBundleNotPushed(env, fmt.Sprintf("the push to %s failed: %v", repo, err))
+		}
+		// A FAILED PUSH DOES NOT FAIL THE BUILD, for the same reason a
+		// failed record does not: the images went to their own declared
+		// references and the release is cut, so the build's product
+		// stands. The bundle is a RECORD, and a missing one is
+		// recoverable — `forge env deploy` renders one on demand.
+		//
+		// Making it fatal would mean a build newly depended on the
+		// bundle subtree being reachable and writable, which is a
+		// different fact from the image registry being reachable: a
+		// registry can admit images and reject an artifact type, and a
+		// project can push images somewhere the control plane does not
+		// name as its base. Found exactly that way — two tests that
+		// push images to a stub and had no route to the declared
+		// registry started failing the whole build.
+		fmt.Fprintf(in.errWriter(),
+			"[bundle] Warning: env %s's bundle could not be pushed to %s (%v).\n"+
+				"[bundle]   It was written to this machine's ledger instead; the build continues, and the next\n"+
+				"[bundle]   build or deploy that can reach the registry pushes it (a bundle is content-addressed,\n"+
+				"[bundle]   so re-pushing identical bytes is free).\n", env, repo, err)
+		return writeBundleLocally(ctx, projectDir, env, built)
+	}
+	return placedBundle{
+		bundleWriteOutcome: bundleWriteOutcome{
+			Env: env, Digest: digest, Reference: repo + "@" + digest, Pushed: true,
+		},
+		repository: repo,
+	}, nil
 }
 
 // writeBundleLocally writes the bundle into the machine ledger's OCI layout.
@@ -532,6 +566,9 @@ func recordWrittenBundle(ctx context.Context, projectDir, env string, ledger env
 		// Opening the records half can fail the same way the record call
 		// can — no credential, no transport — and it is classified the same
 		// way, by the one classifier the declaration and RecordBundle use.
+		if declarationUndeliverable(err) && ledger.hubConverged() && in.Pushed {
+			return placed.bundleWriteOutcome, errHubBundleNotRecorded(env, placed.Digest, err)
+		}
 		if declarationUndeliverable(err) {
 			fmt.Fprintf(in.errWriter(),
 				"[bundle] Warning: env %s's bundle %s was written but not recorded: %v\n"+
@@ -563,6 +600,8 @@ func recordWrittenBundle(ctx context.Context, projectDir, env string, ledger env
 				"[bundle]   Env %s's bundle %s was written but not recorded; the build continues on the pre-bundle path.\n",
 			errControlPlanePredatesBundles.Error(), env, shortDigest(placed.Digest))
 		return placed.bundleWriteOutcome, nil
+	case declarationUndeliverable(err) && ledger.hubConverged() && in.Pushed:
+		return placed.bundleWriteOutcome, errHubBundleNotRecorded(env, placed.Digest, err)
 	case declarationUndeliverable(err):
 		fmt.Fprintf(in.errWriter(),
 			"[bundle] Warning: env %s's bundle %s was written but not recorded: %v\n"+
@@ -572,6 +611,24 @@ func recordWrittenBundle(ctx context.Context, projectDir, env string, ledger env
 	default:
 		return placed.bundleWriteOutcome, fmt.Errorf("record env %s's bundle in %s: %w", env, ledger.Releases.Location(), err)
 	}
+}
+
+// errHubBundleNotPushed and errHubBundleNotRecorded are the refusals for a
+// hub-converged env, whose control plane applies the bundle it has RECORDED and
+// nothing else. A release with no recorded bundle is not deployable there, so
+// reporting the build green would leave the next deploy to discover it.
+func errHubBundleNotPushed(env, why string) error {
+	return fmt.Errorf("env %s's bundle was not pushed, so the release is not deployable: %s.\n"+
+		"  env %s is converged by its control plane's hub from the bundle it records; with no recorded bundle there is nothing to apply.\n"+
+		"  fix: resolve the cause above, then re-run `forge env build %s --release <version> --push` (a bundle is content-addressed, so a retry is free)",
+		env, why, env, env)
+}
+
+func errHubBundleNotRecorded(env, digest string, cause error) error {
+	return fmt.Errorf("env %s's bundle %s was pushed but the control plane did not record it, so the release is not deployable: %w\n"+
+		"  env %s is converged by its control plane's hub from the bundle it records.\n"+
+		"  fix: re-run `forge env build %s --release <version> --push` once the control plane is reachable (recording is idempotent on (env, digest))",
+		env, shortDigest(digest), cause, env, env)
 }
 
 // bundleRecorderFor is the bundle half of an env's ledger: the control plane
@@ -769,7 +826,8 @@ func writeReleaseBundle(ctx context.Context, projectDir, env, version string, le
 		// a REFUSAL, not a warning: deploying past it would apply bytes
 		// nobody reviewed under a release that names other bytes.
 		var differs *releaseBundleDiffersError
-		if errors.As(err, &differs) {
+		var denied *bundleRegistryDeniedError
+		if errors.As(err, &differs) || errors.As(err, &denied) || ledger.hubConverged() {
 			return err
 		}
 		fmt.Fprintf(errOut, "[bundle] Warning: env %s's bundle for %s could not be written: %v\n", env, version, err)
@@ -777,5 +835,13 @@ func writeReleaseBundle(ctx context.Context, projectDir, env, version string, le
 	}
 	printBundleWrites(errOut, out)
 	noteRecordedBundles(version, out)
+	if ledger.hubConverged() {
+		for _, o := range out {
+			if o.Skipped || !o.Recorded {
+				return fmt.Errorf("env %s's bundle for release %s was not recorded, so the control plane has nothing to apply.\n"+
+					"  fix: resolve the [bundle] warning above and re-run `forge env deploy %s %s`", env, version, env, version)
+			}
+		}
+	}
 	return nil
 }

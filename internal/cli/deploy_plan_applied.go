@@ -152,7 +152,7 @@ func ledgerOnlyDeployPlan(ctx context.Context, projectDir, env string, ledger en
 	}
 	plan.ComputedAt = time.Now().UTC()
 	if applied != nil {
-		annotateChangedFields(ctx, &plan, applied.Reference, candidate.Reference)
+		annotateChangedFields(ctx, projectDir, env, &plan, applied.Reference, candidate.Reference)
 	}
 	noteDirectApplyRemovals(&plan)
 	return &plan, nil
