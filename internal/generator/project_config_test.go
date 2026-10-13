@@ -94,6 +94,42 @@ func TestWriteProjectConfig_ScaffoldsTypedAccessError(t *testing.T) {
 	}
 }
 
+// TestWriteProjectConfig_AdoptingScaffoldsTypedAccessWarn: a project adopted
+// in place already reads the environment directly, so a gating guardrail
+// would fail its first `forge lint` on every one of those reads. It starts
+// advisory, written explicitly so the user flips it where it is recorded,
+// and the .golangci.yml render agrees.
+func TestWriteProjectConfig_AdoptingScaffoldsTypedAccessWarn(t *testing.T) {
+	tmp := t.TempDir()
+	g := NewProjectGenerator("guard-adopt", tmp, "example.com/guard-adopt")
+	g.ServiceName = "api"
+	g.Adopting = true
+	if err := g.writeProjectConfig(); err != nil {
+		t.Fatalf("writeProjectConfig: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmp, "forge.yaml"))
+	if err != nil {
+		t.Fatalf("read forge.yaml: %v", err)
+	}
+	if !strings.Contains(string(data), "enforce_typed_access: warn") {
+		t.Errorf("adopted forge.yaml missing an explicit `enforce_typed_access: warn`:\n%s", data)
+	}
+	cfg, err := ReadProjectConfig(filepath.Join(tmp, "forge.yaml"))
+	if err != nil {
+		t.Fatalf("ReadProjectConfig: %v", err)
+	}
+	if cfg.Config.TypedAccessGuardGates() {
+		t.Error("an adopted project's guardrail must not gate the build")
+	}
+	if !cfg.Config.TypedAccessGuardEnabled() {
+		t.Error("an adopted project's guardrail must still report")
+	}
+	if got := g.forScaffold().TypedAccessGuard; got != config.EnforceTypedAccessWarn {
+		t.Errorf("forScaffold().TypedAccessGuard = %q, want %q", got, config.EnforceTypedAccessWarn)
+	}
+}
+
 // TestApplyKindFeatureDefaults_Service is a no-op assertion: the
 // default scaffold (`forge project new --kind service` or no flag) must leave
 // every feature enabled except ingress and operators, which only exist once the

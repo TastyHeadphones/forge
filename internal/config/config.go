@@ -1121,7 +1121,9 @@ type DockerConfig struct {
 //   - warn  — emit the forbidigo guardrail as an ADVISORY check: violations
 //     are reported (during `forge lint` and in the generated .golangci.yml)
 //     but never fail the build. This is the default for an ABSENT `config:`
-//     block, so existing projects upgrade without a flag-day.
+//     block, so existing projects upgrade without a flag-day, and what
+//     `forge project new --in-place` scaffolds when it adopts an existing
+//     project, whose code already reads the environment directly.
 //   - error — emit the forbidigo guardrail as a GATING check: violations
 //     fail `forge lint` / CI. `forge project new` scaffolds this for greenfield
 //     projects, which carry no legacy env-reading debt.
@@ -1161,7 +1163,8 @@ const DefaultLoaderPackage = "pkg/config"
 // The block is OPTIONAL. When absent, EnforceTypedAccess resolves to "warn"
 // (see [EnforceTypedAccessWarn]) so existing projects gain the advisory
 // guardrail without a flag-day; `forge project new` writes an explicit
-// `enforce_typed_access: error` for greenfield projects.
+// `enforce_typed_access: error` for greenfield projects, and an explicit
+// `warn` when `--in-place` adopts an existing project.
 //
 // ADOPTION / re-render: the strictness is projected into the generated
 // .golangci.yml (forbidigo in `linters.enable` for error, settings-only for

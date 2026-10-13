@@ -64,6 +64,8 @@ service ChatService {
 
 A NEW service added to an in-place project gets no marker, so it is born forge-managed.
 
+**Typed config starts advisory.** An in-place scaffold that finds an existing project writes `config: {enforce_typed_access: warn}` into `forge.yaml`, where a greenfield `forge project new` writes `error`. The project's existing `os.Getenv` reads are reported by `forge lint` instead of failing it. Move them onto the typed config (`proto/config/v1/config.proto`, loaded by `pkg/config`), then set `error`. `.golangci.yml` is yours, so re-render it after the flip (`rm .golangci.yml && forge project upgrade`).
+
 ## Service / package naming
 
 - Hyphens are OK in service / worker / operator names (`forge scaffold service admin-server`). Forge stores the kebab-case form as the display name in `forge.yaml` and snake-cases the form used for the on-disk directory path (`internal/admin_server/`), with a single-token lowercase Go package decl (`package admin`).

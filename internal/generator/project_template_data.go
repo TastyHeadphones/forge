@@ -23,6 +23,23 @@ func guardTemplateMode(g config.ConfigGuardConfig) string {
 	return g.EffectiveEnforceTypedAccess()
 }
 
+// scaffoldTypedAccess is the config.enforce_typed_access a scaffold writes
+// into forge.yaml and renders into .golangci.yml — one answer, so the two
+// cannot disagree.
+//
+// A greenfield project has no env-reading debt, so it starts gating
+// ("error"). A project adopted in place does: every os.Getenv it already
+// has would fail `forge lint` on the first run, which turns adopting forge
+// into a flag day. It starts advisory ("warn") — the same strictness an
+// absent key resolves to — and flips to "error" once its reads have moved
+// onto the typed config.
+func (g *ProjectGenerator) scaffoldTypedAccess() string {
+	if g.Adopting {
+		return config.EnforceTypedAccessWarn
+	}
+	return config.EnforceTypedAccessError
+}
+
 // projectTemplateData is the single render payload for every frozen
 // project-level template. It used to be modeled twice: an anonymous
 // ~18-field struct built inline in ProjectGenerator.Generate() (the
@@ -92,8 +109,9 @@ type projectTemplateData struct {
 	// golangci.yml.tmpl branches on. It is "" when the guardrail is OFF (the
 	// template's {{if .TypedAccessGuard}} then emits nothing), "warn" when
 	// advisory, or "error" when gating — i.e. it carries the EFFECTIVE mode
-	// EXCEPT that "off" is collapsed to "". The scaffold lane writes "error"
-	// (greenfield); the upgrade lane reads the live forge.yaml
+	// EXCEPT that "off" is collapsed to "". The scaffold lane writes
+	// scaffoldTypedAccess ("error" greenfield, "warn" when adopting a project
+	// in place); the upgrade lane reads the live forge.yaml
 	// config.enforce_typed_access (absent → "warn"). See
 	// config.ConfigGuardConfig and guardTemplateMode below.
 	TypedAccessGuard string
@@ -242,13 +260,10 @@ func (g *ProjectGenerator) forScaffold() projectTemplateData {
 		RESTEnabled:     false,
 		GenInRootModule: g.GenInRootModule,
 		VersionVar:      g.BuildVersionVar,
-		// Greenfield projects carry no legacy env-reading debt, so the
-		// typed-access guardrail scaffolds in its strict, gating form. The
-		// matching `config.enforce_typed_access: error` is written into the
-		// scaffolded forge.yaml (project_config.go). The schema default for
-		// an ABSENT key is "warn" — these two defaults are intentionally
-		// different (greenfield strict; existing-project upgrade soft).
-		TypedAccessGuard: guardTemplateMode(config.ConfigGuardConfig{EnforceTypedAccess: config.EnforceTypedAccessError}),
+		// The same strictness the scaffolded forge.yaml records
+		// (project_config.go): gating for greenfield, advisory for a project
+		// adopted in place (scaffoldTypedAccess).
+		TypedAccessGuard: guardTemplateMode(config.ConfigGuardConfig{EnforceTypedAccess: g.scaffoldTypedAccess()}),
 		LoaderPackage:    config.DefaultLoaderPackage,
 		// At scaffold time the cmd/ tree isn't written yet, so this resolves
 		// to the primary alone — exactly right for a fresh `forge project new`. Once

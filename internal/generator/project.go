@@ -73,6 +73,13 @@ type ProjectGenerator struct {
 	// nothing else in forge depends on which module holds gen/.
 	GenInRootModule bool
 
+	// Adopting is set when `forge project new --in-place` scaffolds into a
+	// directory that already holds a project. That project's code reads the
+	// environment directly today, so the typed-access guardrail scaffolds in
+	// its advisory form (warn) instead of the greenfield gating form (error)
+	// — see scaffoldTypedAccess.
+	Adopting bool
+
 	// factsDir, when set, is where the scaffold reads facts ABOUT the
 	// project tree (existing migrations, the binaries under cmd/, the
 	// discovered components) instead of Path. It is set only when the

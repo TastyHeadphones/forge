@@ -167,6 +167,15 @@ github.com/reliant-labs/forge/cmd/forge@<pin> <same args>` that needs no
   matches a tracked file is left out, with a comment in its place when forge
   writes a fresh `.gitignore`, and the run lists each skipped pattern and the
   tracked files it would have hidden.
+- **`forge project new --in-place` starts an adopted project's typed-config
+  guardrail advisory.** It wrote `config: {enforce_typed_access: error}` into
+  every new `forge.yaml`, so a project adopting forge failed its first
+  `forge lint` on every `os.Getenv` it already had. An in-place target that
+  already holds a project now gets an explicit `warn` (the strictness an absent
+  key already resolves to), in `forge.yaml` and in the scaffolded
+  `.golangci.yml` alike, and the run says so. Greenfield projects, including an
+  in-place scaffold into an empty directory, keep `error`. The `migration`
+  skill and `docs/concepts.md` now document both defaults and when to flip.
 
 - **`forge env deploy <env> --dry-run` now predicts the real run's release
   decision, and a nested git checkout is no longer "dirt".** A bare

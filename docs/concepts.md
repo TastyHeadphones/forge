@@ -405,6 +405,16 @@ string database_url = 3 [(forge.v1.config) = {
 From that you get env-var loading with precedence (proto default < file < env
 < flag), a KCL schema, a per-environment value slot, and typed access.
 
+Typed access is a guardrail, not a suggestion: a direct `os.Getenv` /
+`os.LookupEnv` outside the generated loader is a lint finding, and
+`config.enforce_typed_access` in `forge.yaml` decides how hard. `error` fails
+`forge lint` and CI, `warn` reports, `off` drops the check. `forge project new`
+writes `error`, because a new project has no direct reads to report. Adopting
+an existing project with `forge project new --in-place` writes `warn`: that
+project's existing reads would otherwise fail its first lint. Flip it to
+`error` once they have moved onto the typed config. A `forge.yaml` without the
+key reads as `warn`.
+
 `sensitive: true` changes three things, each closing a specific leak:
 
 - Manifests carry a `secretKeyRef`, never an inline value.

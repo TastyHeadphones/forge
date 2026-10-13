@@ -288,3 +288,24 @@ func TestMergeScaffoldInto_GitignoreSkipsTrackedPatterns(t *testing.T) {
 		}
 	})
 }
+
+func TestDirHoldsProject(t *testing.T) {
+	empty := t.TempDir()
+	if dirHoldsProject(empty) {
+		t.Error("an empty directory is not a project")
+	}
+	gitOnly := t.TempDir()
+	writeTestFile(t, filepath.Join(gitOnly, ".git", "HEAD"), "ref: refs/heads/main\n")
+	if dirHoldsProject(gitOnly) {
+		t.Error("a bare `git init` is not a project")
+	}
+	repo := t.TempDir()
+	writeTestFile(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main\n")
+	writeTestFile(t, filepath.Join(repo, "go.mod"), "module example.com/x\n")
+	if !dirHoldsProject(repo) {
+		t.Error("a directory with content beside .git is an existing project")
+	}
+	if dirHoldsProject(filepath.Join(empty, "missing")) {
+		t.Error("a missing directory is not a project")
+	}
+}

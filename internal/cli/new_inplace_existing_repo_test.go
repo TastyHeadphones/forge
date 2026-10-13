@@ -134,6 +134,10 @@ func TestRunNewInPlace_ExistingRepo(t *testing.T) {
 
 			runInPlace(t, target, tc.kind, false)
 
+			// Adopting an existing project: its env reads are reported, not
+			// failed, until it moves them onto the typed config.
+			assertTypedAccess(t, target, config.EnforceTypedAccessWarn)
+
 			if got := gitOut(t, repo, "rev-parse", "HEAD"); got != head {
 				t.Errorf("HEAD moved %s -> %s: forge committed into the user's repository", head, got)
 			}
@@ -204,5 +208,21 @@ func TestRunNewInPlace_FreshDirectoryStillInitsGit(t *testing.T) {
 	}
 	if hp := gitOut(t, dir, "config", "--local", "core.hooksPath"); hp != ".githooks" {
 		t.Errorf("core.hooksPath = %q, want .githooks", hp)
+	}
+	// An empty directory is greenfield, in place or not: nothing reads the
+	// environment yet, so the typed-config guardrail starts gating.
+	assertTypedAccess(t, dir, config.EnforceTypedAccessError)
+}
+
+// assertTypedAccess fails unless dir's scaffolded forge.yaml records want as
+// config.enforce_typed_access.
+func assertTypedAccess(t *testing.T, dir, want string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "forge.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "enforce_typed_access: "+want+"\n") {
+		t.Errorf("forge.yaml does not record enforce_typed_access: %s:\n%s", want, data)
 	}
 }
