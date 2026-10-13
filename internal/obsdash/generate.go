@@ -91,6 +91,14 @@ func Write(projectDir string, in Input, cs *checksums.FileChecksums) ([]string, 
 		return nil, err
 	}
 
+	alertDefaults, err := MarshalAlertDefaults(AlertInputOf(in))
+	if err != nil {
+		return nil, err
+	}
+	if err := emit(AlertDefaultsFile, alertDefaults); err != nil {
+		return nil, err
+	}
+
 	searches, err := RenderHyperDXSavedSearches(sp)
 	if err != nil {
 		return nil, err

@@ -59,6 +59,11 @@ type ShapeInput struct {
 	// destinations; a value never reaches forge.
 	ControlPlaneSecrets []release.ShapeControlPlaneSecret
 
+	// Alerts and AlertRoutes are the env's resolved alert rules and routes,
+	// already in shape vocabulary (see release.ShapeAlert).
+	Alerts      []release.ShapeAlert
+	AlertRoutes []release.ShapeAlertRoute
+
 	// Applier is the env's declared applier (release.ApplierForge), or "".
 	Applier string
 }
@@ -92,6 +97,8 @@ func ProjectShape(in ShapeInput) (release.Shape, error) {
 		Objects:   objects,
 
 		ControlPlaneSecrets: in.ControlPlaneSecrets,
+		Alerts:              in.Alerts,
+		AlertRoutes:         in.AlertRoutes,
 		Applier:             in.Applier,
 	}.Canonical()
 	if err := shape.Validate(); err != nil {

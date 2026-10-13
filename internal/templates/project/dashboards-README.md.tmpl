@@ -26,5 +26,7 @@ Tiles name their source (`Logs`, `Traces`, `Metrics`); the local stack binds
 the names to this database's source ids for you.
 
 `saved-searches_gen.ndjson` is the generated saved searches. The renderer-neutral
-model they and the dashboards come from is `../dashboard-spec_gen.json`, which
-also records the alert definitions HyperDX 2.40 cannot load from a file yet.
+model they and the dashboards come from is `../dashboard-spec_gen.json`.
+Alerts are not provisioned here (HyperDX 2.40 never evaluates a file-declared
+alert); they are `forge.AlertRule`s in your env's KCL, with generated defaults
+in `../alert-defaults_gen.json`.

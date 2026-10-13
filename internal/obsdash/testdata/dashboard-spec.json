@@ -2279,37 +2279,5 @@
         "log.body"
       ]
     }
-  ],
-  "alerts": [
-    {
-      "id": "error-rate",
-      "title": "Error rate above 5%",
-      "panel": "overview/error-rate",
-      "interval": "5m",
-      "thresholdType": "above",
-      "threshold": 0.05,
-      "status": "pending",
-      "note": "Not provisioned: HyperDX 2.40 never evaluates an alert declared in a provisioned file (hyperdx PR #3233). Create it through the HyperDX alerts API."
-    },
-    {
-      "id": "p99-latency",
-      "title": "p99 latency above 1s",
-      "panel": "overview/p99",
-      "interval": "5m",
-      "thresholdType": "above",
-      "threshold": 1000,
-      "status": "pending",
-      "note": "Not provisioned: HyperDX 2.40 never evaluates an alert declared in a provisioned file (hyperdx PR #3233). Create it through the HyperDX alerts API."
-    },
-    {
-      "id": "no-data",
-      "title": "No requests received",
-      "panel": "overview/requests",
-      "interval": "15m",
-      "thresholdType": "below",
-      "threshold": 1,
-      "status": "pending",
-      "note": "Not provisioned: HyperDX 2.40 never evaluates an alert declared in a provisioned file (hyperdx PR #3233). Create it through the HyperDX alerts API."
-    }
   ]
 }

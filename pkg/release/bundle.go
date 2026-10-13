@@ -364,6 +364,16 @@ type Shape struct {
 	// it is recorded on every ensure. Omitted when empty, so an env that
 	// declares none encodes, and hashes, exactly as it did before the field.
 	ControlPlaneSecrets []ShapeControlPlaneSecret `json:"control_plane_secrets,omitempty"`
+	// Alerts are the env's resolved alert rules: its own (forge.AlertRule) plus
+	// the generated defaults it did not disable, each tagged with its source.
+	// The control plane evaluates them; a rollback restores the rules of the
+	// release it returns to. Each entry serializes to pkg/alerting's RuleSpec.
+	// Omitted when empty, like ControlPlaneSecrets.
+	Alerts []ShapeAlert `json:"alerts,omitempty"`
+	// AlertRoutes say which receiver an alert goes to, by label, first match
+	// wins unless a route continues. Receivers are NAMES: their secrets live
+	// in the control plane. Order is significant and is preserved.
+	AlertRoutes []ShapeAlertRoute `json:"alert_routes,omitempty"`
 	// Applier is who applies this env when it DECLARES one: "forge" for a real
 	// environment forge applies on purpose (the platform's own env, which its
 	// own hub must not apply). Empty means undeclared, and omitted, so every
@@ -421,6 +431,53 @@ type ShapeControlPlaneSecret struct {
 	// (ControlPlaneSecretTelemetryToken).
 	Kind string   `json:"kind"`
 	Keys []string `json:"keys,omitempty"`
+}
+
+// Alert rule sources.
+const (
+	// AlertSourceUser is a rule the project declares (forge.AlertRule).
+	AlertSourceUser = "user"
+	// AlertSourceDefault is one of forge's generated defaults.
+	AlertSourceDefault = "default"
+)
+
+// The receivers every control plane provides, and the routes a shape carries
+// when the author declares none: in-app and Slack, never a pager.
+const (
+	AlertReceiverInApp = "reliant-inapp"
+	AlertReceiverSlack = "slack"
+)
+
+// MinAlertInterval is the evaluation-interval floor a shape may record.
+const MinAlertInterval = time.Minute
+
+// ShapeAlert is one resolved alert rule: the Prometheus rule shape with the
+// condition inside Expr, a single ClickHouse SELECT whose every row is a firing
+// instance (non-`value` columns are labels, `value` the sample). The json tags
+// are pkg/alerting's RuleSpec, so a consumer decodes this straight into it;
+// KeepFiringFor and DefaultID are extra fields RuleSpec ignores.
+type ShapeAlert struct {
+	Alert string `json:"alert"`
+	Expr  string `json:"expr"`
+	// For and Interval are Go duration strings ("5m", "1h30m").
+	For           string `json:"for,omitempty"`
+	Interval      string `json:"interval,omitempty"`
+	KeepFiringFor string `json:"keep_firing_for,omitempty"`
+	// Labels always carry `severity`: critical | warning | info.
+	Labels      map[string]string `json:"labels,omitempty"`
+	Annotations map[string]string `json:"annotations,omitempty"`
+	// Source is AlertSourceUser or AlertSourceDefault.
+	Source string `json:"source"`
+	// DefaultID names the generated default this rule came from.
+	DefaultID string `json:"default_id,omitempty"`
+}
+
+// ShapeAlertRoute routes alerts whose labels contain every Match pair (an empty
+// Match matches all) to Receiver, a name the control plane resolves.
+type ShapeAlertRoute struct {
+	Match    map[string]string `json:"match,omitempty"`
+	Receiver string            `json:"receiver"`
+	Continue bool              `json:"continue,omitempty"`
 }
 
 // Key identifies the Secret within a shape: (cluster, namespace, name).
@@ -556,6 +613,69 @@ func (s Shape) Validate() error {
 		}
 		delivered[c.Key()] = true
 	}
+	return s.validateAlerts()
+}
+
+// validateAlerts is the shape-side check of the declared rules. KCL already
+// refuses these at render; the shape re-checks because it is stored forever
+// and read by a different program than the one that wrote it.
+func (s Shape) validateAlerts() error {
+	names := map[string]bool{}
+	for _, a := range s.Alerts {
+		switch {
+		case strings.TrimSpace(a.Alert) == "":
+			return fmt.Errorf("%w: shape alert with no name", ErrInvalid)
+		case names[a.Alert]:
+			return fmt.Errorf("%w: shape names alert %q twice", ErrInvalid, a.Alert)
+		case strings.TrimSpace(a.Expr) == "":
+			return fmt.Errorf("%w: shape alert %q has no expr", ErrInvalid, a.Alert)
+		case strings.Contains(a.Expr, ";"):
+			return fmt.Errorf("%w: shape alert %q: expr must be a single statement", ErrInvalid, a.Alert)
+		case a.Source != AlertSourceUser && a.Source != AlertSourceDefault:
+			return fmt.Errorf("%w: shape alert %q: source %q (expected %s or %s)", ErrInvalid, a.Alert, a.Source, AlertSourceUser, AlertSourceDefault)
+		}
+		names[a.Alert] = true
+		for _, d := range []struct{ field, v string }{{"for", a.For}, {"interval", a.Interval}, {"keep_firing_for", a.KeepFiringFor}} {
+			if d.v == "" {
+				continue
+			}
+			dur, err := time.ParseDuration(d.v)
+			if err != nil || dur < 0 {
+				return fmt.Errorf("%w: shape alert %q: %s %q is not a duration", ErrInvalid, a.Alert, d.field, d.v)
+			}
+			if d.field == "interval" && dur < MinAlertInterval {
+				return fmt.Errorf("%w: shape alert %q: interval %q is below the %s floor", ErrInvalid, a.Alert, d.v, MinAlertInterval)
+			}
+		}
+		switch a.Labels["severity"] {
+		case "critical", "warning", "info":
+		default:
+			return fmt.Errorf("%w: shape alert %q: severity label %q (expected critical, warning or info)", ErrInvalid, a.Alert, a.Labels["severity"])
+		}
+		for k := range a.Labels {
+			if k == "alertname" || strings.HasPrefix(k, "reliant_") {
+				return fmt.Errorf("%w: shape alert %q: label %q is reserved", ErrInvalid, a.Alert, k)
+			}
+		}
+	}
+	if len(s.Alerts) == 0 && len(s.AlertRoutes) > 0 {
+		return fmt.Errorf("%w: shape has alert routes and no alerts", ErrInvalid)
+	}
+	hasDefault := false
+	for i, r := range s.AlertRoutes {
+		if strings.TrimSpace(r.Receiver) == "" {
+			return fmt.Errorf("%w: shape alert route %d has no receiver", ErrInvalid, i)
+		}
+		if strings.Contains(r.Receiver, "://") {
+			return fmt.Errorf("%w: shape alert route %d: receiver %q is a URL; a route names a receiver", ErrInvalid, i, r.Receiver)
+		}
+		if len(r.Match) == 0 {
+			hasDefault = true
+		}
+	}
+	if len(s.AlertRoutes) > 0 && !hasDefault {
+		return fmt.Errorf("%w: shape alert routes have no default (empty-match) route", ErrInvalid)
+	}
 	return nil
 }
 
@@ -580,6 +700,12 @@ func (s Shape) Canonical() Shape {
 		sort.Slice(out.ControlPlaneSecrets, func(i, j int) bool {
 			return out.ControlPlaneSecrets[i].Key() < out.ControlPlaneSecrets[j].Key()
 		})
+	}
+	// Alerts sort by name. Routes do NOT sort: first match wins, so their order
+	// is part of their meaning.
+	if len(s.Alerts) > 0 {
+		out.Alerts = append([]ShapeAlert(nil), s.Alerts...)
+		sort.Slice(out.Alerts, func(i, j int) bool { return out.Alerts[i].Alert < out.Alerts[j].Alert })
 	}
 	out.Domains = sortedStrings(s.Domains)
 	out.Clusters = sortedStrings(s.Clusters)

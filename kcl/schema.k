@@ -3621,6 +3621,169 @@ schema ObservabilityAgent:
         regex.match(namespace, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "ObservabilityAgent.namespace must be an RFC-1123 label"
         memory_limit_mib >= 64, "ObservabilityAgent.memory_limit_mib must be >= 64"
 
+# Alert durations are one or more <int><unit> groups, unit in s m h ("90s", "5m",
+# "1h30m"): exactly what Go's time.ParseDuration reads, so the evaluator and
+# the render agree. (Prometheus's d and w are not accepted: Go cannot parse them.)
+_ALERT_DURATION_RE: str = r"^([0-9]+[smh])+$"
+_ALERT_NAME_RE: str = r"^[a-zA-Z_][a-zA-Z0-9_]*$"
+_ALERT_SEVERITIES: [str] = ["critical", "warning", "info"]
+# A receiver is a NAME the control plane resolves. These are the two it always
+# has: in-app notifications and the org's Slack receiver.
+ALERT_BUILTIN_RECEIVERS: [str] = ["reliant-inapp", "slack"]
+# Anything shaped like a URL or a credential is refused in a route: the repo
+# never carries a receiver's secret.
+_ALERT_SECRET_RE: str = r"(?i)(https?://|hooks\.slack\.com|xox[abprs]-|bearer\s|routing[_-]?key|api[_-]?key|token=|password)"
+
+_alert_secs = lambda d: str -> int {
+    sum([int(p[:-1]) * {"s": 1, "m": 60, "h": 3600}[p[-1:]] for p in regex.findall(d, r"[0-9]+[smh]")])
+}
+
+_alert_dups = lambda rules: [any] -> [str] {
+    [a for a in {r.alert: 1 for r in rules} if len([r for r in rules if r.alert == a]) > 1]
+}
+
+schema AlertRule:
+    """One alert rule, in the Prometheus rule shape with the condition inside
+    `expr`. `expr` is a single ClickHouse SELECT over the OpenTelemetry tables
+    (`otel_metrics_sum`, `otel_metrics_histogram`, `otel_traces`, `otel_logs`):
+    every row it returns is a firing instance, its non-`value` columns are the
+    instance's labels, and its `value` column is the sample.
+
+        forge.AlertRule {
+            alert = "CheckoutP95High"
+            expr = "SELECT ServiceName AS service, quantile(0.95)(Duration) / 1e9 AS value FROM otel_traces WHERE ... GROUP BY service HAVING value > 0.8"
+            "for" = "10m"
+            labels = {severity = "critical", team = "payments"}
+            annotations = {summary = "checkout p95 is {{ $value }}s", runbook_url = "https://wiki/checkout"}
+        }
+
+    Rules are validated at render and recorded in the env's release shape
+    (`shape.alerts`); the control plane evaluates them. A span count is
+    SAMPLED at the gateway (only error traces are always kept), so an `expr` that
+    counts non-error spans reports a fraction of the traffic. Count metrics,
+    or error spans, instead.
+
+    Fields:
+      * `alert`           — the rule's name; unique within the env.
+      * `expr`            — one SELECT (or WITH ... SELECT), no `;`.
+      * `for`             — how long it must hold before firing. Default 5m.
+        (author it quoted: `"for" = "10m"`; `for` is a KCL keyword)
+      * `interval`        — evaluation interval; floor 1m. Default 1m.
+      * `keep_firing_for` — hold the alert this long after it clears.
+      * `labels`          — `severity` is one of critical | warning | info
+        (default warning). `reliant_*` and `alertname` are reserved.
+      * `annotations`     — free text (summary, description, runbook_url).
+      * `enabled`         — False keeps the rule in the file and out of the shape.
+    """
+    alert: str
+    expr: str
+    $for: str = "5m"
+    interval: str = "1m"
+    keep_firing_for?: str
+    labels: {str:str} = {}
+    annotations: {str:str} = {}
+    enabled: bool = True
+
+    check:
+        regex.match(alert, _ALERT_NAME_RE), \
+            "AlertRule.alert '${alert}' must be a metric-style name (letters, digits and '_', not starting with a digit)"
+        len(expr) > 0, "AlertRule '${alert}': expr is required"
+        regex.match(expr, r"(?is)^\s*(select|with)\b"), \
+            "AlertRule '${alert}': expr must be a single SELECT (it must start with SELECT or WITH)"
+        ";" not in expr, \
+            "AlertRule '${alert}': expr must be a single statement, with no ';'"
+        regex.match($for, _ALERT_DURATION_RE), \
+            "AlertRule '${alert}': for '${$for}' is not a duration (use e.g. 90s, 5m, 1h30m)"
+        regex.match(interval, _ALERT_DURATION_RE), \
+            "AlertRule '${alert}': interval '${interval}' is not a duration (use e.g. 1m, 5m)"
+        not regex.match(interval, _ALERT_DURATION_RE) or _alert_secs(interval) >= 60, \
+            "AlertRule '${alert}': interval '${interval}' is below the 1m floor"
+        not keep_firing_for or regex.match(keep_firing_for, _ALERT_DURATION_RE), \
+            "AlertRule '${alert}': keep_firing_for '${keep_firing_for}' is not a duration"
+        all k in labels {regex.match(k, r"^[a-zA-Z_][a-zA-Z0-9_]*$")}, \
+            "AlertRule '${alert}': label names must be letters, digits and '_'"
+        all k in labels {not (k == "alertname" or regex.match(k, r"^reliant_"))}, \
+            "AlertRule '${alert}': labels 'alertname' and 'reliant_*' are reserved: the evaluator sets them"
+        "severity" not in labels or labels["severity"] in _ALERT_SEVERITIES, \
+            "AlertRule '${alert}': label severity must be one of critical, warning, info"
+
+schema AlertRoute:
+    """Route alerts to a receiver by label. A receiver is referenced by NAME
+    only: its Slack URL or PagerDuty key is entered in the control plane
+    console, never here.
+
+        routes = [
+            forge.AlertRoute {match = {severity = "critical"}, receiver = "pagerduty-oncall"}
+            forge.AlertRoute {match = {}, receiver = "slack"}      # the default route
+        ]
+
+    A route with an empty `match` matches every alert. `continue = True` keeps
+    matching further routes after this one (fan out to several receivers).
+    """
+    match: {str:str} = {}
+    receiver: str
+    continue: bool = False
+
+    check:
+        regex.match(receiver, r"^[a-z][a-z0-9_-]{0,62}$"), \
+            "AlertRoute.receiver '${receiver}' must be a receiver NAME (lowercase letters, digits, '-' and '_'), never a URL or a key"
+        not regex.match(receiver, _ALERT_SECRET_RE), \
+            "AlertRoute.receiver '${receiver}' looks like a URL or a credential. Name a receiver; its secret is entered in the control plane console"
+        all k in match {regex.match(k, r"^[a-zA-Z_][a-zA-Z0-9_]*$")}, \
+            "AlertRoute '${receiver}': match label names must be letters, digits and '_'"
+        all k in match {not regex.match(match[k], _ALERT_SECRET_RE)}, \
+            "AlertRoute '${receiver}': a match value looks like a URL or a credential"
+
+schema AlertDefault:
+    """Tunes one of forge's generated default rules for this env, by its id
+    (`forge.Alerts.defaults = {"error-rate": forge.AlertDefault {...}}`). The ids
+    are in `deploy/observability/alert-defaults_gen.json` and the
+    `observability/alerts` skill.
+
+      * `enabled` — False drops the default from this env's shape.
+      * `labels`  — merged over the default's (severity included).
+      * `for`     — replaces the default's hold time.
+      * `params`  — numeric knobs of the default's query (a threshold, a
+        window), by name. An unknown name is refused at render.
+    """
+    enabled: bool = True
+    labels: {str:str} = {}
+    $for?: str
+    params: {str:float} = {}
+
+    check:
+        not $for or regex.match($for, _ALERT_DURATION_RE), "AlertDefault: for '${$for}' is not a duration"
+        all k in labels {not (k == "alertname" or regex.match(k, r"^reliant_"))}, \
+            "AlertDefault: labels 'alertname' and 'reliant_*' are reserved"
+        "severity" not in labels or labels["severity"] in _ALERT_SEVERITIES, \
+            "AlertDefault: label severity must be one of critical, warning, info"
+
+schema Alerts:
+    """The env's alerting declaration, on `Observability.alerts`: your rules,
+    the tuning of forge's generated defaults, and the routes.
+
+        observability = forge.Observability {
+            alerts = forge.Alerts {
+                rules = [forge.AlertRule {alert = "OrdersBacklog", expr = "SELECT ..."}]
+                defaults = {"service-silent": forge.AlertDefault {enabled = False}}
+                routes = [forge.AlertRoute {match = {}, receiver = "slack"}]
+            }
+        }
+
+    With NO `routes`, alerts go to in-app notifications and the org's Slack
+    receiver (`reliant-inapp`, `slack`), never to a pager. Declaring `routes` replaces that: you own the
+    routing, and one route must have an empty `match` (the default route).
+    """
+    rules: [AlertRule] = []
+    defaults: {str:AlertDefault} = {}
+    routes: [AlertRoute] = []
+
+    check:
+        len({r.alert: 1 for r in rules}) == len(rules), \
+            "Alerts.rules names ${_alert_dups(rules)} twice: an alert name is unique within an env"
+        len(routes) == 0 or any r in routes {len(r.match) == 0}, \
+            "Alerts.routes has no default route: add forge.AlertRoute {match = {}, receiver = \"<name>\"} so no alert is left unrouted"
+
 schema Observability:
     """Where this environment's telemetry goes. Set on `Bundle.observability`.
 
@@ -3654,8 +3817,11 @@ schema Observability:
     sampling: ObservabilitySampling = ObservabilitySampling {}
     retention: ObservabilityRetention = ObservabilityRetention {}
     agent: ObservabilityAgent = ObservabilityAgent {}
+    alerts: Alerts = Alerts {}
 
     check:
+        enabled or (len(alerts.rules) == 0 and len(alerts.defaults) == 0 and len(alerts.routes) == 0), \
+            "Observability.alerts is declared with enabled = False: alerts evaluate the telemetry, and there is none. Drop the alerts or set enabled = True"
         local_port >= 0 and local_port < 65536, "Observability.local_port must be 0..65535"
         profiles_port >= 0 and profiles_port < 65536, "Observability.profiles_port must be 0..65535"
         not enabled or not signals.profiles or destination or local_port == 0 or profiles_port > 0, \
