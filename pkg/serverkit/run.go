@@ -305,7 +305,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 			pprofSrv = nil // nothing to Shutdown — Serve never ran
 			logger.Error("pprof listener unavailable — continuing without it",
 				"addr", cfg.PprofAddr, "error", lnErr,
-				"hint", "another process is probably bound there; set PPROF_ADDR to a free port, or \"\" to disable pprof")
+				"hint", "another process is probably bound there; set PPROF_ADDR to a free port, or pass --pprof-addr= to disable pprof")
 		} else {
 			go func() {
 				logger.Info("pprof server starting", "addr", cfg.PprofAddr)

@@ -112,6 +112,12 @@ Binaries do **not** hand-roll `os.Getenv`, ad-hoc `slog.Logger`s, hardcoded time
 
 Per-env config (logging, env vars) lives directly in `deploy/kcl/<env>/` — not in a redundant second YAML. `forge.yaml` stays strictly top-level (project identity, features, deploy provider, the `binaries:` list).
 
+### How one field resolves
+
+Later layers win: the proto `default_value`, then the config file (`--config`), then the field's `env_var`, then its flag when given on this invocation. A malformed value is a startup error, never a silent fallback to the default.
+
+**An env var set to `""` is unset, for every field type.** `TEMPORAL_HOST=` keeps the file's or the default's value; it does not load `""`. A deploy template rendered from a missing key, compose's `X: ${X}` and `export X=` all mean "not configured". An explicitly empty value comes from a flag (`--pprof-addr=` switches pprof off; `--allowed-registries=` clears a defaulted list). A required field whose variable is set but empty fails with an error that says so.
+
 ### Per-binary config (no project-global AppConfig)
 
 A project can move config OWNERSHIP off a single shared `AppConfig` onto each binary's own message — annotate a config message with `option (forge.v1.binary_config) = {binary: "<cmd/name>"};` (see `forge skill load db` / the config proto's own header for the full mechanics). Doing this for EVERY config message — deleting `AppConfig` entirely — is a legitimate end state, not a half-migration: forge still emits a complete Go/KCL/env surface per binary.

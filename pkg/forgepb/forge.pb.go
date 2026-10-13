@@ -877,6 +877,8 @@ func (x *MethodOptions) GetErrors() []string {
 type ConfigFieldOptions struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Environment variable name to read this field from (e.g., "DATABASE_URL").
+	// A variable set to "" counts as unset, whatever the field's type: the file
+	// or default value stands. An explicitly empty value is a flag's to set.
 	EnvVar string `protobuf:"bytes,1,opt,name=env_var,json=envVar,proto3" json:"env_var,omitempty"`
 	// CLI flag name, without leading dashes (e.g., "database-url").
 	Flag string `protobuf:"bytes,2,opt,name=flag,proto3" json:"flag,omitempty"`

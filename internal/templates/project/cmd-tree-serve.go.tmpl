@@ -395,7 +395,8 @@ func serverkitConfig(cfg *config.Config) (serverkit.Config, error) {
 		//	go tool pprof http://localhost:6060/debug/pprof/heap
 		//	kubectl port-forward <pod> 6060:6060   # then the line above
 		//
-		// Override with PPROF_ADDR / --pprof-addr; "" turns it off. A failed
+		// Override with PPROF_ADDR / --pprof-addr; --pprof-addr= turns it off
+		// (an empty PPROF_ADDR is unset, so it keeps the default). A failed
 		// bind is logged and skipped, never fatal.
 		PprofAddr: cfg.PprofAddr,
 {{- end}}

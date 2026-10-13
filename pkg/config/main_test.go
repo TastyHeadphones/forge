@@ -24,13 +24,11 @@ import (
 // action-at-a-distance bug. TestMain runs before any test in the package, so
 // new tests inherit a clean environment without opting in.
 //
-// NOT t.Setenv(key, "") — an empty value is NOT the same as unset here, and
-// using it would trade one silent wrong answer for another. The loader treats
-// a present-but-empty env var as SET for string fields (allowEmptyEnv in
-// loader.go, pinned by TestLoadInto_EmptyEnvStringIsSet), so an empty
-// LOG_LEVEL would override the "info" default with "" and the default
-// assertions would still fail — just with a different wrong value. Only a real
-// unset restores the default layer.
+// A real unset, not t.Setenv(key, ""). The loader reads an empty variable as
+// unset (lookupEnv in loader.go, pinned by TestLoadInto_EmptyEnvIsUnset), so
+// the two load the same today; but a test that asserts "set but empty" (the
+// required-field error names that case) needs the clean state to be the
+// absent one.
 //
 // Tests that WANT an env layer still call t.Setenv normally; it sets the var
 // for the test and restores the (now unset) state afterwards.

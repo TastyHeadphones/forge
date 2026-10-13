@@ -154,6 +154,7 @@ func renderConfigSchemaNamed(fields []ConfigField, projectName, schemaName strin
 			continue
 		}
 		b.WriteString(blockBody)
+		b.WriteString(renderEmptyEnvChecks(blk.Fields))
 		b.WriteString("\n")
 	}
 
@@ -178,7 +179,50 @@ func renderConfigSchemaNamed(fields []ConfigField, projectName, schemaName strin
 	}
 
 	b.WriteString(body.String())
+	// The check block closes the suite: KCL wants it after every member,
+	// the composed blocks included.
+	b.WriteString(renderEmptyEnvChecks(root))
 	return b.String(), nil
+}
+
+// renderEmptyEnvChecks emits the schema `check:` block refusing an empty
+// string for each field that has a non-empty default, or "" when no field
+// needs one.
+//
+// The runtime loader reads an env var set to "" as unset (pkg/config's
+// lookupEnv), so the env map can carry an empty value but the process never
+// sees it: `pprof_addr = ""` in config.k would render `PPROF_ADDR: ""` and
+// the process would load the default 127.0.0.1:6060. An env value that
+// renders cleanly and is then ignored is the silent fallback the loader
+// refuses everywhere else, so the render fails instead, naming the flag that
+// does carry an empty value. A field whose default is empty needs no check:
+// "" and unset load the same value.
+//
+// Sensitive fields are references, not values, and a str with an empty
+// default has nothing to fall back to, so neither gets a check.
+func renderEmptyEnvChecks(fields []ConfigField) string {
+	var conds []string
+	for _, f := range fields {
+		if f.MessageType != "" || f.Sensitive || f.EnvVar == "" || f.DefaultValue == "" || kclTypeForProtoConfig(f) != "str" {
+			continue
+		}
+		// Only a string (or bytes) field has an empty VALUE to offer. A
+		// duration or an enum, also a str here, has none: "" fails to parse.
+		how := "set a value"
+		if f.ProtoType == "string" || f.ProtoType == "bytes" {
+			how = "set a value, or change its default in the proto"
+			if f.Flag != "" {
+				how = fmt.Sprintf("set a value, or pass --%s= in the workload's args to make it empty", f.Flag)
+			}
+		}
+		msg := fmt.Sprintf("%s = \"\" cannot reach the process: an empty %s counts as unset, so it would load the default %q — %s",
+			f.Name, f.EnvVar, f.DefaultValue, how)
+		conds = append(conds, fmt.Sprintf("        %s != \"\", %s\n", f.Name, strconv.Quote(msg)))
+	}
+	if len(conds) == 0 {
+		return ""
+	}
+	return "\n    check:\n" + strings.Join(conds, "")
 }
 
 // configBlock is one composed config block in a schema's field list.

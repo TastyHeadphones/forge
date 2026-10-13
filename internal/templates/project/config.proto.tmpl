@@ -277,12 +277,13 @@ message AppConfig {
   //
   // Set 0.0.0.0:6060 where the profile must cross a container boundary (the
   // scaffolded docker-compose.yml does exactly that, so Alloy/Pyroscope can
-  // scrape it over the compose network), or "" to switch pprof off entirely.
+  // scrape it over the compose network), or pass --pprof-addr= to switch pprof
+  // off entirely (an empty PPROF_ADDR counts as unset, so it keeps the default).
   string pprof_addr = 13 [(forge.v1.config) = {
     env_var: "PPROF_ADDR"
     flag: "pprof-addr"
     default_value: "127.0.0.1:6060"
-    description: "Address of the always-on net/http/pprof side-listener — never the app's public port. Defaults to loopback (127.0.0.1:6060), which is what makes it safe to leave on: reachable from inside the machine or pod running the process and from nowhere else, and never given a k8s Service. Grab a profile with: go tool pprof http://localhost:6060/debug/pprof/heap (in a cluster, kubectl port-forward <pod> 6060:6060 first). Set 0.0.0.0:6060 when a profile must cross a container boundary; empty disables pprof."
+    description: "Address of the always-on net/http/pprof side-listener — never the app's public port. Defaults to loopback (127.0.0.1:6060), which is what makes it safe to leave on: reachable from inside the machine or pod running the process and from nowhere else, and never given a k8s Service. Grab a profile with: go tool pprof http://localhost:6060/debug/pprof/heap (in a cluster, kubectl port-forward <pod> 6060:6060 first). Set 0.0.0.0:6060 when a profile must cross a container boundary; --pprof-addr= (empty) disables pprof."
   }];
 
   bool security_headers_enabled = 14 [(forge.v1.config) = {

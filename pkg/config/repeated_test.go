@@ -325,18 +325,32 @@ func TestLoadInto_RepeatedSingleElement(t *testing.T) {
 	}
 }
 
-// An explicitly-empty env var sets an EMPTY list, overriding the default —
-// the list form of the scalar-string empty-env rule. It is the only way to
-// clear a defaulted list, so it must not fall through to the default.
-func TestLoadInto_RepeatedEmptyEnvClearsDefault(t *testing.T) {
+// An empty env var is unset for a list as for every other kind, so the
+// default stands; the empty FLAG is what clears a defaulted list. Both halves
+// are pinned for every kind in empty_env_test.go — this is the case that used
+// to go the other way.
+func TestLoadInto_RepeatedEmptyEnvKeepsDefault(t *testing.T) {
 	t.Setenv("REQUIRED_HOSTS", "a.example")
 	t.Setenv("ALLOWED_REGISTRIES", "")
 	m := buildListTestMessage(t)
 	if err := LoadInto(nil, m.Interface()); err != nil {
 		t.Fatalf("LoadInto: %v", err)
 	}
+	want := []string{"docker.io", "ghcr.io"}
+	if got := strListOf(t, m, "allowed_registries"); !eqStrs(got, want) {
+		t.Errorf("allowed_registries = %q, want the default %q (an empty env var is unset)", got, want)
+	}
+
+	m = buildListTestMessage(t)
+	cmd := newCmd(t, m.Interface())
+	if err := cmd.Flags().Set("allowed-registries", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := LoadInto(cmd, m.Interface()); err != nil {
+		t.Fatalf("LoadInto: %v", err)
+	}
 	if got := strListOf(t, m, "allowed_registries"); len(got) != 0 {
-		t.Errorf("allowed_registries = %q, want [] (explicit empty env clears the default)", got)
+		t.Errorf("allowed_registries = %q, want [] (--allowed-registries= clears the default)", got)
 	}
 }
 

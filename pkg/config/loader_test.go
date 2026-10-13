@@ -258,39 +258,6 @@ func TestLoadInto_RequiredSatisfiedByEnv(t *testing.T) {
 	}
 }
 
-func TestLoadInto_EmptyEnvStringIsSet(t *testing.T) {
-	// String field: an explicitly-empty env var counts as SET (matches the
-	// generated AllowEmptyEnv=true for non-duration strings), overriding the
-	// "info" default with "".
-	t.Setenv("API_KEY", "sekret")
-	t.Setenv("LOG_LEVEL", "")
-	m := buildTestMessage(t)
-	if err := LoadInto(nil, m.Interface()); err != nil {
-		t.Fatalf("LoadInto: %v", err)
-	}
-	if got := strOf(m, "log_level"); got != "" {
-		t.Errorf("log_level = %q, want \"\" (empty env counts as set for strings)", got)
-	}
-}
-
-func TestLoadInto_EmptyEnvNonStringFallsThrough(t *testing.T) {
-	// Numeric field: an explicitly-empty env var is treated as UNSET (parsing
-	// "" would error), so the default applies — never a parse failure.
-	t.Setenv("API_KEY", "sekret")
-	t.Setenv("PORT", "")
-	t.Setenv("TIMEOUT", "")
-	m := buildTestMessage(t)
-	if err := LoadInto(nil, m.Interface()); err != nil {
-		t.Fatalf("LoadInto: %v", err)
-	}
-	if got := intOf(m, "port"); got != 8080 {
-		t.Errorf("port = %d, want 8080 (empty numeric env falls back to default)", got)
-	}
-	if d := durOf(t, m, "timeout"); d.AsDuration().String() != "30s" {
-		t.Errorf("timeout = %v, want 30s (empty duration env falls back to default)", d.AsDuration())
-	}
-}
-
 func TestLoadInto_MalformedValueErrors(t *testing.T) {
 	t.Setenv("API_KEY", "sekret")
 	t.Setenv("PORT", "not-a-number")
