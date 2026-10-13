@@ -176,6 +176,16 @@ github.com/reliant-labs/forge/cmd/forge@<pin> <same args>` that needs no
   `.golangci.yml` alike, and the run says so. Greenfield projects, including an
   in-place scaffold into an empty directory, keep `error`. The `migration`
   skill and `docs/concepts.md` now document both defaults and when to flip.
+- **`forge lint` runs every lane flag it is given.** `forge lint --conventions
+  --contract` ran whichever lane came first in the dispatch chain, skipped the
+  other without a word, and printed ✅ — a green verdict over a lane that never
+  executed (text mode, `--quiet`/`--scope`, `--json` and `--gate-json` alike).
+  Every named lane now runs, each exactly as it runs alone, and one verdict
+  covers all of them: `N gating linter(s) failed: <lanes>`, or a success line
+  counting every lane. One table (`lintLaneFlags`) now drives lane selection
+  for all four drivers, and a lane a driver has no runner for is an error, not
+  a silent fall-through to the full sweep. `--exported-vars` beside
+  `--contract` runs the shared check once.
 
 - **`forge env deploy <env> --dry-run` now predicts the real run's release
   decision, and a nested git checkout is no longer "dirt".** A bare

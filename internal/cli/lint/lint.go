@@ -89,7 +89,8 @@ This command will:
   and otherwise runs the frontend's TypeScript compiler with --noEmit.
   Severity is lint.frontend.typecheck (error | warn | off) in forge.yaml.
 - Optionally run targeted rule sets (--contract, --db, --migration-safety,
-  --conventions, --tests)
+  --conventions, --tests). Name several to run them all under one verdict:
+  forge lint --conventions --contract
 
 By default 'forge lint' AUTO-FIXES deterministic-safe issues first, then
 gates on the residue: it canonicalizes Go formatting (goimports/gofmt import
@@ -305,13 +306,10 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	)
 }
 
-// run each check, aggregate. The statements ARE the pipeline, and hiding
-// segments behind helpers would make the order of operations — which is
-// the thing that matters here — harder to see, not easier.
-//
-//nolint:funlen // The lint command's top-level sequence: gather config,
+// runLint is the text-mode driver: a suggest mode, the lanes the
+// `--<linter>` flags name (selectedLanes), or the full sweep when none is
+// named.
 func runLint(ctx context.Context, flags lintFlags, paths []string) error {
-	// When a specific flag is set, run only that linter (preserving current behavior).
 	if flags.suggestExcludes {
 		_, cfg, err := loadLintConfig()
 		if err != nil {
@@ -322,6 +320,43 @@ func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 	if flags.suggestBufExcepts {
 		return runSuggestBufExcepts(ctx)
 	}
+	switch lanes := selectedLanes(flags); len(lanes) {
+	case 0:
+		return runAllLintersText(ctx, flags, paths)
+	case 1:
+		return runTargetedLane(ctx, flags, paths, lanes[0])
+	default:
+		return runTargetedLanes(ctx, flags, paths, lanes)
+	}
+}
+
+// runTargetedLanes runs every lane a combined invocation named
+// (`forge lint --conventions --contract`), each exactly as it runs alone,
+// and returns ONE verdict covering all of them: the lanes that failed, or
+// a success line that counts every lane that ran. A lane that fails does not
+// stop the next one, so one run reports everything that is wrong.
+func runTargetedLanes(ctx context.Context, flags lintFlags, paths []string, lanes []string) error {
+	v := lintVerdict{ran: lanes}
+	for _, lane := range lanes {
+		fmt.Printf("\n── forge lint --%s ──\n", lane)
+		if err := runTargetedLane(ctx, flags, paths, lane); err != nil {
+			// The lane's own error, where a lone run would print it; the
+			// verdict below names the lane again as the last line.
+			fmt.Fprintf(os.Stderr, "❌ --%s: %v\n", lane, err)
+			v.failed = append(v.failed, lane)
+		}
+	}
+	fmt.Println()
+	return v.render(os.Stdout)
+}
+
+// runTargetedLane runs one `--<linter>` lane on its own, whatever else flags
+// selects (onlyLane). Each arm is the lane's whole runner, so the chain is
+// the dispatch table and stays flat on purpose.
+//
+//nolint:funlen // one arm per lane; splitting it would hide the table.
+func runTargetedLane(ctx context.Context, flags lintFlags, paths []string, lane string) error {
+	flags = onlyLane(flags, lane)
 	if flags.contract {
 		store, cfg, err := loadLintConfig()
 		if err != nil {
@@ -440,7 +475,14 @@ func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 		}
 		return runWithCwd(func(cwd string) error { return runConfigReachLint(cwd, cfg) })
 	}
+	// lintLaneFlags names a lane this chain has no arm for. Refuse rather
+	// than run the full sweep under one lane's name.
+	return fmt.Errorf("forge lint --%s has no text-mode runner (lintLaneFlags and runTargetedLane disagree)", lane)
+}
 
+// runAllLintersText is the full sweep, run when no `--<linter>` flag names a
+// lane.
+func runAllLintersText(ctx context.Context, flags lintFlags, paths []string) error {
 	// Load project config for lint defaults. A missing config file is fine
 	// (we fall back to defaults), but a parse/read error should fail hard so
 	// users don't silently lint with the wrong configuration.
