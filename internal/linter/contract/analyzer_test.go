@@ -54,6 +54,24 @@ func TestAnalyzer_DisjointInterfaces(t *testing.T) {
 	analysistest.Run(t, testdata, contract.Analyzer, "disjoint")
 }
 
+// A type satisfying only interfaces the package's Deps consumes is not the
+// package's contract implementation, so its other exported methods are its
+// own API (connauth's *Brokers: Get through a Deps seam, Register for the
+// composition root). The provided Service still binds, including when a
+// Deps field names it, and so does an interface Deps names only inside a
+// func signature.
+func TestAnalyzer_DepsSeamsDoNotBind(t *testing.T) {
+	testdata := analysistest.TestData()
+	analysistest.Run(t, testdata, contract.Analyzer, "depsseam")
+}
+
+// A //forge:contract-marked interface is the provided contract under another
+// name, and binds when a Deps field names it exactly as Service does.
+func TestAnalyzer_MarkedContractInDepsStillBinds(t *testing.T) {
+	testdata := analysistest.TestData()
+	analysistest.Run(t, testdata, contract.Analyzer, "depsseammarked")
+}
+
 // RequireContractAnalyzer tests
 
 func TestRequireContract_WithContract(t *testing.T) {

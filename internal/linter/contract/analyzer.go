@@ -11,12 +11,26 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/reliant-labs/forge/internal/codegen"
 )
 
 // Analyzer is the go/analysis analyzer registered by cmd/contractlint.
 // It checks that types implementing contract interfaces (declared in
 // a sibling contract.go) expose no exported methods outside that
 // interface — the "single seam" rule.
+//
+// An interface contract.go declares only as the type of a Deps field is a
+// requirement, not an offer: the package says what it NEEDS from a
+// collaborator, in the narrow form the deps-are-interfaces rule asks for. A
+// type that satisfies nothing but such seams is not the package's contract
+// implementation, so it is not bound. Without that, declaring the seam made
+// an existing type's API illegal: reliant's connauth could not take its own
+// *Brokers registry (Get and Register) through a `Get`-only Deps interface,
+// and turned the lookup into a func field instead. The package's provided
+// contract (Service, or an interface marked //forge:service /
+// //forge:contract) binds even when a Deps field also names it, as a
+// decorator's `Next Service` does.
 var Analyzer = &analysis.Analyzer{
 	Name:     "contract",
 	Doc:      "checks that types implementing contract interfaces (defined in contract.go) have no exported methods outside the interface",
@@ -40,12 +54,23 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	if len(contractInterfaces) == 0 {
 		return nil, nil
 	}
+	// binds reports whether a contract interface binds its implementers:
+	// every one does but a Deps seam that is not also the provided contract.
+	provided := providedContractNames(pass)
+	seams := depsSeamNames(pass, contractInterfaces)
+	binds := func(ifaceName string) bool { return provided[ifaceName] || !seams[ifaceName] }
 
 	// Step 2: For each named type in the package, check if it implements any
 	// contract interface. If so, collect the allowed method names.
 	//
 	// A type T implements interface I if either T or *T satisfies I.
 	// We gather all implementing types along with which interface(s) they satisfy.
+	//
+	// A type is BOUND only when one of those interfaces binds (see binds
+	// above); a type satisfying nothing but Deps seams is skipped. A bound
+	// type's allowed methods are still the union of every contract interface
+	// it satisfies, seams included, so this never rejects a method that was
+	// allowed before.
 	type implInfo struct {
 		ifaceName   string
 		ifaceType   *types.Interface
@@ -53,6 +78,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	}
 
 	typeConstraints := make(map[*types.Named][]implInfo)
+	bound := make(map[*types.Named]bool)
 
 	for _, obj := range pass.TypesInfo.Defs {
 		tn, ok := obj.(*types.TypeName)
@@ -80,6 +106,14 @@ func run(pass *analysis.Pass) (interface{}, error) {
 				ifaceType:   ifaceType,
 				methodNames: allowed,
 			})
+			if binds(ifaceName) {
+				bound[named] = true
+			}
+		}
+	}
+	for named := range typeConstraints {
+		if !bound[named] {
+			delete(typeConstraints, named)
 		}
 	}
 
@@ -178,6 +212,94 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	})
 
 	return nil, nil
+}
+
+// providedContractNames returns the contract.go interfaces that are the
+// package's PROVIDED contract: one named Service, or one carrying the
+// //forge:service / //forge:contract marker (codegen.HasServiceContractMarker,
+// the same reading codegen and the contract-name lint use).
+func providedContractNames(pass *analysis.Pass) map[string]bool {
+	out := map[string]bool{}
+	for _, file := range pass.Files {
+		if filepath.Base(pass.Fset.Position(file.Pos()).Filename) != "contract.go" {
+			continue
+		}
+		for _, decl := range file.Decls {
+			genDecl, ok := decl.(*ast.GenDecl)
+			if !ok || genDecl.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range genDecl.Specs {
+				ts, ok := spec.(*ast.TypeSpec)
+				if !ok {
+					continue
+				}
+				if _, isIface := ts.Type.(*ast.InterfaceType); !isIface {
+					continue
+				}
+				if ts.Name.Name == "Service" || codegen.HasServiceContractMarker(genDecl.Doc, ts.Doc, ts.Comment) {
+					out[ts.Name.Name] = true
+				}
+			}
+		}
+	}
+	return out
+}
+
+// depsSeamNames returns the contract interfaces the package's Deps struct
+// holds: a field's type, or the element of a pointer, slice, array, map or
+// channel field. These are what the package consumes. A func-typed field's
+// signature is not followed — its parameters are values the package hands
+// OUT, which is no evidence of a requirement.
+func depsSeamNames(pass *analysis.Pass, contractInterfaces map[string]*types.Interface) map[string]bool {
+	out := map[string]bool{}
+	var walk func(t types.Type)
+	walk = func(t types.Type) {
+		switch u := t.(type) {
+		case *types.Alias:
+			walk(types.Unalias(u))
+		case *types.Named:
+			obj := u.Obj()
+			if obj.Pkg() == pass.Pkg && contractInterfaces[obj.Name()] != nil {
+				out[obj.Name()] = true
+			}
+		case *types.Pointer:
+			walk(u.Elem())
+		case *types.Slice:
+			walk(u.Elem())
+		case *types.Array:
+			walk(u.Elem())
+		case *types.Map:
+			walk(u.Key())
+			walk(u.Elem())
+		case *types.Chan:
+			walk(u.Elem())
+		}
+	}
+	for _, file := range pass.Files {
+		for _, decl := range file.Decls {
+			genDecl, ok := decl.(*ast.GenDecl)
+			if !ok || genDecl.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range genDecl.Specs {
+				ts, ok := spec.(*ast.TypeSpec)
+				if !ok || ts.Name.Name != "Deps" {
+					continue
+				}
+				st, ok := ts.Type.(*ast.StructType)
+				if !ok {
+					continue
+				}
+				for _, field := range st.Fields.List {
+					if t := pass.TypesInfo.TypeOf(field.Type); t != nil {
+						walk(t)
+					}
+				}
+			}
+		}
+	}
+	return out
 }
 
 // extractContractInterfaces scans the package for a file named "contract.go"

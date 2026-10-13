@@ -26,6 +26,13 @@ and vars in `_test.go` files are never flagged, so a test fake that satisfies a
 contract interface may carry whatever helpers the test needs. Generated files
 are skipped too.
 
+A type that implements `Service` (or a `//forge:contract` interface) may export
+only the contract's methods. An interface that `contract.go` declares only as a
+`Deps` field's type is a requirement, not part of the contract, so a type that
+satisfies nothing but such seams keeps its own API. A registry can satisfy a
+`Get`-only seam your `Deps` takes and still export `Register` for the
+composition root.
+
 ## Set the linter floor
 
 In `forge.yaml`:
