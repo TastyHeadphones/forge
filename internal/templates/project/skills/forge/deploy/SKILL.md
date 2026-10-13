@@ -114,7 +114,7 @@ platform's own env is `applier = "forge"`. See deploy/shape.
   `terminationGracePeriodSeconds` overrides it.
 - **Rollout safety** above one replica: a PodDisruptionBudget and soft
   topology spread. On nodes shared with ranked pods, also declare
-  `priorityClassName` — see Pod priority on shared nodes.
+  `priorityClassName` — see `deploy/pod-priority`.
 - **`strategy`** is how the Deployment replaces its pods. Unset is
   Kubernetes' `RollingUpdate`, which surges a new pod before the old one
   stops — so `replicas = 1` does NOT mean one process: two run for the
@@ -343,19 +343,8 @@ PDB lint + stale-PDB prune: deploy/pdb.
 
 ## Pod priority on shared nodes
 
-`priorityClassName` names a cluster-scoped PriorityClass that ranks a
-workload's pods against every other pod competing for a node. Declare it
-wherever your pods share nodes with pods that already carry one: an unranked
-pod is priority 0, so a higher-priority pod preempts it, and a rollout's surge
-pod can be evicted repeatedly, stalling in `FailedScheduling`.
-
-```kcl
-proxy = fw.Workload {name = "proxy", kind = "service", priorityClassName = "acme-platform"}
-```
-
-Apply the PriorityClass to every cluster the workload lands on BEFORE the pods
-that name it — Kubernetes refuses a pod naming a class the cluster does not
-have. Unset means the cluster's default. `forge.OnCluster` only.
+On nodes shared with pods that carry a PriorityClass, declare
+`priorityClassName` or yours get preempted: `deploy/pod-priority`.
 
 ## forge env up — the local loop
 
@@ -460,13 +449,17 @@ A workload needing a kubeconfig for ANOTHER cluster declares
 `forge.KubeconfigSecret`, minted on every deploy: `deploy/cluster-access`.
 To have the control plane deploy INTO your cluster: `deploy/cluster-connect`.
 
-## Features are derived, not configured
+## Features are derived, and pinned only to override
 
-No `features:` block; subsystems turn on from the repo: service →
-`codegen`/`observability`/`hot_reload`/`deploy`; non-library → `ci`/`build`;
-`db/migrations/` → `migrations`/`orm` (off under `//forge:no-orm`); a frontend →
-`frontend`; a `forge.Gateway` in `deploy/kcl` → `ingress`; `internal/operators/<name>/`
-→ `operators`. `forge project features` explains.
+Subsystems turn on from the repo: `.proto` files → `codegen`; a server's
+sources (`pkg/app`, `internal/handlers`, `proto/services`) →
+`observability`/`hot_reload`; `deploy/kcl` → `deploy`; non-library →
+`ci`/`build`; `db/migrations/` → `migrations`/`orm` (off under
+`//forge:no-orm`); a frontend → `frontend`; a `forge.Gateway` in `deploy/kcl` →
+`ingress`; `internal/operators/<name>/` → `operators`. When a derived default is
+wrong for the project, pin it in forge.yaml, e.g. `features: {observability:
+false}`. No later change to the tree turns a pinned feature back on. `orm` has
+no key. `forge project features` explains each one.
 
 ## k3d local-registry mirror
 

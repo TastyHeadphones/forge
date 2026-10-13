@@ -52,6 +52,9 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		Config: config.ConfigGuardConfig{
 			EnforceTypedAccess: g.scaffoldTypedAccess(),
 		},
+		// Only the pins serialize (`project new --disable`); the derived
+		// state the scaffold describes itself with is not a yaml field.
+		Features: g.Features,
 	}
 
 	// Kind sync: cfg.Kind is set from the requested kind so NormalizeForWrite's
@@ -75,7 +78,8 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 	header := []byte("# Forge project manifest — see https://github.com/reliant-labs/forge.\n" +
 		"# This file is minimal on purpose. Features, the database, the frontends and\n" +
 		"# the project kind are derived from what exists in the repo (db/migrations,\n" +
-		"# frontends/, deploy/kcl, internal/operators, ...), not configured here.\n" +
+		"# frontends/, deploy/kcl, internal/operators, ...), not configured here; a\n" +
+		"# `features:` block pins one on or off only when the derived default is wrong.\n" +
 		"# Authentication is owned code — internal/app/auth.go's SetupAuth.\n" +
 		"# Add a section (ci, lint, contracts, ...) only to override a default\n" +
 		"# (`forge skill load architecture` documents the schema;\n" +

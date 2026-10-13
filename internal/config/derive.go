@@ -6,7 +6,8 @@
 //
 //   - the project kind (service | cli | library) from the sources;
 //   - every feature flag (DeriveFeatureDefaults) from the kind and from
-//     marker files and directories — there is no `features:` block;
+//     marker files and directories; the optional `features:` block pins one
+//     on or off whatever the tree says (FeaturesConfig);
 //   - the database driver and migrations directory (DeriveDatabase) from
 //     whether db/migrations exists;
 //   - the pnpm-workspaces layout (DeriveFrontendWorkspaces) from
@@ -330,7 +331,48 @@ func ApplyDerivedDefaultsFromNode(c *ProjectConfig, root *yaml.Node) {
 	// layout, then the features that read both.
 	DeriveDatabase(c)
 	DeriveFrontendWorkspaces(c)
-	c.Features.derived = DeriveFeatureDefaults(c)
+	c.Features.derived = followPinnedRequirements(DeriveFeatureDefaults(c), c.Features)
+}
+
+// followPinnedRequirements applies forge.yaml's `features:` pins to the
+// derived set and turns OFF every derived (unpinned) feature whose
+// requirement a pin turned off: `deploy: false` takes a derived ingress with
+// it, `codegen: false` the derived orm, migrations and frontend. Without
+// this a pin would load as a feature-graph error against values nobody
+// wrote. A PINNED dependent is left alone — pinning a feature on while its
+// requirement is off is a contradiction the user wrote, and the graph
+// validator reports it naming both sides.
+func followPinnedRequirements(derived map[FeatureName]bool, f FeaturesConfig) map[FeatureName]bool {
+	out := make(map[FeatureName]bool, len(derived))
+	for name, on := range derived {
+		out[name] = on
+	}
+	for _, name := range allFeatureNames {
+		if on, ok := f.pinned(name); ok {
+			out[name] = on
+		}
+	}
+	// A chain (codegen → orm, deploy → ingress) settles in a few rounds;
+	// the bound keeps a future cyclic edge from spinning.
+	for round := 0; round <= len(featureDeps); round++ {
+		changed := false
+		for name, reqs := range featureDeps {
+			if !out[name] || f.Pinned(name) {
+				continue
+			}
+			for _, req := range reqs {
+				if req.Feature != "" && !out[req.Feature] {
+					out[name] = false
+					changed = true
+					break
+				}
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+	return out
 }
 
 // NormalizeForWrite returns a copy of c with every derivable value that

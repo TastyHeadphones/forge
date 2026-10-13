@@ -51,8 +51,10 @@ func newFeaturesCmd() *cobra.Command {
 		Short: "Print the resolved feature graph (on/off, why, dependencies)",
 		Long: `Print every forge feature for this project: whether it is enabled,
 WHY (what in the repo made it on or off), and the features / shape
-preconditions it depends on. Nothing here is configured: every feature is
-derived from what exists in the repository.
+preconditions it depends on. Every feature is derived from what exists in
+the repository, unless forge.yaml's features: block pins it on or off
+(features: {observability: false}). The ORM has no key: //forge:no-orm in
+internal/db switches it off.
 
 The dependency graph is validated at config-load time — a feature
 enabled with a dependency off is a load error. This command shows the
@@ -117,6 +119,18 @@ func printFeatureGraph(cmd *cobra.Command, cfg *config.ProjectConfig) error {
 func featureReason(cfg *config.ProjectConfig, name config.FeatureName, on bool) string {
 	kind := cfg.EffectiveKind()
 	service := kind == config.ProjectKindService
+	if cfg.Features.Pinned(name) {
+		return "(pinned in forge.yaml features:)"
+	}
+	// A derived feature that a pinned requirement turned off says so, rather
+	// than naming evidence that would have turned it on.
+	if !on {
+		for _, dep := range config.FeatureDependencies(name) {
+			if cfg.Features.Pinned(dep) && !cfg.Features.EffectiveFeatures()[dep] {
+				return fmt.Sprintf("(requires %s, pinned off in forge.yaml)", dep)
+			}
+		}
+	}
 	switch name {
 	case config.FeatureCodegen:
 		if on {

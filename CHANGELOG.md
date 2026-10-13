@@ -85,6 +85,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changed file outside `.forge/` that no forge writer recorded is named on
   its own line, because it was written by a step directly or by another
   process.
+- **A structural change no longer switches features on silently, and
+  forge.yaml can switch them off.** Features derive from the tree. The first
+  `internal/handlers/` a CLI-shaped project grows (reliant adopting forge's
+  handler model one service at a time) derives the project to service-kind
+  and turns `observability` and `hot_reload` on. That happened with no line in
+  the output, and the next generate wrote `deploy/observability/**`. The
+  `features:` block was refused, so nothing could turn them back off (P3b
+  friction F15).
+  - `features:` in forge.yaml now pins any feature on or off, whatever the
+    tree derives, for example `features: {observability: false}`. A pin is
+    never normalized away on write, so no later change to the tree overrides
+    it.
+  - A derived feature whose requirement is pinned off follows it off (ingress
+    with deploy, orm with codegen). A pinned feature whose requirement is off
+    fails the load, naming both.
+  - `orm` has no key: `//forge:no-orm` in internal/db stays its one switch,
+    and `features.orm` is refused with that pointer.
+  - The observability dashboards gate on the feature alone, no longer also on
+    the kind, so a pin reaches them.
+  - The first time a derived observability writes `deploy/observability/`,
+    generate says what turned it on and how to pin it off.
+  - The prerequisites audit is n/a for a project with no deploy tree, rather
+    than a warning about dev KCL it never had.
+  - `forge project features` says when a feature is pinned.
+  - `forge project new --disable <feature>` pins the feature off in the
+    forge.yaml it writes, so the switch outlives the scaffold.
+  - The deploy skill documents pinning. Its pod-priority section moved to a
+    new `deploy/pod-priority` sub-skill so the skill stays under the
+    24,000-byte load cap.
+
+  Kind itself stays derived from the tree. A declared `kind:` would be a mode
+  whose consequences pins already reach one by one, and it would contradict
+  the tree. A `kind: cli` project with handlers would have handler codegen
+  running while `forge scaffold` refused it.
 
 - **A failed `forge generate` that changed no Go file no longer builds the
   project to report on its rollback.** After reverting a failed run, generate

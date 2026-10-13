@@ -32,11 +32,22 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 		{
 			name: "ProjectConfig",
 			typ:  reflect.TypeFor[ProjectConfig](),
+			// features: read by FeaturesConfig.resolve through every
+			// XxxEnabled accessor, and by followPinnedRequirements.
 			want: []string{
 				"api", "binary", "ci", "config", "contracts", "database",
-				"deploy", "dev_stack", "docker",
+				"deploy", "dev_stack", "docker", "features",
 				"forge_version", "generate", "harness", "k8s",
 				"lint", "module_path", "name", "observability",
+			},
+		},
+		{
+			// Every feature but orm, whose switch is //forge:no-orm.
+			name: "FeaturesConfig",
+			typ:  reflect.TypeFor[FeaturesConfig](),
+			want: []string{
+				"build", "ci", "codegen", "contracts", "deploy", "frontend",
+				"hot_reload", "ingress", "migrations", "observability", "operators",
 			},
 		},
 		{

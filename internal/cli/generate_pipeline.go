@@ -33,6 +33,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -2355,13 +2356,17 @@ func stepCRDKCL(ctx *pipelineContext) error {
 		generateCRDKCL(ctx.AbsPath, filepath.Join(ctx.AbsPath, kclDir), ctx.Checksums))
 }
 
-// gateObservabilityDashboardsEnabled is the config half of the gate: the local
-// ClickStack (and so its dashboard directory) exists for service projects with
-// observability on. It reads nothing the pipeline derives, so the Tier-1 stomp
-// guard (which runs before services are parsed) can use it too.
+// gateObservabilityDashboardsEnabled is the config half of the gate: the
+// observability feature, and codegen to describe the services with. It reads
+// nothing the pipeline derives, so the Tier-1 stomp guard (which runs before
+// services are parsed) can use it too.
+//
+// The feature is the ONE switch. This used to require the project kind to be
+// "service" as well, which observability already implies when derived (it
+// follows a server's sources) and which a `features: {observability: ...}`
+// pin could not reach.
 func gateObservabilityDashboardsEnabled(ctx *pipelineContext) bool {
-	return ctx.Cfg != nil && ctx.Cfg.EffectiveKind() == config.ProjectKindService &&
-		ctx.Cfg.Features.ObservabilityEnabled() && ctx.Cfg.Features.CodegenEnabled()
+	return ctx.Cfg != nil && ctx.Cfg.Features.ObservabilityEnabled() && ctx.Cfg.Features.CodegenEnabled()
 }
 
 // gateObservabilityDashboards adds the other half: there is nothing to draw
@@ -2392,6 +2397,7 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 			in.Frontends = append(in.Frontends, fe.Name)
 		}
 	}
+	announceDerivedObservability(os.Stdout, ctx)
 	return ctx.warnOrFail("observability dashboards", func() error {
 		written, err := obsdash.Write(ctx.AbsPath, in, ctx.Checksums)
 		if err != nil {
@@ -2400,6 +2406,44 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 		fmt.Printf("  ✅ Generated %d observability file(s) under deploy/observability/\n", len(written))
 		return nil
 	}())
+}
+
+// announceDerivedObservability says so, once, when a DERIVED observability
+// feature is about to write deploy/observability/ for the first time.
+//
+// Nothing the user did asked for dashboards. The feature follows a server's
+// sources, so the first internal/handlers/ — a CLI-shaped project adopting
+// forge's handler model one service at a time — turns it on, and the run
+// that adopts the service starts writing a directory of JSON nobody asked
+// for (P3b friction F15). The structural change is legitimate; doing it
+// without a word is not. The moment worth a line is exactly this one: the
+// feature is on, nothing it writes exists yet, and nobody pinned it. Every
+// later run finds its outputs on disk and says nothing.
+func announceDerivedObservability(w io.Writer, ctx *pipelineContext) {
+	if ctx.Cfg.Features.Pinned(config.FeatureObservability) || observabilityOutputsExist(ctx.AbsPath) {
+		return
+	}
+	because := "a server's sources exist"
+	for _, rel := range []string{"internal/handlers", "pkg/app", "proto/services"} {
+		if info, err := os.Stat(filepath.Join(ctx.AbsPath, rel)); err == nil && info.IsDir() {
+			because = rel + "/ exists"
+			break
+		}
+	}
+	fmt.Fprintf(w, "  ℹ️  observability is on (derived: %s), so forge now writes deploy/observability/: dashboards, alerts and saved searches for each service.\n", because)
+	fmt.Fprintf(w, "      To keep it off, pin it in forge.yaml:  features: {observability: false}   (`forge project features` lists every feature and why)\n")
+}
+
+// observabilityOutputsExist reports whether any generated observability file
+// is already on disk.
+func observabilityOutputsExist(root string) bool {
+	for _, rel := range []string{obsdash.SpecFile, obsdash.AlertDefaultsFile, obsdash.SavedSearchesFile} {
+		if _, err := os.Stat(filepath.Join(root, rel)); err == nil {
+			return true
+		}
+	}
+	matches, _ := filepath.Glob(filepath.Join(root, filepath.FromSlash(obsdash.DashboardsDir), "*_gen.json"))
+	return len(matches) > 0
 }
 
 func stepWorkloadsKCL(ctx *pipelineContext) error {

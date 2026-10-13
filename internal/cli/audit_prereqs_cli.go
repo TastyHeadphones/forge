@@ -55,6 +55,15 @@ func auditPrerequisites(cfg *config.ProjectConfig, projectDir string) audittype.
 			Summary: fmt.Sprintf("n/a — kind=%s has no deploy; external prerequisites are a deploy-time concern", cfg.EffectiveKind()),
 		}
 	}
+	// The kind is not the evidence: a service-shaped project that forge does
+	// not deploy (no deploy/kcl, or deploy pinned off) has nothing to render
+	// either, and reporting its absent dev KCL as a warning is noise.
+	if !cfg.Features.DeployEnabled() {
+		return audittype.Category{
+			Status:  audittype.StatusOK,
+			Summary: "n/a — the deploy feature is off (no deploy/kcl, or pinned off); external prerequisites are a deploy-time concern",
+		}
+	}
 	ctx := context.Background()
 	entities, err := RenderKCL(ctx, projectDir, "dev")
 	if err != nil {

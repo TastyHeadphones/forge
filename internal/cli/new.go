@@ -68,7 +68,9 @@ Pick a project kind with --kind:
   --kind library            Pure Go module: pkg/<name>/ skeleton, no cmd/,
                             no CI workflows by default.
 
-Use --disable to turn off features at creation time:
+Use --disable to turn features off at creation time. Each is pinned off in
+forge.yaml's features: block, so a later change to the tree does not turn it
+back on (orm has no key; --disable orm only leaves db/migrations out):
   forge project new my-project --mod ... --disable ci,deploy
   forge project new my-project --mod ... --disable orm --disable migrations
 
@@ -134,7 +136,7 @@ checkout stop being the same source; drop the bridge with
 	cmd.Flags().BoolVar(&inPlace, "in-place", false, "Create project in current directory instead of a new subdirectory")
 	cmd.Flags().StringVar(&nameFlag, "name", "", "Project name. Same as the positional arg, and the way to name an --in-place project whose directory (a worktree, a branch checkout) is not the product name; defaults to the directory name")
 	cmd.Flags().BoolVar(&force, "force", false, "With --in-place: scaffold over an existing forge.yaml, and REPLACE every pre-existing file the scaffold writes (README.md, go.mod, Taskfile.yml, …) with forge's version. Without it, existing files are kept and listed. .gitignore is always merged, never replaced")
-	cmd.Flags().StringSliceVar(&disableFeatures, "disable", nil, "Features to leave out of the scaffold (comma-separated): orm, codegen, migrations, ci, build, deploy, contracts, frontend, observability, hot_reload. Not persisted: features derive from the tree that gets written.")
+	cmd.Flags().StringSliceVar(&disableFeatures, "disable", nil, "Features to leave out of the scaffold (comma-separated): orm, codegen, migrations, ci, build, deploy, contracts, frontend, observability, hot_reload. Each is pinned off in forge.yaml's features: block (orm, which has no key, only steers this scaffold).")
 	cmd.Flags().StringVar(&harness, "harness", "reliant", "AI harness conventions to scaffold for. Each writes a memory file; Forge never writes skill files for any harness. reliant (default): reliant.md — skills are read from the forge binary (`forge skill search|load`) and discovered via forge.yaml. claude: CLAUDE.md. For non-reliant harnesses, add your own skill telling the agent to run `forge skill search <query>`. cursor: .cursorrules. copilot: .github/copilot-instructions.md. codex: AGENTS.md. Recorded as `harness:` in forge.yaml and honored by every later generate")
 	cmd.Flags().BoolVar(&skipTools, "skip-tools", false, "Skip auto-installing protoc-gen-go / protoc-gen-connect-go (run 'forge tools install' later)")
 	cmd.Flags().StringVar(&bufPlugins, "buf-plugins", "local", "Default proto plugin source: 'local' (resolved from PATH; no BSR auth needed) or 'remote' (BSR-hosted, requires login under load)")
@@ -1394,12 +1396,14 @@ func readModuleName(path string) (string, error) {
 	return "", fmt.Errorf("module directive not found in go.mod")
 }
 
-// applyDisableFlags turns scaffold emission off for the named features. It
-// steers what THIS scaffold writes and nothing else: no feature is persisted
-// (forge.yaml has no features block), so the next load derives each feature
-// from the tree that was written. `--disable orm` therefore scaffolds no
-// db/migrations, and a project without it derives orm off; it is not a switch
-// that survives the files it omitted.
+// applyDisableFlags turns the named features off, for this scaffold and
+// after it. Each one is pinned off in the written forge.yaml's `features:`
+// block, so a later change to the tree that would derive it back on (the
+// first internal/handlers/ turning observability on) does not.
+//
+// The ORM has no key — its switch is `//forge:no-orm` in internal/db — so
+// `--disable orm` only steers this scaffold: it writes no db/migrations, and
+// a project without them derives orm off.
 func applyDisableFlags(gen *generator.ProjectGenerator, disable []string) error {
 	for _, name := range disable {
 		key := strings.TrimSpace(strings.ToLower(name))
@@ -1417,6 +1421,7 @@ func applyDisableFlags(gen *generator.ProjectGenerator, disable []string) error 
 			config.FeatureBuild, config.FeatureContracts, config.FeatureFrontend,
 			config.FeatureObservability, config.FeatureHotReload, config.FeatureDeploy:
 			gen.Features = gen.Features.With(key, false)
+			gen.Features, _ = gen.Features.Pin(key, false)
 		default:
 			return cliutil.UserErr("forge project new --disable",
 				fmt.Sprintf("unknown feature %q; valid features: orm, codegen, migrations, ci, build, deploy, contracts, frontend, observability, hot_reload", name),
