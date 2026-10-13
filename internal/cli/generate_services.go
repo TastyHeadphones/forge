@@ -367,6 +367,15 @@ func generateCRUDHandlers(services []codegen.ServiceDef, modulePath string, proj
 	return nil
 }
 
+// mockOutcomeLine is generateServiceMocks' progress line for svc, naming
+// the file GenerateMock writes (codegen.MockRelPath).
+func mockOutcomeLine(svc codegen.ServiceDef, written bool) string {
+	if written {
+		return fmt.Sprintf("  ✅ Updated %s\n", codegen.MockRelPath(svc))
+	}
+	return fmt.Sprintf("  ⏭️  Skipped %s (no RPCs)\n", codegen.MockRelPath(svc))
+}
+
 // generateServiceMocks always regenerates mocks from proto definitions.
 func generateServiceMocks(services []codegen.ServiceDef, projectDir string, cs *checksums.FileChecksums) error {
 	fmt.Println("🔧 Generating service mocks...")
@@ -380,11 +389,10 @@ func generateServiceMocks(services []codegen.ServiceDef, projectDir string, cs *
 		if err != nil {
 			return fmt.Errorf("failed to generate mock for %s: %w", svc.Name, err)
 		}
-		mockName := naming.ServicePackage(svc.Name)
 		if written {
-			fmt.Printf("  ✅ Updated internal/handlers/mocks/%s_mock.go\n", mockName)
+			fmt.Print(mockOutcomeLine(svc, written))
 		} else {
-			routinef("  ⏭️  Skipped internal/handlers/mocks/%s_mock.go (no RPCs)\n", mockName)
+			routinef("%s", mockOutcomeLine(svc, written))
 		}
 	}
 

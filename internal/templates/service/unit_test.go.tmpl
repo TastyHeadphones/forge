@@ -9,6 +9,30 @@
 // the whole file was deleted before either wrote a test. Anything forge
 // scaffolds once has to survive the way forge's own output says to grow.
 //
+{{- if and $m.ClientStreaming $m.ServerStreaming}}
+// {{$m.Name | goName}} is a BIDIRECTIONAL streaming RPC, and this file is its slot —
+// forge does not scaffold a case for it. The harness's
+// {{.ServicePackage}}.NewTest{{.TestHelperName}}Server serves HTTP/1.1, and connect-go
+// carries a bidi stream only over HTTP/2: serve svc.Register from an
+// httptest.NewUnstartedServer with EnableHTTP2 set and StartTLS, and dial it
+// with that server's Client(). Build svc with
+// {{.ServicePackage}}.NewTest{{.TestHelperName}}(t) (helpers_gen_test.go); pass
+// {{.ServicePackage}}.With{{.TestHelperName}}Deps(...) to override a dependency.
+{{- else if or $m.ClientStreaming $m.ServerStreaming}}
+// Test{{$m.Name | goName}}_Generated drives the {{if $m.ServerStreaming}}server{{else}}client{{end}} stream through a real
+// Connect client. A stream cannot be called in process the way a unary
+// handler can, so {{.ServicePackage}}.NewTest{{.TestHelperName}}Server (helpers_gen_test.go)
+// serves the *Service over HTTP with the default test principal installed
+// server-side — the way a stream reaches it in production — and returns the
+// typed client. Add a t.Run per case.
+//
+// The scaffold case is SELF-DESTRUCTING: tdd.AssertScaffoldStub matches only
+// the error forge's own generated stub returns, so the case goes red the
+// moment you implement {{$m.Name | goName}}. That failure is the point — replace it
+// then with real assertions. forge writes this file only when it is absent
+// and {{$m.Name | goName}} is still a stub, so a file you have edited, or an RPC you
+// have implemented, is never re-offered.
+{{- else}}
 // Test{{$m.Name | goName}}_Generated is a thin shim over `tdd.RunRPCCases`
 // (== `tdd.TableRPC`, see pkg/tdd/rpc.go). Rows declare the request, the
 // expected outcome, and (optionally) a Setup/Check hook — the runner
@@ -22,13 +46,16 @@
 // forge writes this file only when it is absent and {{$m.Name | goName}} is still a
 // stub, so a file you have edited, or an RPC you have implemented, is never
 // re-offered.
+{{- end}}
+{{- if not (and $m.ClientStreaming $m.ServerStreaming)}}
 //
 // It does NOT match a bare `connect.CodeUnimplemented`, deliberately. A
 // finished handler can return that code for its own reasons — a forwarder,
-// a feature flag, an unwired optional dep — and a row keyed on the code
+// a feature flag, an unwired optional dep — and a {{if or $m.ClientStreaming $m.ServerStreaming}}case{{else}}row{{end}} keyed on the code
 // alone keeps passing against fully-implemented RPCs. Asserting an
 // unforgeable sentinel is what makes "nobody has written this yet"
 // falsifiable.
+{{- end}}
 //
 // CRUD RPCs are intentionally absent — their lifecycle coverage lives in
 // handlers_crud_test.go (yours as well). Each method has exactly one
@@ -37,14 +64,56 @@
 // Library reference: github.com/reliant-labs/forge/pkg/tdd
 // Skill: forge skill load testing/patterns
 package {{.ServicePackage}}_test
-{{- if or $m.ClientStreaming $m.ServerStreaming}}
+{{- if and $m.ClientStreaming $m.ServerStreaming}}
+{{- else if or $m.ClientStreaming $m.ServerStreaming}}
 
-// TODO: {{$m.Name | goName}} is a streaming RPC and tdd.RunRPCCases targets unary
-// handlers. This file is {{$m.Name | goName}}'s slot — write the streaming test here.
-//
-// The service instance comes from {{.ServicePackage}}.NewTest{{.TestHelperName}}(t)
-// (see this package's helpers_gen_test.go); pass
-// {{.ServicePackage}}.With{{.TestHelperName}}Deps(...) to override a dependency.
+import (
+	"context"
+	"testing"
+	"time"
+{{- if $m.ServerStreaming}}
+
+	"connectrpc.com/connect"
+{{- end}}
+
+	"github.com/reliant-labs/forge/pkg/tdd"
+
+	pb "{{.Module}}/gen/{{.ProtoPackage}}/v1"
+
+	{{.ServicePackage}} "{{.Module}}/internal/handlers/{{.ServiceImportPath}}"
+)
+
+func Test{{$m.Name | goName}}_Generated(t *testing.T) {
+	t.Parallel()
+
+	// {{.ServicePackage}}.NewTest{{.TestHelperName}}Server serves the {{.ServicePackage}} *Service wired
+	// with stubbed dependencies; pass {{.ServicePackage}}.With{{.TestHelperName}}Deps(...) to
+	// override one, or {{.ServicePackage}}.WithoutPrincipal() for an anonymous caller.
+	_, client := {{.ServicePackage}}.NewTest{{.TestHelperName}}Server(t)
+
+	t.Run("unimplemented_scaffold", func(t *testing.T) {
+		// Delete this case once you implement {{$m.Name | goName}}; it only asserts nobody has.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+{{- if $m.ServerStreaming}}
+		stream, err := client.{{$m.Name | goName}}(ctx, connect.NewRequest(&pb.{{$m.InputType | goName}}{}))
+		if err == nil {
+			for stream.Receive() {
+				// A real case asserts on each stream.Msg() here.
+			}
+			err = stream.Err()
+			_ = stream.Close()
+		}
+{{- else}}
+		stream := client.{{$m.Name | goName}}(ctx)
+		// A real case sends its messages here. The stub may refuse the stream
+		// before reading one, so the outcome is CloseAndReceive's.
+		_ = stream.Send(&pb.{{$m.InputType | goName}}{})
+		_, err := stream.CloseAndReceive()
+{{- end}}
+		tdd.AssertScaffoldStub(t, err)
+	})
+}
 {{- else}}
 
 import (
