@@ -221,7 +221,7 @@ func ValidateAlertTuning(tuning map[string]AlertTuning) error {
 	for _, id := range keys {
 		d, ok := ids[id]
 		if !ok {
-			return fmt.Errorf("Alerts.defaults names %q, which is not a generated default (have: %s)", id, strings.Join(AlertDefaultIDs(), ", "))
+			return fmt.Errorf("alerts.defaults names %q, which is not a generated default (have: %s)", id, strings.Join(AlertDefaultIDs(), ", "))
 		}
 		known := map[string]bool{}
 		var names []string
@@ -236,10 +236,10 @@ func ValidateAlertTuning(tuning map[string]AlertTuning) error {
 		sort.Strings(pk)
 		for _, name := range pk {
 			if !known[name] {
-				return fmt.Errorf("Alerts.defaults[%q].params has %q, which %s does not take (params: %s)", id, name, d.ID, strings.Join(names, ", "))
+				return fmt.Errorf("alerts.defaults[%q].params has %q, which %s does not take (params: %s)", id, name, d.ID, strings.Join(names, ", "))
 			}
 			if v := tuning[id].Params[name]; v <= 0 {
-				return fmt.Errorf("Alerts.defaults[%q].params[%q] = %v: a threshold or window must be positive", id, name, v)
+				return fmt.Errorf("alerts.defaults[%q].params[%q] = %v: a threshold or window must be positive", id, name, v)
 			}
 		}
 	}

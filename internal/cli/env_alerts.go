@@ -105,7 +105,7 @@ func resolveShapeAlerts(projectDir, envName string, e *KCLEntities) ([]release.S
 	}
 	for _, name := range obsdash.AlertDefaultAlertNames() {
 		if taken[name] {
-			return nil, nil, fmt.Errorf("Observability.alerts: rule %q reuses the name of a generated default; rename it, or tune the default with Alerts.defaults", name)
+			return nil, nil, fmt.Errorf("observability.alerts: rule %q reuses the name of a generated default; rename it, or tune the default with Alerts.defaults", name)
 		}
 	}
 	for _, d := range defaults {
