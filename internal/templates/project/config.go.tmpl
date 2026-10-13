@@ -174,7 +174,9 @@ func Validate(cfg *Config) error { return forgeconfig.Validate(cfg) }
 // command config (two Load calls); precedence is unchanged for both
 // (flags > env > config file > proto defaults). Every process of a binary
 // reads its config file from --config or that binary's own <BINARY>_CONFIG
-// variable — never another binary's.
+// variable — never another binary's. It is ONE file per process, flat across
+// the root and command config: each Load takes its own message's top-level
+// keys, and a key neither declares is an error.
 {{- range .BinaryConfigs}}
 {{- if .Command}}
 

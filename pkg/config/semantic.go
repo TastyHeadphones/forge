@@ -38,8 +38,14 @@ import (
 // Registering it persistent means it is also visible to subcommands. The flag
 // is registered idempotently so re-registering on the same command (or a
 // parent that already has it) is safe.
+//
+// Every cobra-level Register* also records msg on cmd as a config the
+// command path reads, so a process loading several configs (a root config and
+// a command config) reads them all from its one config file: the file's keys
+// are the union of their fields (see filelayer.go).
 func RegisterFlags(cmd *cobra.Command, msg proto.Message) error {
 	registerConfigFileFlag(cmd, msg)
+	recordFileMessage(cmd, msg)
 	return RegisterFlagsFor(cmd.Flags(), msg)
 }
 
@@ -54,6 +60,7 @@ func RegisterFlags(cmd *cobra.Command, msg proto.Message) error {
 // twice, and a binary's own flags stay invisible to its siblings.
 func RegisterSharedFlags(cmd *cobra.Command, msg proto.Message) error {
 	registerConfigFileFlag(cmd, msg)
+	recordFileMessage(cmd, msg)
 	return RegisterFlagsScoped(cmd.PersistentFlags(), msg, ScopeShared)
 }
 
@@ -67,6 +74,7 @@ func RegisterSharedFlags(cmd *cobra.Command, msg proto.Message) error {
 // carries it persistently, and cobra merges inherited persistent flags into a
 // subcommand's Flags(), so Load still resolves both halves in one pass.
 func RegisterOwnFlags(cmd *cobra.Command, msg proto.Message) error {
+	recordFileMessage(cmd, msg)
 	return RegisterFlagsScoped(cmd.Flags(), msg, ScopeOwn)
 }
 
@@ -83,6 +91,7 @@ func RegisterOwnFlags(cmd *cobra.Command, msg proto.Message) error {
 // subcommand with RegisterFlags instead, as LOCAL flags.
 func RegisterPersistentFlags(cmd *cobra.Command, msg proto.Message) error {
 	registerConfigFileFlag(cmd, msg)
+	recordFileMessage(cmd, msg)
 	return RegisterFlagsScoped(cmd.PersistentFlags(), msg, ScopeAll)
 }
 
@@ -96,6 +105,7 @@ func RegisterPersistentFlags(cmd *cobra.Command, msg proto.Message) error {
 // declaration here would only shadow it. A command config with no root
 // config beside it registers with RegisterFlags, which adds --config itself.
 func RegisterLocalFlags(cmd *cobra.Command, msg proto.Message) error {
+	recordFileMessage(cmd, msg)
 	return RegisterFlagsScoped(cmd.Flags(), msg, ScopeAll)
 }
 

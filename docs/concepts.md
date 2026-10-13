@@ -410,7 +410,10 @@ absent, by the binary's own path variable: `<BINARY>_CONFIG` for a config bound
 to a binary (`RELIANT_CONFIG` for `cmd/reliant`), `<PROJECT>_CONFIG` for the
 project-global `AppConfig`. No forge binary reads another's variable, so a
 shell configured for one app cannot hand its file to the rest. Set to `""`, the
-path variable is unset, like every other variable.
+path variable is unset, like every other variable. A process that loads a root
+config and a command config (`reliant server api`) reads both from that one
+file, whose keys are flat across them, like its flags and env vars; a key
+neither declares is an error.
 
 An env var set to the empty string counts as unset, whatever the field's type:
 `TEMPORAL_HOST=` keeps the file's or the default's value rather than loading

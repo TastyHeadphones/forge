@@ -390,7 +390,7 @@ func LoadInto(cmd *cobra.Command, msg proto.Message) error {
 	// file aborts LOUDLY here; no path given means this layer is skipped (not
 	// a fallback).
 	if path, source, ok := resolveConfigPath(cmd, msg); ok {
-		if err := applyConfigFile(msg, path, source); err != nil {
+		if err := applyConfigFile(msg, path, source, sharedFileMessages(cmd, msg)); err != nil {
 			return err
 		}
 	}

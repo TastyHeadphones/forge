@@ -45,19 +45,38 @@ package config
 // flag. The protojson unmarshal does not know about the (sensitive) annotation
 // — it simply sets whatever the file names — which is the intended behavior:
 // file/env yes, flag no.
+//
+// ONE FILE PER PROCESS. A process may load several config messages from one
+// file — a binary's root config and the command config of the subcommand it
+// runs (`reliant server api` loads ReliantConfig and ApiServerConfig) — and it
+// has ONE --config. So the file is FLAT, like the process's flags and env
+// vars: its top-level keys are the union of the fields of every config the
+// command loads, and each message takes its own keys (see ownDocument). The
+// set of configs is the set REGISTERED on the command path through the cobra-
+// level Register* functions (recordFileMessage), which is the declaration that
+// the command reads them. A key no registered config declares is a loud error,
+// so a misspelling still fails; a key two of them declare is refused rather
+// than guessed at. Nested keys stay strict: each message decodes its own keys
+// with protojson, which rejects an unknown field at any depth.
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	sigsyaml "sigs.k8s.io/yaml"
 
 	"github.com/reliant-labs/forge/pkg/forgepb"
@@ -127,6 +146,64 @@ func RegisterConfigFlag(cmd *cobra.Command, pathEnv string) {
 		// registered on the line above.
 		_ = pf.SetAnnotation(ConfigFlag, configPathEnvAnnotation, []string{pathEnv})
 	}
+}
+
+// fileMessagesAnnotation is the cobra command annotation naming the config
+// messages registered on that command (full names, comma-separated): the
+// configs a load from it, or from a command beneath it, shares a config file
+// with.
+const fileMessagesAnnotation = "forge.config/messages"
+
+// fileMessageIndex resolves a full name recorded in fileMessagesAnnotation to
+// the descriptor that was registered under it. A cobra annotation holds only
+// strings, and a config message need not be in the global registry (a
+// dynamically built one is not), so the descriptor is kept here. It holds one
+// entry per config message TYPE, so it is bounded by the program, not by how
+// many commands it builds.
+var fileMessageIndex sync.Map // protoreflect.FullName → protoreflect.MessageDescriptor
+
+// recordFileMessage notes on cmd that a load from cmd's path reads msg, so the
+// file layer knows which configs share the process's one config file. Every
+// cobra-level Register* calls it.
+func recordFileMessage(cmd *cobra.Command, msg proto.Message) {
+	md := msg.ProtoReflect().Descriptor()
+	name := string(md.FullName())
+	fileMessageIndex.Store(md.FullName(), md)
+	recorded := cmd.Annotations[fileMessagesAnnotation]
+	for _, n := range strings.Split(recorded, ",") {
+		if n == name {
+			return
+		}
+	}
+	if cmd.Annotations == nil {
+		cmd.Annotations = map[string]string{}
+	}
+	if recorded != "" {
+		name = recorded + "," + name
+	}
+	cmd.Annotations[fileMessagesAnnotation] = name
+}
+
+// sharedFileMessages returns the configs a load of msg from cmd shares its
+// config file with: every message recorded on cmd or an ancestor, other than
+// msg itself, in no particular order.
+func sharedFileMessages(cmd *cobra.Command, msg proto.Message) []protoreflect.MessageDescriptor {
+	self := msg.ProtoReflect().Descriptor().FullName()
+	seen := map[protoreflect.FullName]bool{self: true}
+	var out []protoreflect.MessageDescriptor
+	for c := cmd; c != nil; c = c.Parent() {
+		for _, n := range strings.Split(c.Annotations[fileMessagesAnnotation], ",") {
+			name := protoreflect.FullName(n)
+			if n == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			if md, ok := fileMessageIndex.Load(name); ok {
+				out = append(out, md.(protoreflect.MessageDescriptor))
+			}
+		}
+	}
+	return out
 }
 
 // binaryOf returns the binary msg is bound to by its
@@ -211,11 +288,15 @@ func resolveConfigPath(cmd *cobra.Command, msg proto.Message) (path, source stri
 // distinguished from omitting it — declare such a field with a non-zero
 // default or as optional if that distinction matters.)
 //
+// shared are the other configs the process loads from the same file (see
+// sharedFileMessages): their top-level keys are skipped here, because their
+// own loads decode them.
+//
 // Any failure — unreadable file, unknown extension, malformed JSON/YAML, or a
 // document that does not match the config schema — is returned as a loud error.
 // Callers only invoke this when a path was EXPLICITLY given, so an error here
 // always aborts Load (no silent fallback).
-func applyConfigFile(msg proto.Message, path, source string) error {
+func applyConfigFile(msg proto.Message, path, source string, shared []protoreflect.MessageDescriptor) error {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -228,17 +309,124 @@ func applyConfigFile(msg proto.Message, path, source string) error {
 	if err != nil {
 		return fmt.Errorf("config file %q (from %s): %w", path, source, err)
 	}
+	own, err := ownDocument(jsonBytes, msg.ProtoReflect().Descriptor(), shared)
+	if err != nil {
+		return fmt.Errorf("config file %q (from %s): %w", path, source, err)
+	}
 
 	// Decode into a fresh message of the same type (protojson resets it),
 	// then merge the populated fields onto msg. DiscardUnknown=false makes a
-	// stray/typo'd key a loud error rather than a silent drop.
+	// stray/typo'd key below the top level a loud error rather than a silent
+	// drop (ownDocument already refused an unknown top-level key).
 	fileMsg := msg.ProtoReflect().New().Interface()
 	opts := protojson.UnmarshalOptions{DiscardUnknown: false}
-	if err := opts.Unmarshal(jsonBytes, fileMsg); err != nil {
+	if err := opts.Unmarshal(own, fileMsg); err != nil {
 		return fmt.Errorf("config file %q (from %s): invalid config document: %w", path, source, err)
 	}
 	proto.Merge(msg, fileMsg)
 	return nil
+}
+
+// ownDocument returns the part of a config document that belongs to md: the
+// top-level keys md declares, as a JSON object protojson can decode. A key one
+// of the shared configs declares is left for that config's own load. A key
+// none of them declares is an error naming every config the command loads, and
+// so is a key md AND a shared config both declare: a flat file cannot say
+// which of the two it sets. A duplicate key is an error, as protojson makes it.
+func ownDocument(doc []byte, md protoreflect.MessageDescriptor, shared []protoreflect.MessageDescriptor) ([]byte, error) {
+	dec := json.NewDecoder(bytes.NewReader(doc))
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, fmt.Errorf("invalid config document: %w", err)
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return nil, fmt.Errorf("invalid config document: the top level must be a mapping of config keys, got %s", jsonKind(tok))
+	}
+	own := map[string]json.RawMessage{}
+	seen := map[string]bool{}
+	for dec.More() {
+		kt, err := dec.Token()
+		if err != nil {
+			return nil, fmt.Errorf("invalid config document: %w", err)
+		}
+		key, _ := kt.(string) // a JSON object key is always a string
+		var val json.RawMessage
+		if err := dec.Decode(&val); err != nil {
+			return nil, fmt.Errorf("invalid config document: key %q: %w", key, err)
+		}
+		if seen[key] {
+			return nil, fmt.Errorf("invalid config document: duplicate key %q", key)
+		}
+		seen[key] = true
+
+		var others []string
+		for _, s := range shared {
+			if declaresKey(s, key) {
+				others = append(others, string(s.Name()))
+			}
+		}
+		switch mine := declaresKey(md, key); {
+		case mine && len(others) > 0:
+			return nil, fmt.Errorf("key %q is declared by both %s and %s, and this command reads both from one file, "+
+				"which cannot say which it sets: rename one of the two fields",
+				key, md.Name(), strings.Join(others, " and "))
+		case mine:
+			own[key] = val
+		case len(others) > 0:
+			// Another config's key: its own load decodes it.
+		default:
+			return nil, unknownKeyError(key, md, shared)
+		}
+	}
+	if _, err := dec.Token(); err != nil { // the closing '}'
+		return nil, fmt.Errorf("invalid config document: %w", err)
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, errors.New("invalid config document: unexpected content after the top-level mapping")
+	}
+	return json.Marshal(own)
+}
+
+// declaresKey reports whether md has a field a config file can name with key:
+// its JSON name or its proto name, the two spellings protojson accepts.
+func declaresKey(md protoreflect.MessageDescriptor, key string) bool {
+	fields := md.Fields()
+	return fields.ByJSONName(key) != nil || fields.ByName(protoreflect.Name(key)) != nil
+}
+
+// unknownKeyError names a top-level key no loaded config declares, and every
+// config it was looked up in — with several, which configs the command loads
+// is exactly what the reader needs to know.
+func unknownKeyError(key string, md protoreflect.MessageDescriptor, shared []protoreflect.MessageDescriptor) error {
+	if len(shared) == 0 {
+		return fmt.Errorf("unknown key %q: %s has no such field", key, md.Name())
+	}
+	names := []string{string(md.Name())}
+	for _, s := range shared {
+		names = append(names, string(s.Name()))
+	}
+	sort.Strings(names)
+	return fmt.Errorf("unknown key %q: no config this command loads has such a field (%s)", key, strings.Join(names, ", "))
+}
+
+// jsonKind names what a JSON document's first token is, for the error that
+// refuses a document whose top level is not a mapping.
+func jsonKind(tok json.Token) string {
+	switch v := tok.(type) {
+	case json.Delim:
+		if v == '[' {
+			return "a list"
+		}
+	case nil:
+		return "an empty document"
+	case string:
+		return "a string"
+	case bool:
+		return "a boolean"
+	case float64, json.Number:
+		return "a number"
+	}
+	return fmt.Sprintf("%v", tok)
 }
 
 // missingFileFix says how to recover from a missing config file, for the
