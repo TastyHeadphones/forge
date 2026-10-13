@@ -310,7 +310,7 @@ func TestCmdTreeDB_KeepsItsOperationalPolicy(t *testing.T) {
 	// Unattended (initContainer) execution: a failure must leave the SQL
 	// error at the end of the pod log, not a cobra flag table. One per
 	// subcommand.
-	if got, want := strings.Count(src, "SilenceUsage: true"), 2; got != want {
+	if got, want := strings.Count(src, "SilenceUsage: true"), 3; got != want {
 		t.Errorf("rendered db.go sets SilenceUsage on %d subcommands, want %d — a migration "+
 			"failure must leave the SQL error at the end of the pod log, not a flag table:\n%s",
 			got, want, src)
@@ -334,12 +334,13 @@ func TestCmdTreeDB_KeepsItsOperationalPolicy(t *testing.T) {
 
 // TestCmdTreeDB_DeclaresUpAndStatusAndNoDown pins the command SHAPE. `up`
 // and `status` are the surface the deploy pipeline and the Taskfile invoke by
-// name, so losing one silently breaks a deploy step rather than a build. And
+// name, so losing one silently breaks a deploy step rather than a build;
+// `force` is the way out of up's dirty refusal (see the next test). And
 // there is no `down`: forge rolls forward only, so the scaffolded binary ships
 // no command that runs down SQL (and hence no m.Steps(-1)).
 func TestCmdTreeDB_DeclaresUpAndStatusAndNoDown(t *testing.T) {
 	src := renderDB(t, "cmd-tree-db.go.tmpl", true)
-	for _, use := range []string{`Use:   "up"`, `Use:          "status"`} {
+	for _, use := range []string{`Use:   "up"`, `Use:          "status"`, `Use:   "force <version>"`} {
 		if !strings.Contains(src, use) {
 			t.Errorf("rendered db.go does not declare %s:\n%s", use, src)
 		}
@@ -348,6 +349,31 @@ func TestCmdTreeDB_DeclaresUpAndStatusAndNoDown(t *testing.T) {
 		if strings.Contains(src, forbidden) {
 			t.Errorf("rendered db.go contains %s — forge never runs down migrations", forbidden)
 		}
+	}
+}
+
+// TestCmdTreeDB_DirtyRefusalNamesACommandTheBinaryHas: up's dirty refusal is
+// read in a pod log, by an operator holding the image and little else — no
+// forge, no checkout, and for a hosted database no route to it from a laptop.
+// It told them to run `migrate force N`, golang-migrate's CLI, which forge no
+// longer uses and the image does not carry. The refusal must name this
+// binary's own `force`, by the command path cobra resolves at run time (so a
+// renamed binary stays right), and the binary must declare it and run it
+// through migratekit, which keeps the applied record in step.
+func TestCmdTreeDB_DirtyRefusalNamesACommandTheBinaryHas(t *testing.T) {
+	src := renderDB(t, "cmd-tree-db.go.tmpl", true)
+
+	up := dbSubcommandBody(t, src, "up")
+	if !strings.Contains(up, "cmd.Parent().CommandPath()") || !strings.Contains(up, "force %d") {
+		t.Errorf("up's dirty refusal does not name this binary's own `<path> force N`:\n%s", up)
+	}
+	if strings.Contains(up, "`migrate force") {
+		t.Errorf("up's dirty refusal still names golang-migrate's `migrate force`, a CLI the image does not carry:\n%s", up)
+	}
+
+	force := dbSubcommandBody(t, src, "force <version>")
+	if !strings.Contains(force, "m.Force(version)") {
+		t.Errorf("`db migrate force` does not run migratekit's Force:\n%s", force)
 	}
 }
 

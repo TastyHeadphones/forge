@@ -517,8 +517,9 @@ They apply from an **initContainer, not a Job**:
 > `kubectl apply -f -`, under Argo CD, under Flux... A Job in a plain apply
 > stream is not ordered against the Deployments at all.
 
-Replicas racing the same migration is safe — golang-migrate takes a Postgres
-session advisory lock, so one applies and the rest find nothing to do. A
+Replicas racing the same migration is safe — the migrator
+(`forge/pkg/migratekit`) takes a Postgres session advisory lock, so one
+applies and the rest find nothing to do. A
 failed migration crash-loops the init container, stalling the rollout with the
 **old pods still serving**.
 

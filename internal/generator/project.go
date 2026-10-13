@@ -460,8 +460,8 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 		files = append(files,
 			struct{ template, dest string }{"cmd-tree-server.go.tmpl", filepath.Join(treeDir, "server.go")},
 		)
-		// cmd/<bin>/cmd/db.go (migrate CLI) depends on both pkg/config and
-		// golang-migrate; skip when migrations are also disabled.
+		// cmd/<bin>/cmd/db.go (the `db migrate` commands) depends on both
+		// pkg/config and pkg/migratekit; skip when migrations are also disabled.
 		if g.Features.MigrationsEnabled() {
 			files = append(files, struct{ template, dest string }{"cmd-tree-db.go.tmpl", filepath.Join(treeDir, "db.go")})
 		}

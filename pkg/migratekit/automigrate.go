@@ -13,6 +13,16 @@ import (
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 )
 
+// ForceCommand is the forge command that clears a dirty schema, named by
+// AutoMigrate's dirty refusal. It is Migrator.Force over a checkout's
+// migrations. Spelled out rather than imported for the reason RebaseCommand
+// is, and a test in internal/cli asserts it resolves to a real command.
+//
+// The refusal names it beside the binary's own `db migrate force`, which a
+// scaffolded binary carries: AutoMigrate runs inside a binary whose name and
+// command tree it cannot know, so that one can only be described.
+const ForceCommand = "forge db migrate force"
+
 // AutoMigrate is the BOOT-TIME half of the migration story, the counterpart to
 // the Migrator the `db migrate` CLI drives.
 //
@@ -168,8 +178,9 @@ func autoMigrate(fsys fs.FS, dir string, db *sql.DB, logger *slog.Logger) error 
 	// (force and retry) because Force is exported; boot deliberately cannot.
 	if before.Dirty {
 		return fmt.Errorf("database schema is dirty at version %d — a previous migration failed partway; "+
-			"inspect the database, fix the partial migration, then clear the dirty flag "+
-			"(e.g. `migrate force %d`) before restarting", before.Version, before.Version)
+			"inspect the database, finish or undo the partial migration, then clear the dirty flag before restarting: "+
+			"`%s %d` from a checkout of this release, or this binary's own `db migrate force %d` where it has one",
+			before.Version, ForceCommand, before.Version, before.Version)
 	}
 
 	// A schema AHEAD of this binary is the previous release booting against
