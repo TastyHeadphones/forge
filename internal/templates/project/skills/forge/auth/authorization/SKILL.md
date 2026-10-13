@@ -195,3 +195,23 @@ This suppresses the **error**, not just the warning. The reason after the colon
 is mandatory — a bare directive is the unfalsifiable comment the whole check
 exists to replace, and it will not silence anything. It lives next to the code so
 it shows up in the diff that introduces it, where a reviewer can disagree.
+
+### When your project resolves the caller through its own package
+
+The audit counts a handler as resolving the caller when it reaches forge's seam,
+`middleware.GetUser` (or `ClaimsFromContext`). A project that adopted forge with
+its own auth package resolves the caller elsewhere, and every handler would read
+as unscoped. Mark the accessors instead of suppressing the findings:
+
+```go
+// GetUserIDFromContext returns the signed-in user's id.
+//
+//forge:resolves-caller
+func GetUserIDFromContext(ctx context.Context) (string, bool)
+```
+
+A handler that calls a marked function, through the import that binds its
+package in that file or through a helper in its own package, resolves the
+caller. Mark package-level functions only, because a call site does not name a
+method's receiver type. The audit reports a marker on a method as ignored, and
+lists what it found under `caller_resolvers`.

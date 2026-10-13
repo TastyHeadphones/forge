@@ -209,12 +209,15 @@ func buildAnnotationsSpec(kind string) (AnnotationsSpec, error) {
 		// the wiring/observability/contract vocabulary. These have no
 		// proto counterpart, so they get their own kind rather than
 		// polluting the entity/field/method views.
-		return AnnotationsSpec{Markers: filterMarkers(all.Markers,
-			"package", "contract", "constructor", "deps-field")}, nil
+		return AnnotationsSpec{Markers: filterMarkers(all.Markers, goMarkerKinds...)}, nil
 	default:
 		return AnnotationsSpec{}, fmt.Errorf("unknown --kind %q (want entity, field, column, table, service, method, or go)", kind)
 	}
 }
+
+// goMarkerKinds are the AppliesTo values of the markers read out of .go
+// source rather than proto or SQL: what `--kind go` lists.
+var goMarkerKinds = []string{"package", "contract", "constructor", "deps-field", "function"}
 
 func filterMarkers(in []MarkerSpec, appliesTo ...string) []MarkerSpec {
 	want := make(map[string]bool, len(appliesTo))
@@ -460,6 +463,13 @@ func markerSpecs() []MarkerSpec {
 			Effect:    "Asserts the package is an outbound boundary — it talks OUT to a third-party system and must not serve inbound RPCs. `forge lint` enforces that with forgeconv-outbound-io-no-rpc.",
 			Placement: "package doc comment, or a free-standing comment in any of the package's .go files",
 			Example:   "// forge:outbound-io\npackage stripeadapter",
+		},
+		{
+			Name:      codegen.ResolvesCallerDirective,
+			AppliesTo: "function",
+			Effect:    "Declares that calling this function resolves the caller: it reads the authenticated principal the auth interceptor put on the request context. Forge's own seam (middleware.GetUser / ClaimsFromContext in the scaffolded pkg/middleware) needs no marker. A project with its own auth package marks its accessors, and the unscoped_auth audit then counts a handler that calls one — through the import that binds the declaring package in that file, or through a helper in the handler's own package — as resolving the caller, and names it in its hint. Package-level functions only: a marker on a method is reported as ignored, because a call site does not name its receiver's type. `forge project audit --json` lists the declarations it found under unscoped_auth's caller_resolvers.",
+			Placement: "on the function's doc comment, spaced or unspaced, as the whole comment line",
+			Example:   "// GetUserIDFromContext returns the signed-in user's id.\n//\n//forge:resolves-caller\nfunc GetUserIDFromContext(ctx context.Context) (string, bool)",
 		},
 	}
 }

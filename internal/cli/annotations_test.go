@@ -44,12 +44,19 @@ func TestAnnotations_JSONValidAndComplete(t *testing.T) {
 			t.Errorf("markers missing %q", want)
 		}
 	}
-	// Ten proto markers plus the column-comment markers plus the
-	// Go-source markers. The authoritative per-marker pin is
+	// The full dump carries every marker in the catalog, no more and no
+	// fewer. The authoritative per-marker pin is
 	// TestAnnotations_MarkerNamesMatchRecognizers and its Go-source twin;
-	// this only guards the full dump against silent loss.
-	if len(spec.Markers) != 26 {
-		t.Errorf("expected 26 markers, got %d", len(spec.Markers))
+	// this only guards the dump against silent loss. Derived rather than
+	// counted, so two branches that each add a marker do not collide here.
+	catalog := markerSpecs()
+	if len(spec.Markers) != len(catalog) {
+		t.Errorf("the dump has %d markers, the catalog %d", len(spec.Markers), len(catalog))
+	}
+	for _, m := range catalog {
+		if !markerNames[m.Name] {
+			t.Errorf("the dump lost catalog marker %q", m.Name)
+		}
 	}
 
 	// The proto→column mapping a birth applies: every proto3 scalar kind
@@ -351,13 +358,36 @@ message LedgerEntity {
 		"forge:optional-dep", "forge:optional-checked", "forge:constructor",
 		"forge:no-observe", "forge:service", "forge:exclude-contract",
 		"forge:external-component", "forge:not-a-component", "forge:outbound-io",
+		"forge:resolves-caller",
 	} {
 		if !got[want] {
 			t.Errorf("markerSpecs missing recognized marker %q", want)
 		}
 	}
-	if len(got) != 25 {
-		t.Errorf("expected 25 marker specs, got %d", len(got))
+	// "Exactly" without a count: no marker is catalogued twice for the
+	// same kind (one name may serve two — forge:append-only is both a proto
+	// entity marker and a table comment), and every marker is of a kind
+	// some check pins against its recognizer — proto markers against
+	// codegen.KnownProtoMarkers, column and table markers against
+	// schemadef's registries (all below), Go markers against
+	// TestAnnotations_GoMarkerNamesMatchRecognizers. A marker of any other
+	// kind would be advertised with nothing checking that it is read.
+	entries := map[string]bool{}
+	for _, m := range markerSpecs() {
+		key := m.AppliesTo + " " + m.Name
+		if entries[key] {
+			t.Errorf("marker %q is catalogued twice for %q", m.Name, m.AppliesTo)
+		}
+		entries[key] = true
+	}
+	pinnedKinds := map[string]bool{"entity": true, "field": true, "method": true, "service": true, "column": true, "table": true}
+	for _, k := range goMarkerKinds {
+		pinnedKinds[k] = true
+	}
+	for _, m := range markerSpecs() {
+		if !pinnedKinds[m.AppliesTo] {
+			t.Errorf("marker %q applies to %q, a kind no recognizer check covers", m.Name, m.AppliesTo)
+		}
 	}
 
 	// Proto markers are pinned against codegen.KnownProtoMarkers — the same
@@ -528,6 +558,15 @@ func TestAnnotations_GoMarkerNamesMatchRecognizers(t *testing.T) {
 		t.Errorf("forge:service should name Mailer as the contract, got %q", got)
 	}
 
+	// forge:resolves-caller declares a package-level function.
+	resolverDir := write(t, map[string]string{
+		"go.mod":  "module example.com/x\n",
+		"auth.go": "package x\n\nimport \"context\"\n\n//forge:resolves-caller\nfunc UserID(ctx context.Context) string { return \"\" }\n",
+	})
+	if got, _ := codegen.DeclaredCallerResolvers(resolverDir); len(got) != 1 || got[0].Func != "UserID" {
+		t.Errorf("forge:resolves-caller not recognized on a function doc, got %+v", got)
+	}
+
 	// Every Go marker in the catalog is covered above. If someone adds one
 	// without a recognizer check, this catches it.
 	covered := map[string]bool{
@@ -535,11 +574,12 @@ func TestAnnotations_GoMarkerNamesMatchRecognizers(t *testing.T) {
 		"forge:no-observe": true, "forge:service": true,
 		"forge:exclude-contract": true, "forge:external-component": true,
 		"forge:not-a-component": true, "forge:outbound-io": true,
+		"forge:resolves-caller": true,
 		// Lint-suppression directive: read by the analyzer, not by codegen,
 		// so it has no codegen recognizer to pin here.
 		"forge:optional-checked": true,
 	}
-	for _, m := range filterMarkers(markerSpecs(), "package", "contract", "constructor", "deps-field") {
+	for _, m := range filterMarkers(markerSpecs(), goMarkerKinds...) {
 		if !covered[m.Name] {
 			t.Errorf("Go marker %q is advertised but has no recognizer check in this test", m.Name)
 		}

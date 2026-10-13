@@ -145,9 +145,11 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/jinzhu/inflection"
@@ -287,6 +289,12 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 	// least entitled to be silent in.
 	ownerTables := ownerScopedTables(cfg, projectDir)
 
+	// The CALLER half's vocabulary: forge's own seam, plus whatever the
+	// project declared resolves the caller (//forge:resolves-caller). Read
+	// once — the declarations are module-wide, not per service.
+	resolvers, ignoredMarkers := codegen.DeclaredCallerResolvers(projectDir)
+	callers := newCallerSeam(resolvers)
+
 	for _, svc := range services {
 		// Only RPCs the proto declares authenticated are in scope. A
 		// public RPC reading no claims is correct by construction, and
@@ -316,7 +324,7 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 			continue
 		}
 
-		handlers, herr := scanHandlerAuthUse(dir.Dir)
+		handlers, herr := scanHandlerAuthUse(dir.Dir, callers.forPackage(handlerImportPath(projectDir, dir.Dir)))
 		if herr != nil {
 			unresolvedSvcs = append(unresolvedSvcs, svc.Name)
 			continue
@@ -386,7 +394,21 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 		}
 	}
 
+	// The seam the findings and the hint name: the project's own declared
+	// resolvers when it has any (they are what its handlers should call),
+	// forge's scaffolded one otherwise.
 	seam := codegen.CRUDAuthSeam()
+	if len(resolvers) > 0 {
+		names := make([]string, 0, len(resolvers))
+		for _, r := range resolvers {
+			names = append(names, r.String())
+		}
+		seam = strings.Join(names, " / ")
+	}
+	declared := make([]string, 0, len(resolvers))
+	for _, r := range resolvers {
+		declared = append(declared, r.ImportPath+"."+r.Func)
+	}
 	details := map[string]any{
 		"authenticated_rpcs":         authTotal,
 		"scoped_rpcs":                scopedTotal,
@@ -398,11 +420,16 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 		"raw_sql_unscoped_rpcs":      rawSQLUnscoped,
 		"raw_sql_unverifiable_rpcs":  rawSQLUnverifiable,
 		"auth_seam":                  seam,
+		"caller_resolvers":           declared,
+		"caller_resolver_marker":     codegen.ResolvesCallerDirective,
 		"acknowledge_marker":         AuthUnscopedOKDirective,
 		"hint": fmt.Sprintf(
 			"resolve the caller with %s(ctx) and scope what the handler touches to those claims; "+
 				"if an RPC is intentionally global, say so in code above it with `// %s <reason>`",
 			seam, AuthUnscopedOKDirective),
+	}
+	if len(ignoredMarkers) > 0 {
+		details["caller_resolver_markers_ignored"] = ignoredMarkers
 	}
 
 	// FAIL LOUDLY ON AN EMPTY DERIVATION. The project declares
@@ -774,7 +801,12 @@ type handlerAuthUse struct {
 // direction: this pass resolves names, not types, and following a name
 // across a package boundary without a type checker would start clearing
 // handlers on coincidence.
-func scanHandlerAuthUse(dir string) (map[string]handlerAuthUse, error) {
+//
+// The one crossing is a DECLARATION, not an inference: a function the
+// project marked `//forge:resolves-caller` (reliant's auth accessors) is
+// matched through the import that binds its package in each file, so
+// `auth.GetUserIDFromContext` counts only where `auth` IS that package.
+func scanHandlerAuthUse(dir string, callers packageCallerSeam) (map[string]handlerAuthUse, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -802,17 +834,24 @@ func scanHandlerAuthUse(dir string) (map[string]handlerAuthUse, error) {
 	}
 
 	// Pass 1: which names in this package reach the seam, at any depth?
+	// Each declaration is judged against its OWN file's imports, which is
+	// how a declared resolver's package identifier is bound.
 	var decls []*ast.FuncDecl
+	fileSeams := map[*ast.FuncDecl]fileCallerSeam{}
 	for _, pf := range files {
+		fs := callers.forFile(pf.file)
 		for _, decl := range pf.file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || fn.Body == nil {
 				continue
 			}
 			decls = append(decls, fn)
+			fileSeams[fn] = fs
 		}
 	}
-	seamReaching := seamReachingNames(decls)
+	seamReaching := seamReachingNames(decls, func(fn *ast.FuncDecl) bool {
+		return callers.declaresLocal(fn) || bodyReachesAuthSeam(fn.Body, fileSeams[fn])
+	})
 
 	// The SQL half, computed over the SAME declaration set and the same
 	// package-local call graph, so the two analyses cannot disagree
@@ -838,7 +877,7 @@ func scanHandlerAuthUse(dir string) (map[string]handlerAuthUse, error) {
 				Delegating: bodyIsCRUDDelegation(fn.Body),
 				AckReason:  ackReason(fn.Doc),
 			}
-			use.ReadsCaller = bodyReachesAuthSeam(fn.Body) ||
+			use.ReadsCaller = bodyReachesAuthSeam(fn.Body, fileSeams[fn]) ||
 				bodyCallsSeamReachingHelper(fn.Body, seamReaching, fn.Name.Name)
 			use.SQL = sqlByName[fn.Name.Name]
 			use.HasSQL = len(use.SQL) > 0
@@ -881,13 +920,13 @@ func scanHandlerAuthUse(dir string) (map[string]handlerAuthUse, error) {
 // reaches — would clear a handler that called the unscoped spelling,
 // which is precisely the silent pass this category exists to prevent.
 // Ambiguity is rare; a false clear is unrecoverable.
-func seamReachingNames(decls []*ast.FuncDecl) map[string]bool {
+func seamReachingNames(decls []*ast.FuncDecl, reachesDirectly func(*ast.FuncDecl) bool) map[string]bool {
 	// reaches[i] tracks declaration i, not its name, so that two
 	// same-named funcs are judged separately before the name-level
 	// question is asked.
 	reaches := make([]bool, len(decls))
 	for i, fn := range decls {
-		reaches[i] = bodyReachesAuthSeam(fn.Body)
+		reaches[i] = reachesDirectly(fn)
 	}
 
 	// admitted collapses the per-declaration truth onto names, keeping
@@ -961,28 +1000,129 @@ func ackReason(doc *ast.CommentGroup) string {
 	return ""
 }
 
-// bodyReachesAuthSeam reports whether a function body names the auth seam
-// or one of the claims accessors it re-exports. The identifiers come from
-// codegen, which is what stamps the seam into the scaffold — renaming it
-// there moves this check.
-func bodyReachesAuthSeam(body *ast.BlockStmt) bool {
+// bodyReachesAuthSeam reports whether a function body names the auth seam,
+// one of the claims accessors it re-exports, or a resolver the project
+// declared. forge's own identifiers come from codegen, which is what stamps
+// the seam into the scaffold — renaming it there moves this check — and
+// match by name, as they always have. A declared resolver matches only
+// through the import that binds its package in this file.
+func bodyReachesAuthSeam(body *ast.BlockStmt, fs fileCallerSeam) bool {
 	seamFuncs := codegen.CRUDAuthSeamFuncs()
 	found := false
 	ast.Inspect(body, func(n ast.Node) bool {
 		if found {
 			return false
 		}
-		sel, ok := n.(*ast.SelectorExpr)
-		if !ok {
-			return true
+		switch x := n.(type) {
+		case *ast.SelectorExpr:
+			if seamFuncs[x.Sel.Name] {
+				found = true
+			} else if id, ok := x.X.(*ast.Ident); ok && fs.qualified[id.Name][x.Sel.Name] {
+				found = true
+			}
+		case *ast.CallExpr:
+			// A dot-imported resolver is called by its bare name.
+			if id, ok := x.Fun.(*ast.Ident); ok && fs.dotted[id.Name] {
+				found = true
+			}
 		}
-		if seamFuncs[sel.Sel.Name] {
-			found = true
-			return false
-		}
-		return true
+		return !found
 	})
 	return found
+}
+
+// callerSeam indexes the project's declared caller resolvers
+// (//forge:resolves-caller) by the import path of the package declaring
+// them.
+type callerSeam struct {
+	byPath map[string]declaredPackage
+}
+
+type declaredPackage struct {
+	name  string          // the package clause: what an unaliased import binds
+	funcs map[string]bool // the declared resolvers in it
+}
+
+func newCallerSeam(resolvers []codegen.CallerResolver) callerSeam {
+	s := callerSeam{byPath: map[string]declaredPackage{}}
+	for _, r := range resolvers {
+		p, ok := s.byPath[r.ImportPath]
+		if !ok {
+			p = declaredPackage{name: r.Package, funcs: map[string]bool{}}
+		}
+		p.funcs[r.Func] = true
+		s.byPath[r.ImportPath] = p
+	}
+	return s
+}
+
+// forPackage narrows the seam to one handler package, so a resolver
+// declared IN that package (called by its bare name) is recognised too.
+func (s callerSeam) forPackage(importPath string) packageCallerSeam {
+	return packageCallerSeam{callerSeam: s, self: s.byPath[importPath].funcs}
+}
+
+// packageCallerSeam is callerSeam as seen from one handler package.
+type packageCallerSeam struct {
+	callerSeam
+	self map[string]bool
+}
+
+// declaresLocal reports whether fn is itself a resolver the project
+// declared in this package: calling it resolves the caller, so it seeds the
+// package's fixed point like a direct call to the seam.
+func (s packageCallerSeam) declaresLocal(fn *ast.FuncDecl) bool {
+	return fn.Recv == nil && s.self[fn.Name.Name]
+}
+
+// fileCallerSeam is the seam as one file's imports bind it: the identifier
+// each declaring package is imported under, and the resolvers a dot import
+// brings in by bare name.
+type fileCallerSeam struct {
+	qualified map[string]map[string]bool
+	dotted    map[string]bool
+}
+
+func (s packageCallerSeam) forFile(f *ast.File) fileCallerSeam {
+	fs := fileCallerSeam{qualified: map[string]map[string]bool{}, dotted: map[string]bool{}}
+	for _, imp := range f.Imports {
+		importPath, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			continue
+		}
+		p, ok := s.byPath[importPath]
+		if !ok {
+			continue
+		}
+		ident := p.name
+		if imp.Name != nil {
+			ident = imp.Name.Name
+		}
+		switch ident {
+		case "_":
+		case ".":
+			for fn := range p.funcs {
+				fs.dotted[fn] = true
+			}
+		default:
+			fs.qualified[ident] = p.funcs
+		}
+	}
+	return fs
+}
+
+// handlerImportPath is the import path of the handler package in dir, or
+// "" when the module path cannot be read.
+func handlerImportPath(projectDir, dir string) string {
+	module, err := codegen.GetModulePath(projectDir)
+	if err != nil {
+		return ""
+	}
+	rel, err := filepath.Rel(projectDir, dir)
+	if err != nil {
+		return ""
+	}
+	return path.Join(module, filepath.ToSlash(rel))
 }
 
 // bodyCallsSeamReachingHelper reports whether the body calls a function in
