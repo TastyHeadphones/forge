@@ -27,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   forge's own Flux install in `forge cluster up`, the OCIRepository/Kustomization
   pointer `forge env deploy` wrote, its convergence wait, the Flux-secret sync,
   the Flux plan-live reader, `forge env status`'s in-cluster convergence, and
-  the `internal/flux` pointer/observe code (about 5,000 lines with tests). What
+  the `internal/flux` pointer/observe code (net about 4,000 lines removed). What
   stays is `forge.flux_chart()` and the declared bootstrap-chart install. The
   direct-apply notice no longer claims the env "will be reconciled from its
   bundle".
