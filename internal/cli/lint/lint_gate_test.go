@@ -2,6 +2,7 @@ package lint
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -178,21 +179,59 @@ func TestRunLintWithGate_LintErrorOutranksTheGateWrite(t *testing.T) {
 	}
 }
 
-// A targeted lane (`--contract`, `--conventions`, …) is one check, not the
-// pipeline, so its tally is itself — and the gate records a real verdict for
-// it rather than `skipped`.
-func TestTargetedLaneName(t *testing.T) {
+// Targeted lanes (`--contract`, `--conventions`, …) are the checks that were
+// named, not the pipeline, so their tally is exactly those — and the gate
+// records a real verdict for each rather than `skipped`. EVERY named lane is
+// selected: `--conventions --contract` used to run only the first one in
+// dispatch order and still print ✅.
+func TestSelectedLanes(t *testing.T) {
 	t.Parallel()
-	if name, targeted := targetedLaneName(lintFlags{contract: true}); !targeted || name != "contract" {
-		t.Errorf("contract: got %q, %v", name, targeted)
+	for name, tc := range map[string]struct {
+		flags lintFlags
+		want  []string
+	}{
+		"none is the full sweep":  {flags: lintFlags{strict: true}},
+		"one":                     {flags: lintFlags{contract: true}, want: []string{"contract"}},
+		"two, in dispatch order":  {flags: lintFlags{conventions: true, contract: true}, want: []string{"contract", "conventions"}},
+		"three":                   {flags: lintFlags{readOnlyFields: true, conventions: true, computedFields: true}, want: []string{"conventions", "computed-fields", "read-only-fields"}},
+		"exported-vars alone":     {flags: lintFlags{exportedVars: true}, want: []string{"exported-vars"}},
+		"exported-vars runs once": {flags: lintFlags{exportedVars: true, contract: true}, want: []string{"contract"}},
+		"deprecated alias":        {flags: lintFlags{crudFixtures: true}, want: []string{"fixture-drift"}},
+		"alias and its lane":      {flags: lintFlags{crudFixtures: true, fixtureDrift: true}, want: []string{"fixture-drift"}},
+		"non-lane flags are kept": {flags: lintFlags{quiet: true, noFix: true, conventions: true}, want: []string{"conventions"}},
+	} {
+		if got := selectedLanes(tc.flags); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s: selectedLanes = %v, want %v", name, got, tc.want)
+		}
 	}
-	if name, targeted := targetedLaneName(lintFlags{conventions: true}); !targeted || name != "conventions" {
-		t.Errorf("conventions: got %q, %v", name, targeted)
+}
+
+// onlyLane narrows flags to one lane and keeps every non-lane flag, and it
+// round-trips for every lane in the table: a dispatcher handed onlyLane(f, l)
+// runs l and nothing else.
+func TestOnlyLane(t *testing.T) {
+	t.Parallel()
+	got := onlyLane(lintFlags{conventions: true, contract: true, strict: true, quiet: true}, "conventions")
+	if !got.conventions || got.contract || !got.strict || !got.quiet {
+		t.Errorf("onlyLane(conventions) = %+v; want conventions alone, strict and quiet kept", got)
 	}
-	// No targeted flag means the full sweep, whose tally comes from the
-	// pipeline itself.
-	if _, targeted := targetedLaneName(lintFlags{strict: true}); targeted {
-		t.Error("no --<linter> flag must report the full sweep")
+	if got := onlyLane(lintFlags{crudFixtures: true}, "fixture-drift"); !got.fixtureDrift || got.crudFixtures {
+		t.Errorf("onlyLane(fixture-drift) over the alias = %+v; want the canonical flag alone", got)
+	}
+
+	var all lintFlags
+	for _, l := range lintLaneFlags(&all) {
+		*l.on = true
+	}
+	seen := map[string]bool{}
+	for _, l := range lintLaneFlags(&lintFlags{}) {
+		if seen[l.name] {
+			continue
+		}
+		seen[l.name] = true
+		if got := selectedLanes(onlyLane(all, l.name)); !reflect.DeepEqual(got, []string{l.name}) {
+			t.Errorf("onlyLane(all, %q) selects %v", l.name, got)
+		}
 	}
 }
 

@@ -12,6 +12,9 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/cli/factory"
+	"github.com/reliant-labs/forge/internal/projectstore"
 )
 
 // scopeFixture lays out a small tree: a Go package, a proto dir with no Go,
@@ -423,10 +426,7 @@ func TestCollectTargetedOutcomeHonoursScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	o, targeted, err := collectTargetedOutcome(t.Context(), lintFlags{readOnlyFields: true}, nil, root, nil, nil, inScope)
-	if err != nil || !targeted {
-		t.Fatalf("targeted=%v err=%v", targeted, err)
-	}
+	o := collectOneTargetedOutcome(t, lintFlags{readOnlyFields: true}, root, inScope)
 	if o.name != "read-only-fields" || !o.gated || len(o.findings) != 1 {
 		t.Errorf("in-scope targeted lane: name=%q gated=%v findings=%+v; want the read-only error, gated", o.name, o.gated, o.findings)
 	}
@@ -435,19 +435,117 @@ func TestCollectTargetedOutcomeHonoursScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	o, _, err = collectTargetedOutcome(t.Context(), lintFlags{readOnlyFields: true}, nil, root, nil, nil, outOfScope)
-	if err != nil {
-		t.Fatal(err)
-	}
+	o = collectOneTargetedOutcome(t, lintFlags{readOnlyFields: true}, root, outOfScope)
 	if o.gated || len(o.findings) != 0 {
 		t.Errorf("a finding anchored outside the scope still reported/gated: gated=%v findings=%+v", o.gated, o.findings)
 	}
 
-	o, _, err = collectTargetedOutcome(t.Context(), lintFlags{configReach: true}, nil, root, nil, nil, outOfScope)
-	if err != nil {
-		t.Fatal(err)
-	}
+	o = collectOneTargetedOutcome(t, lintFlags{configReach: true}, root, outOfScope)
 	if !o.unscoped || o.ran {
 		t.Errorf("--config-reach under --scope: unscoped=%v ran=%v; it is whole-project and must be skipped and named", o.unscoped, o.ran)
+	}
+}
+
+// collectOneTargetedOutcome runs flags, which name exactly one lane, through
+// collectTargetedOutcomes and returns that lane's outcome.
+func collectOneTargetedOutcome(t *testing.T, flags lintFlags, root string, scope *lintScope) lintStepOutcome {
+	t.Helper()
+	outcomes, targeted, err := collectTargetedOutcomes(t.Context(), flags, nil, root, nil, nil, scope)
+	if err != nil || !targeted || len(outcomes) != 1 {
+		t.Fatalf("one lane named: targeted=%v outcomes=%d err=%v", targeted, len(outcomes), err)
+	}
+	return outcomes[0]
+}
+
+// subtotalOnlyRPC populates the fixture's forge:computed subtotal_cents and
+// leaves its forge:read-only total_cents unwritten: --computed-fields passes,
+// --read-only-fields fails. computed-fields comes first in dispatch order,
+// which is exactly the shape G6 hid — the first named lane passes and the
+// verdict never sees the second.
+const subtotalOnlyRPC = `package estimates
+
+func (s *Service) RecalculateEstimate(row *Estimate) {
+	row.SubtotalCents = 100
+}
+`
+
+// Every lane a combined invocation names runs, and the one verdict covers
+// all of them. `forge lint --conventions --contract` used to run only the
+// lane first in dispatch order and print ✅ over the one it skipped.
+func TestCollectTargetedOutcomes_EveryNamedLaneRuns(t *testing.T) {
+	root := unwrittenProject(t, estimateServiceProto, subtotalOnlyRPC)
+
+	alone := collectOneTargetedOutcome(t, lintFlags{computedFields: true}, root, nil)
+	if !alone.ran || alone.gated {
+		t.Fatalf("fixture: --computed-fields alone must pass; ran=%v gated=%v findings=%+v", alone.ran, alone.gated, alone.findings)
+	}
+
+	outcomes, targeted, err := collectTargetedOutcomes(t.Context(),
+		lintFlags{readOnlyFields: true, computedFields: true}, nil, root, nil, nil, nil)
+	if err != nil || !targeted {
+		t.Fatalf("targeted=%v err=%v", targeted, err)
+	}
+	var names []string
+	for _, o := range outcomes {
+		if !o.ran {
+			t.Errorf("lane %s was named and did not run", o.name)
+		}
+		names = append(names, o.name)
+	}
+	if want := []string{"computed-fields", "read-only-fields"}; !reflect.DeepEqual(names, want) {
+		t.Fatalf("lanes = %v, want %v", names, want)
+	}
+	if outcomes[0].gated || !outcomes[1].gated {
+		t.Errorf("computed-fields gated=%v (want false), read-only-fields gated=%v (want true)", outcomes[0].gated, outcomes[1].gated)
+	}
+
+	// --quiet / --scope: the verdict names the failing lane and counts both.
+	var out bytes.Buffer
+	verdict := renderLintOutcomes(&out, outcomes, true, nil)
+	if verdict == nil || !strings.Contains(verdict.Error(), "1 gating linter(s) failed: read-only-fields") {
+		t.Errorf("verdict = %v; want the read-only-fields failure\n%s", verdict, out.String())
+	}
+	if strings.Contains(out.String(), "✅") {
+		t.Errorf("a failing combined run printed a success line:\n%s", out.String())
+	}
+
+	// --json: one report over both lanes.
+	findings, gated := flattenLintOutcomes(outcomes)
+	report := buildLintJSONReport(findings, gated)
+	if report.OK {
+		t.Error("--json reported ok=true over a failing named lane")
+	}
+	rules := map[string]bool{}
+	for _, f := range report.Findings {
+		rules[f.Rule] = true
+	}
+	if !rules[readOnlyFieldRuleID] {
+		t.Errorf("--json lost the second lane's findings: %+v", report.Findings)
+	}
+
+	// --gate-json: the tally records both lanes as run.
+	if tally := tallyFromOutcomes(outcomes); !reflect.DeepEqual(tally.ran, []string{"computed-fields", "read-only-fields"}) || !tally.failed {
+		t.Errorf("tally = %+v; want both lanes ran, failed", tally)
+	}
+}
+
+// The text driver: a combined run executes each lane and returns one verdict
+// naming the lane that failed, instead of the first lane's ✅.
+func TestRunLint_CombinedLanesTextVerdict(t *testing.T) {
+	t.Chdir(unwrittenProject(t, estimateServiceProto, subtotalOnlyRPC))
+	// The fixture has no forge.yaml: the lanes run on their defaults.
+	factory.SetProjectStoreLoader(func() (*projectstore.Store, error) {
+		return nil, ErrProjectConfigNotFound
+	})
+
+	if err := runLint(t.Context(), lintFlags{computedFields: true}, nil); err != nil {
+		t.Fatalf("fixture: --computed-fields alone must pass: %v", err)
+	}
+	err := runLint(t.Context(), lintFlags{computedFields: true, readOnlyFields: true}, nil)
+	if err == nil || !strings.Contains(err.Error(), "1 gating linter(s) failed: read-only-fields") {
+		t.Fatalf("combined text run = %v; want the verdict to name read-only-fields", err)
+	}
+	if strings.Contains(err.Error(), "computed-fields") {
+		t.Errorf("the verdict names a lane that passed: %v", err)
 	}
 }

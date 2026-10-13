@@ -219,15 +219,16 @@ func resolveGateRunResult(lintErr, gateErr error) error {
 // runLintTallied is runLint, plus the lane tally when the run was the full
 // sweep.
 //
-// A TARGETED LANE (`--contract`, `--db`, …) HAS NO LANE TALLY, because it is
-// not the pipeline — it is one check, and `ran` is itself. Synthesising a
-// tally of one keeps the verdict honest: the gate then records a pass or a
-// failure for that lane, never `skipped`, because a targeted lane that was
-// asked for and executed did prove something.
+// TARGETED LANES (`--contract`, `--db`, …) HAVE NO PIPELINE TALLY, because
+// they are not the pipeline — they are the checks that were named, and `ran`
+// is exactly those. Synthesising that tally keeps the verdict honest: the
+// gate records a pass or a failure for the lanes asked for, never `skipped`,
+// because a targeted lane that was asked for and executed did prove
+// something.
 func runLintTallied(ctx context.Context, flags lintFlags, paths []string) (lintLaneTally, error) {
-	if lane, targeted := targetedLaneName(flags); targeted {
+	if lanes := selectedLanes(flags); len(lanes) > 0 {
 		err := runLint(ctx, flags, paths)
-		return lintLaneTally{ran: []string{lane}, failed: err != nil}, err
+		return lintLaneTally{ran: lanes, failed: err != nil}, err
 	}
 	return runAllLinters(ctx, lintRunOptions{
 		fix:           !flags.noFix,
@@ -238,48 +239,90 @@ func runLintTallied(ctx context.Context, flags lintFlags, paths []string) (lintL
 	})
 }
 
-// targetedLaneName names the single lane a `--<linter>` flag selected, or
-// reports targeted=false for the full sweep.
+// lintLaneFlag is one `--<linter>` flag: the lane it selects and the field
+// that holds it.
+type lintLaneFlag struct {
+	name string
+	on   *bool
+	// runsAs names the lane that runs the identical check (--exported-vars
+	// is bundled into --contract), so selecting both runs it once.
+	runsAs string
+}
+
+// lintLaneFlags is every `--<linter>` flag, in dispatch order, pointing into
+// f. The one table lane selection reads: every driver (text, --quiet/--scope,
+// --json, --gate-json) asks selectedLanes which lanes to run and onlyLane to
+// narrow its flags to one of them, so no driver can run a different set.
 //
-// A table rather than a chain of ifs, so adding a lane is adding a row — and
-// so the set stays visibly the same set runLint dispatches on. A flag missing
-// from here is not a correctness bug: it degrades to the full-sweep path,
-// where the tally comes from the pipeline itself.
-func targetedLaneName(flags lintFlags) (string, bool) {
-	for _, lane := range []struct {
-		on   bool
-		name string
-	}{
-		{flags.contract, "contract"},
-		{flags.exportedVars, "exported-vars"},
-		{flags.migrationSafety, "migration-safety"},
-		{flags.conventions, "conventions"},
-		{flags.generatedDrift, "generated-drift"},
-		{flags.frontendStores, "frontend-stores"},
-		{flags.scaffolds, "scaffolds"},
-		{flags.tests, "tests"},
-		{flags.banners, "banners"},
-		{flags.checkWorkarounds, "check-workarounds"},
-		{flags.optionalDepsGuard, "optional-deps-guard"},
-		{flags.configDeps, "config-deps"},
-		{flags.columnMarkers, "column-markers"},
-		{flags.fixtureDrift || flags.crudFixtures, "fixture-drift"},
-		{flags.timeBucketing, "time-bucketing"},
-		{flags.protoMarkers, "proto-markers"},
-		{flags.protoOptions, "proto-options"},
-		{flags.createNullability, "create-nullability"},
-		{flags.computedFields, "computed-fields"},
-		{flags.readOnlyFields, "read-only-fields"},
-		{flags.guardedFields, "guarded-fields"},
-		{flags.staticExport, "static-export"},
-		{flags.vendoredProtos, "vendored-protos"},
-		{flags.configReach, "config-reach"},
-	} {
-		if lane.on {
-			return lane.name, true
+// A lane missing from here is reported as unknown by the drivers rather than
+// silently degrading to the full sweep.
+func lintLaneFlags(f *lintFlags) []lintLaneFlag {
+	return []lintLaneFlag{
+		{name: "contract", on: &f.contract},
+		{name: "exported-vars", on: &f.exportedVars, runsAs: "contract"},
+		{name: "migration-safety", on: &f.migrationSafety},
+		{name: "conventions", on: &f.conventions},
+		{name: "generated-drift", on: &f.generatedDrift},
+		{name: "frontend-stores", on: &f.frontendStores},
+		{name: "scaffolds", on: &f.scaffolds},
+		{name: "tests", on: &f.tests},
+		{name: "banners", on: &f.banners},
+		{name: "check-workarounds", on: &f.checkWorkarounds},
+		{name: "optional-deps-guard", on: &f.optionalDepsGuard},
+		{name: "config-deps", on: &f.configDeps},
+		{name: "column-markers", on: &f.columnMarkers},
+		{name: "fixture-drift", on: &f.fixtureDrift},
+		{name: "fixture-drift", on: &f.crudFixtures}, // the deprecated --crud-fixtures alias
+		{name: "time-bucketing", on: &f.timeBucketing},
+		{name: "proto-markers", on: &f.protoMarkers},
+		{name: "proto-options", on: &f.protoOptions},
+		{name: "create-nullability", on: &f.createNullability},
+		{name: "computed-fields", on: &f.computedFields},
+		{name: "read-only-fields", on: &f.readOnlyFields},
+		{name: "guarded-fields", on: &f.guardedFields},
+		{name: "static-export", on: &f.staticExport},
+		{name: "vendored-protos", on: &f.vendoredProtos},
+		{name: "config-reach", on: &f.configReach},
+	}
+}
+
+// selectedLanes names every lane the `--<linter>` flags selected, each once,
+// in dispatch order. Empty means none was named: the full sweep.
+//
+// EVERY named lane runs. `forge lint --conventions --contract` used to run
+// whichever came first in the dispatch chain, skip the other without a word,
+// and print ✅ — a green verdict over a lane that never executed.
+func selectedLanes(flags lintFlags) []string {
+	table := lintLaneFlags(&flags)
+	on := map[string]bool{}
+	for _, l := range table {
+		if *l.on {
+			on[l.name] = true
 		}
 	}
-	return "", false
+	var lanes []string
+	seen := map[string]bool{}
+	for _, l := range table {
+		if !*l.on || seen[l.name] || (l.runsAs != "" && on[l.runsAs]) {
+			continue
+		}
+		seen[l.name] = true
+		lanes = append(lanes, l.name)
+	}
+	return lanes
+}
+
+// onlyLane returns flags with every lane flag cleared except the one that
+// selects lane, so a dispatcher that runs the first lane it finds runs
+// exactly that one. Every other flag (--strict, --no-fix, --scope, …) is
+// kept.
+func onlyLane(flags lintFlags, lane string) lintFlags {
+	set := false
+	for _, l := range lintLaneFlags(&flags) {
+		*l.on = !set && l.name == lane
+		set = set || *l.on
+	}
+	return flags
 }
 
 // lintConfigOrNil loads the project config the way runLint's full-sweep path

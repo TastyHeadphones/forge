@@ -229,8 +229,9 @@ func runLintJSON(ctx context.Context, flags lintFlags, paths []string) error {
 	return nil
 }
 
-// collectLintJSON dispatches on the targeted-linter flags exactly like
-// runLint, falling through to the all-linters sweep when none is set.
+// collectLintJSON runs the lanes the targeted-linter flags name, exactly the
+// set runLint runs (selectedLanes), falling through to the all-linters sweep
+// when none is set.
 func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lintJSONReport, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -252,18 +253,14 @@ func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lin
 	if err != nil {
 		return nil, err
 	}
-	if scope != nil {
-		// A scoped targeted lane goes through the outcome engine, which
-		// knows how each lane honours the scope.
-		if o, targeted, err := collectTargetedOutcome(ctx, flags, paths, cwd, store, cfg, scope); targeted {
-			if err != nil {
-				return nil, err
-			}
-			findings, gated := flattenLintOutcomes([]lintStepOutcome{o})
-			return buildLintJSONReport(findings, gated), nil
+	// Targeted lanes go through the outcome engine, which knows how each
+	// lane honours --scope, and one report covers every lane named.
+	if outcomes, targeted, err := collectTargetedOutcomes(ctx, flags, paths, cwd, store, cfg, scope); targeted {
+		if err != nil {
+			return nil, err
 		}
-	} else if report, handled, err := collectSingleLinterJSON(ctx, flags, paths, cwd, store, cfg); handled {
-		return report, err
+		findings, gated := flattenLintOutcomes(outcomes)
+		return buildLintJSONReport(findings, gated), nil
 	}
 
 	return collectAllLintersJSON(ctx, lintRunOptions{
@@ -275,10 +272,11 @@ func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lin
 	}, cwd)
 }
 
-// collectSingleLinterJSON dispatches the --<linter> flags that select ONE
-// linter to run on its own. handled=false means no such flag was set and the
-// caller should run the whole suite instead; it is distinct from a nil report,
-// which a selected linter can legitimately return alongside an error.
+// collectSingleLinterJSON runs the ONE linter flags select — callers narrow
+// flags to one lane first (onlyLane), so a combined invocation reaches here
+// once per lane. handled=false means no lane flag was set; it is distinct
+// from a nil report, which a selected linter can legitimately return
+// alongside an error.
 func collectSingleLinterJSON(
 	ctx context.Context,
 	flags lintFlags,

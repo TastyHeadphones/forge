@@ -404,10 +404,11 @@ func flattenLintOutcomes(outcomes []lintStepOutcome) ([]lintJSONFinding, bool) {
 	return findings, gated
 }
 
-// collectTargetedOutcome is collectLintOutcomes for a `--<linter>` flag: the
-// one lane it selects, as an outcome. targeted=false means no such flag was
+// collectTargetedOutcomes is collectLintOutcomes for the `--<linter>` flags:
+// one outcome per lane they name, in dispatch order, so the verdict rendered
+// from them covers every named lane. targeted=false means no such flag was
 // set.
-func collectTargetedOutcome(
+func collectTargetedOutcomes(
 	ctx context.Context,
 	flags lintFlags,
 	paths []string,
@@ -415,38 +416,61 @@ func collectTargetedOutcome(
 	store *projectstore.Store,
 	cfg *config.ProjectConfig,
 	scope *lintScope,
-) (lintStepOutcome, bool, error) {
-	lane, targeted := targetedLaneName(flags)
-	if !targeted {
-		return lintStepOutcome{}, false, nil
+) ([]lintStepOutcome, bool, error) {
+	lanes := selectedLanes(flags)
+	if len(lanes) == 0 {
+		return nil, false, nil
 	}
+	outcomes := make([]lintStepOutcome, 0, len(lanes))
+	for _, lane := range lanes {
+		o, err := collectLaneOutcome(ctx, onlyLane(flags, lane), lane, paths, cwd, store, cfg, scope)
+		if err != nil {
+			return nil, true, err
+		}
+		outcomes = append(outcomes, o)
+	}
+	return outcomes, true, nil
+}
+
+// collectLaneOutcome runs one targeted lane, honouring --scope, as an
+// outcome. flags selects that lane alone (onlyLane).
+func collectLaneOutcome(
+	ctx context.Context,
+	flags lintFlags,
+	lane string,
+	paths []string,
+	cwd string,
+	store *projectstore.Store,
+	cfg *config.ProjectConfig,
+	scope *lintScope,
+) (lintStepOutcome, error) {
 	o := lintStepOutcome{name: lane, gates: true}
 	if scope != nil {
 		switch {
 		case targetedWholeProjectLanes[lane]:
 			o.unscoped = true
-			return o, true, nil
+			return o, nil
 		case targetedPackageLanes[lane]:
 			paths = scope.goPackages()
 			if len(paths) == 0 {
 				o.skipMsg = "no Go package under --scope — skipping " + lane
-				return o, true, nil
+				return o, nil
 			}
 		}
 	}
 	report, handled, err := collectSingleLinterJSON(ctx, flags, paths, cwd, store, cfg)
 	if err != nil {
-		return o, true, err
+		return o, err
 	}
 	if !handled {
-		// targetedLaneName and the structured dispatch table disagree — a
-		// lane added to one and not the other. Refuse rather than silently
+		// lintLaneFlags and the structured dispatch table disagree — a lane
+		// added to one and not the other. Refuse rather than silently
 		// running the whole suite under one lane's name.
-		return o, true, fmt.Errorf("--%s has no structured collector; run it without --quiet/--scope/--json", lane)
+		return o, fmt.Errorf("--%s has no structured collector; run it without --quiet/--scope/--json", lane)
 	}
 	o.ran = true
 	o.findings, o.gated = scopeOutcome(scope, report.Findings, !report.OK)
-	return o, true, nil
+	return o, nil
 }
 
 // runLintStructured is the --quiet / --scope entry point.
@@ -470,13 +494,11 @@ func runLintStructured(ctx context.Context, flags lintFlags, paths []string) err
 
 	realStdout := os.Stdout
 	os.Stdout = os.Stderr
-	outcome, targeted, err := collectTargetedOutcome(ctx, flags, paths, cwd, store, cfg, scope)
-	var outcomes []lintStepOutcome
+	outcomes, targeted, err := collectTargetedOutcomes(ctx, flags, paths, cwd, store, cfg, scope)
 	fixed := 0
 	switch {
 	case targeted:
 		// A targeted lane never auto-fixes, in text mode or here.
-		outcomes = []lintStepOutcome{outcome}
 	default:
 		if !flags.noFix {
 			fixed = structuredFixPrePass(ctx, cwd, cfg, scope, flags.skipFrontends)
