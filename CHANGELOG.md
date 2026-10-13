@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`//forge:resolves-caller` declares a project's own caller resolver.** The
+  `unscoped_auth` audit counted a handler as resolving the caller only when it
+  reached forge's scaffolded seam, `middleware.GetUser` / `ClaimsFromContext`.
+  A project whose auth package predates forge (reliant's
+  `auth.GetUserIDFromContext`) had no way to say so, and every authenticated
+  rpc it moved onto forge's handler model was reported as never resolving the
+  caller (P3b friction F18). Put the marker in a package-level function's doc
+  comment, beside the code it describes. The audit then counts a handler that
+  calls it as resolving the caller, whether through the import that binds the
+  declaring package in that file (aliased, plain or dot) or through a helper
+  in the handler's own package, and its hint names the declared resolvers.
+  The match goes by import path, so a same-named function in an undeclared
+  package still does not count. A marker on a method is reported as ignored,
+  because a call site does not name a method's receiver type. The
+  declarations come from `codegen.DeclaredCallerResolvers`, so other tools
+  can read the same declaration. `forge project audit --json` lists them under
+  `caller_resolvers`, and `forge project annotations --kind go` documents the
+  marker.
+
 - **Dashboards ship in the release.** A release bundle now carries every
   dashboard the project declares at `observability/dashboards/`, beside the
   metrics schema at `observability/metrics-schema.json`, inside the same
