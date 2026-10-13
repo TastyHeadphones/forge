@@ -205,69 +205,9 @@ generated `middleware_gen.go` decorator routed through the owned
 so each query is a child span). Success-log sampling, opting a component in or
 out, and the `enforce-component-observe` lint: `observability/component-chain`.
 
-## Audit log (recipe)
+## Audit log
 
-Every RPC already produces a structured audit record: the scaffold wires
-`fmw.AuditInterceptor(logger, middleware.ClaimsFromContext)` into the `Audit`
-field of `observe.Chain(observe.Deps{…})` in the generated `cmd serve.go`. That
-is slog-only — the record goes to your logs (queryable in HyperDX) with
-`log_type=audit`, message `audit.event`.
-
-For a **queryable, DB-persisted** audit trail (a compliance record you can page
-through, plus an admin `ListAuditEvents` RPC), there is **no pack to install**.
-The mechanical write-side is the versioned `forge/pkg/audit` library; the
-app-specific read-side (the table + the RPC) is code you own.
-
-1. **Own the `audit_log` table** with the normal entity flow — no bespoke
-   migration path:
-
-   ```bash
-   # declare `// forge:entity message AuditEvent` in the service proto, then:
-   forge scaffold
-   ```
-
-   Then edit the birth migration so the table matches what the library
-   store reads/writes (see `audit.Entry`): `id`, `timestamp`, `user_id`,
-   `email`, `procedure`, `peer_address`, `duration_ms`, `status`, `error_code`,
-   `error_message`, `metadata` (JSONB), `created_at`. Index `user_id`,
-   `procedure`, and `timestamp` for the query filters.
-
-2. **Wire the DB-backed interceptor** from the library — one line. Construct
-   the store and swap the base `Audit` field in `cmd serve.go`'s
-   `observe.Deps`:
-
-   ```go
-   import "github.com/reliant-labs/forge/pkg/audit"
-
-   store := audit.NewDBAuditStore(db)
-   chainDeps := observe.Deps{
-       // ...recovery/logging/tracing/metrics/auth/ratelimit as scaffolded...
-       Audit: audit.Interceptor(logger, middleware.ClaimsFromContext, store),
-   }
-   ```
-
-   `audit.Interceptor` logs to slog exactly as the base interceptor does AND
-   persists each event to the store off the request path (fire-and-forget, so
-   audit writes never add latency). A nil store falls back to slog-only. It is a
-   thin convenience over `fmw.AuditInterceptorWithSink(logger, claimsFrom, sink)`
-   — reach for that plus `audit.Sink(store, logger)` if you already hold a
-   custom sink.
-
-3. **Own the read-side `ListAuditEvents` RPC.** Add a proto service + handler
-   the normal way (`proto/audit/v1/…` + a handler package), and back the
-   handler with the SAME store so reads see the writes:
-
-   ```go
-   entries, err := store.Query(ctx, audit.Filter{
-       UserID: req.Msg.GetUserId(),  // filters are AND-combined
-       Since:  req.Msg.GetSince().AsTime(),
-       Limit:  int(req.Msg.GetLimit()), // <= 0 ⇒ default 100
-   })
-   ```
-
-   Audit logs enumerate who did what, so scope the read handler (restrict a
-   non-admin caller to their own `user_id` via `middleware.ClaimsFromContext`)
-   — an unscoped handler is a cross-user enumeration hole.
+Every RPC already writes a structured audit record to your logs (`log_type=audit`, message `audit.event`, from `fmw.AuditInterceptor` in `observe.Chain`). For a DB-persisted audit trail you can query and page through (a compliance record, an admin `ListAuditEvents` RPC) on `forge/pkg/audit`: `observability/audit-log`.
 
 ## Outbound instrumentation
 
