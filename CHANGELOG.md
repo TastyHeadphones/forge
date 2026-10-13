@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A freshly scaffolded service lints clean again.** The `metrics` command
+  scaffolded into every service binary (`cmd/<bin>/cmd/metrics.go`, #681)
+  blank-imported `internal/metrics` with no comment, and the revive
+  `blank-imports` rule every scaffolded project runs refuses that outside a
+  main package, so `forge lint` failed on a project nobody had touched — and
+  on every existing project the next `forge generate` wrote the file into.
+  The import now carries the comment saying why it is linked. A template-level
+  guard (`TestGoTemplatesJustifyBlankImports`) checks every Go template for
+  the same, under `-short`. An existing project's `metrics.go` is yours once
+  written: add the comment above the import by hand.
+
 - **The deploy preflight checks a referenced Secret or ConfigMap where its pod
   reads it.** The manifest-driven check recorded references by name only and
   looked every one up in the env's deploy namespace on the primary cluster, so
