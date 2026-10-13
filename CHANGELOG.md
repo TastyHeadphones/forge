@@ -432,6 +432,20 @@ github.com/reliant-labs/forge/cmd/forge@<pin> <same args>` that needs no
   configs both declare is refused at load, and `forge generate` refuses a root
   and a command config of one binary that share a top-level field name, as it
   already refused a shared env var or flag.
+- **A config file's list replaces the default; it no longer appends to it.**
+  The file layer `proto.Merge`d the file onto the defaults, and Merge appends a
+  repeated field and unions a map, so `allowed_registries: [quay.io]` over the
+  default `docker.io,ghcr.io` loaded all three — against the rule that every
+  layer replaces a whole list, and silently widening a list a deployment meant
+  to narrow. Merge also copied only populated fields and recursed into every
+  message, so a value equal to proto3's zero was dropped (`port: 0`,
+  `enabled: false`, `[]` kept the default) and `timeout: 0.5s` over a 30s
+  default loaded 30.5s. The file now sets exactly the fields it names: a list
+  or map replaces the default (`[]` clears it, as `--allowed-registries=` does;
+  an empty env var is unset and clears nothing), a named
+  zero value overrides, a Duration is replaced whole, a nested config block
+  takes only the leaves it names, and `null` sets nothing. Fields the file does
+  not name keep their defaults, as before.
 
 - **`forge env deploy <env> --dry-run` now predicts the real run's release
   decision, and a nested git checkout is no longer "dirt".** A bare

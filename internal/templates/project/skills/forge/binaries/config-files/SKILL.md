@@ -9,6 +9,7 @@ Every config also loads from a file: `--config <path>` (`.yaml`, `.yml` or `.jso
 
 - The variable is per binary on purpose: one shared name would let a shell that sets it for one app make every other forge binary launched from that shell load a file written for a different schema and fail at startup.
 - A path that is given but missing, unreadable or invalid fails startup, naming where it came from (`config file "/x.yaml" (from env RELIANT_CONFIG) does not exist`). No path given is not an error: the file layer is skipped. A variable set to `""` is unset, like every variable the loader reads.
+- A key the file names sets that field outright, and every key it omits keeps its default. A list or map REPLACES the default, as an env var or flag does (`allowed_registries: []` clears a defaulted list); a zero value (`port: 0`, `enabled: false`) overrides it; a nested block takes only the leaves it names; `null` sets nothing. Durations are protojson strings in seconds (`timeout: 0.5s`), not Go durations.
 - One file configures one PROCESS, and it is flat, like the process's flags and env vars: `app server api` reads its root config AND `ApiServerConfig` from the same file, each taking its own top-level keys.
 
   ```yaml
