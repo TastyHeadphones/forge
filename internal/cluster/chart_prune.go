@@ -4,7 +4,7 @@ package cluster
 // STOPPED rendering.
 //
 // `kubectl apply` adds and updates; it never deletes. A chart whose rendered
-// set shrinks between two versions (the Flux chart's RBAC and NetworkPolicies
+// set shrinks between two versions (the Flux chart's ClusterRoles and NetworkPolicies
 // are the case that surfaced it) therefore left the departed objects live
 // forever: a ClusterRole that grants impersonation, a NetworkPolicy that
 // opens an ingress path, long after the declaration that justified them was

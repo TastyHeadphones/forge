@@ -341,13 +341,13 @@ func TestServiceAccountRBACManifests_ResourceNames(t *testing.T) {
 				APIGroups:     []string{"rbac.authorization.k8s.io"},
 				Resources:     []string{"clusterroles"},
 				Verbs:         []string{"bind"},
-				ResourceNames: []string{"flux-tenant-reconciler", "flux-tenant-source"},
+				ResourceNames: []string{"hub-reconciler", "hub-source"},
 			},
 			{Resources: []string{"namespaces"}, Verbs: []string{"get"}},
 		},
 	}
 	got := serviceAccountRBACManifests(sa, "flux-hub-applier-forge-token")
-	want := `resourceNames: ["flux-tenant-reconciler", "flux-tenant-source"]`
+	want := `resourceNames: ["hub-reconciler", "hub-source"]`
 	if !strings.Contains(got, want) {
 		t.Errorf("rendered rules missing %q:\n%s", want, got)
 	}

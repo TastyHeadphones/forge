@@ -5,7 +5,7 @@ description: Adopt the `forge.HelmChart` changes — a chart re-apply now PRUNES
 
 # HelmChart: pruning, namespace metadata, `resource_names` (v0.1.45, section 11 of `migrations/v0.1.45`)
 
-Use when an env declares a `forge.HelmChart` and a chart version ever dropped an object (Flux's RBAC and NetworkPolicies are the usual one), when a chart's Namespace needs Pod Security Admission labels, or when a minted `KubeconfigSecret` is paired with a hand-written ClusterRole only to restrict a rule to named objects.
+Use when an env declares a `forge.HelmChart` and a chart version ever dropped an object (Flux's ClusterRoles and NetworkPolicies are the usual one), when a chart's Namespace needs Pod Security Admission labels, or when a minted `KubeconfigSecret` is paired with a hand-written ClusterRole only to restrict a rule to named objects.
 
 ## What changed
 

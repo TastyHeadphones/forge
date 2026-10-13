@@ -737,7 +737,7 @@ func applyRenderedCharts(ctx context.Context, kctx string, charts []renderedChar
 		}
 		// The chart is fully applied: only now is its render a proven account
 		// of what it declares, so only now can an object it dropped be pruned.
-		// A failed prune never fails the deploy (it is maintenance, like the
+		// A failed prune never fails the deploy (it is housekeeping, like the
 		// Deployment and CRD prunes), but it is never silent.
 		if _, err := PruneChartObjects(ctx, chartCtx, rc); err != nil {
 			fmt.Printf("Warning: platform dependency %q: %v\n", rc.spec.Name, err)

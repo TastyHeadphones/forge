@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BEHAVIOR CHANGE: a re-apply of a `forge.HelmChart` now deletes the objects
   the chart stopped rendering.** forge applies a chart with `kubectl apply`,
   which never deletes, so an object a chart version dropped (the Flux chart's
-  RBAC and NetworkPolicies are the case that surfaced it) stayed live forever,
+  ClusterRoles and NetworkPolicies are the case that surfaced it) stayed live forever,
   including security objects: an `allow-webhooks` NetworkPolicy and a
   `cluster-reconciler-impersonator` ClusterRole and binding had to be deleted by
   hand. forge now stamps every object a chart renders with
@@ -58,7 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Not available on a `delivery = "bundle"` chart, which has no forge-created
   Namespace.
 - **`forge.KubeconfigPolicyRule.resource_names`.** Limits a minted rule to named
-  objects (RBAC `resourceNames`): `bind` on exactly two ClusterRoles, `get` on
+  objects (`resourceNames`): `bind` on exactly two ClusterRoles, `get` on
   one Secret. It replaces a hand-written ClusterRole beside the mint.
 
 - **Dashboards ship in the release.** A release bundle now carries every

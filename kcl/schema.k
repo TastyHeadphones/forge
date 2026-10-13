@@ -1745,8 +1745,8 @@ schema KubeconfigPolicyRule:
                        for every group.
       * `resources`  — resource plurals ("namespaces", "tiers", "*").
       * `verbs`      — verbs granted ("get", "list", "create", "*").
-      * `resource_names` — limit the rule to these named objects (RBAC
-                       `resourceNames`). Default [] (every object of the
+      * `resource_names` — limit the rule to these named objects (the
+                       `resourceNames` field). Default [] (every object of the
                        resources). The way to grant `bind` or `escalate`
                        on two specific roles, or `get` on one Secret,
                        without a separate hand-written ClusterRole.
