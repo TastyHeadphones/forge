@@ -32,6 +32,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   direct-apply notice no longer claims the env "will be reconciled from its
   bundle".
 
+- **Project-mutating commands refuse to run under a forge other than the
+  project's `forge_version` pin.** `forge generate`, `forge scaffold` (and every
+  noun under it), `forge package new`, `forge component install`,
+  `forge env new`, `forge project rescaffold|delete|migrate`, and the
+  auto-generate that `forge build` / `forge env up` run when generated code is
+  stale, now stop with a runbook: running vs pinned version, a `go run
+github.com/reliant-labs/forge/cmd/forge@<pin> <same args>` that needs no
+  install, and the `GOPRIVATE=... go install ...@<pin>` form. Previously only
+  `build` / `env build` / `env deploy` refused; an agent running `forge generate`
+  with a stale forge on PATH silently rewrote unrelated generated files (otel,
+  frontend, descriptor). Read-only runs are never blocked (`--dry-run`,
+  `--check`, `lint`, `audit`, `shapes`, `skill`, `env status`, `--help`).
+  Escape hatch: `--allow-version-skew` or `FORGE_ALLOW_VERSION_SKEW=1`; builds
+  without a version identity (`(devel)` with no commit), forge's own repo, and a
+  project bridged by go.work to the checkout the binary was built from are
+  exempt. Under `reliant forge` the comparison uses the embedded forge's
+  module version, not reliant's.
 - **`forge.ControlPlaneSecret`: a Secret the env's declared control plane
   supplies and renews.** `Bundle.control_plane_secrets` declares one (`name`,
   `cluster`, `namespace`, `kind = "telemetry_token"`). It is recorded in the
@@ -45,7 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gets an optional whole-directory Secret volume `forge-otlp-auth` at
   `/var/run/secrets/forge/otlp` and `OTEL_EXPORTER_OTLP_HEADERS_FILE`, so a
   renewal needs no restart. `ObservabilityDestination.token_from_control_plane
-  = True` derives the node agent's Secret (`forge-otlp-token`, key `token`) on
+= True` derives the node agent's Secret (`forge-otlp-token`, key `token`) on
   every cluster running the agent. `v1alpha1.SecretVolumeSource` gained
   `optional`. `output.control_plane_secrets` is a new render-contract key
   (every `render_contract` golden gains `"control_plane_secrets": []`). See
