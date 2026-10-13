@@ -52,6 +52,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   three dot-separated parts, each unquoted (folded to lower case, as postgres
   folds it) or double-quoted (kept verbatim, `""` for a quote). `shapes`
   reports the schema as `schema=<name>` detail.
+- **`forge generate`'s "N changed" counts every write.** Agents read the
+  completion line as the fixed-point check, and it counted only writes made
+  through forge's journaled writers. It printed "0 changed" while the run
+  rewrote `.forge/scaffolded.json` (P3b friction F17), it never counted
+  `.forge/hashes.json` or `.forge/disowned.json` because they were saved after
+  the line printed, and a retired generated file counted as nothing. The line
+  is now checked against the pre-run fingerprint of the tree that generate
+  already takes (now also under `--no-revert`), and that fingerprint keeps
+  the committed `.forge/` state files instead of skipping `.forge/` whole.
+  Any file whose bytes changed is counted, whatever wrote it. The state files
+  are saved before the line prints, and removals show as `N removed`. A
+  changed file outside `.forge/` that no forge writer recorded is named on
+  its own line, because it was written by a step directly or by another
+  process.
 
 - **A failed `forge generate` that changed no Go file no longer builds the
   project to report on its rollback.** After reverting a failed run, generate

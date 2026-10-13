@@ -82,6 +82,14 @@ const (
 	LegacyChecksumFile = ".forge/checksums.json"
 )
 
+// CommittedStateFiles are the files under .forge/ that a project commits:
+// the ownership state and the scaffold birth ledger. Everything else there
+// (the lock, logs, side renders, a failed run's output) is per-clone
+// scratch. A caller that sets .forge/ aside as scratch keeps these.
+func CommittedStateFiles() []string {
+	return []string{DisownedFile, HashesFile, ScaffoldedFile}
+}
+
 // ResetSkipWrite clears the written-this-run set. Called at the start of
 // each pipeline run to avoid leaking state across forge invocations in
 // tests or long-lived processes.
@@ -572,6 +580,10 @@ func Save(root string, cs *FileChecksums) error {
 // empty.
 func saveStateFile(root, relPath string, n int, v any) error {
 	full := filepath.Join(root, relPath)
+	// A state file is a write the run made: journal it like any other, so
+	// a failed run restores it and a successful run's change count
+	// includes it.
+	recordPreWrite(root, relPath)
 	if n == 0 {
 		if err := os.Remove(full); err != nil && !os.IsNotExist(err) {
 			return err
