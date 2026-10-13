@@ -375,13 +375,17 @@ func applySelfManaged(ctx context.Context, env string, ledger envLedger, o promo
 // binding's: the binding still names the CURRENT release at this point, and a
 // preflight of that would check the images that are already running.
 func preflightBeforeRecord(ctx context.Context, env, version string, ledger envLedger, o promoteFollowOptions) error {
-	if !ledger.appliesLocally() || ledger.hubConverged() || o.clientDeploy.skipPreflight {
+	if !ledger.appliesLocally() || ledger.hubConverged() {
 		return nil
 	}
 	opts := o.clientDeploy
 	opts.dryRun = true
 	opts.preflightOnly = true
-	o.notice("\nPreflight: checking %s's live target for %s's images, Secrets and resource kinds — before anything is recorded\n", env, version)
+	if opts.skipPreflight {
+		o.notice("\nPreflight: --skip-preflight waives the live-target checks; every cluster group of %s is still rendered for %s — before anything is recorded\n", env, version)
+	} else {
+		o.notice("\nPreflight: checking %s's live target for %s's images, Secrets and resource kinds, and rendering every cluster group — before anything is recorded\n", env, version)
+	}
 	// The render on the way to the preflight prints a deploy's worth of
 	// progress (a dry-run banner, the release it pins) that describes a
 	// deploy which is not happening. Only the preflight's own advisory

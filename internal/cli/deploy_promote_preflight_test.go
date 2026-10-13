@@ -77,9 +77,17 @@ func TestDeployRelease_PreflightChecksTheTargetBeforeAnythingIsWritten(t *testin
 	}
 }
 
-// --skip-preflight skips the pre-write preflight as well as the one in the
-// apply; a hub-converged env has no client apply, so nothing to gate here.
-func TestDeployRelease_PreflightNotRunWhenItHasNothingToGate(t *testing.T) {
+// --skip-preflight waives the LIVE-target checks (Secrets, images, served
+// kinds); it does not waive the render gate. The pre-write run still happens —
+// the same options, the same preflightOnly mode — so a release that cannot be
+// rendered and routed per cluster group is refused with nothing recorded. The
+// flag is forwarded on it, which is what makes the run skip the live checks
+// (gateDeployOnPreflight reads it).
+//
+// A rollout that needed --skip-preflight (the preflight misjudged a Secret)
+// recorded prod → release X and then failed to render a later group; the ledger
+// claimed a release that was never live.
+func TestDeployRelease_SkipPreflightStillRunsTheRenderGate(t *testing.T) {
 	var apply capturedClientDeploy
 	apply.install(t)
 	store, releases := selfManagedFixture()
@@ -94,7 +102,38 @@ func TestDeployRelease_PreflightNotRunWhenItHasNothingToGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
-	if len(apply.preflights) != 0 {
-		t.Errorf("--skip-preflight still ran the pre-write preflight %d time(s)", len(apply.preflights))
+	if len(apply.preflights) != 1 {
+		t.Fatalf("--skip-preflight must still run the pre-write render gate once, ran it %d time(s)", len(apply.preflights))
+	}
+	if !apply.preflights[0].skipPreflight || !apply.preflights[0].dryRun {
+		t.Errorf("the gate must run dry and carry the waiver so the live checks stay skipped, got skipPreflight=%v dryRun=%v",
+			apply.preflights[0].skipPreflight, apply.preflights[0].dryRun)
+	}
+}
+
+// A refusal from the render gate under --skip-preflight records nothing, like
+// any other pre-write refusal.
+func TestDeployRelease_RenderGateRefusalRecordsNothingEvenWithSkipPreflight(t *testing.T) {
+	prev := runPromoteClientDeploy
+	runPromoteClientDeploy = func(context.Context, string, deployOptions) error {
+		return errors.New("render gate: a cluster group of env \"prod\" does not render")
+	}
+	t.Cleanup(func() { runPromoteClientDeploy = prev })
+
+	store, releases := selfManagedFixture()
+	opts := promoteOptions{
+		ProjectDir: t.TempDir(), Git: allCommitsPresent(),
+		Follow: &promoteFollowOptions{clientDeploy: deployOptions{skipPreflight: true}},
+		Ledger: envLedger{Bindings: store, Releases: releases},
+	}
+	opts.Run.None = true
+	var err error
+	captureStdout(t, func() { err = runPromote(context.Background(), "v2", "prod", opts) })
+	if err == nil || !strings.Contains(err.Error(), "does not render") || !strings.Contains(err.Error(), "NOTHING WAS RECORDED") {
+		t.Fatalf("want the render gate's refusal and the nothing-recorded footer, got %v", err)
+	}
+	cur, _, _ := store.Current(context.Background(), "prod")
+	if cur.Release != "v1" || cur.ID != "p-1" {
+		t.Fatalf("a release the render gate refused moved the binding: prod is on %s (%s), want v1 (p-1)", cur.Release, cur.ID)
 	}
 }
