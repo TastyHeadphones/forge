@@ -974,7 +974,7 @@ func rewriteBufGenYamlToRemote(projectDir string) error {
 # BSR rate limits during heavy generate cycles — 'buf registry login'
 # raises the cap. To switch back, replace 'remote: <bsr-path>' with
 # 'local: <binary-name>'.
-plugins:
+` + bufGenGoInputs + `plugins:
   - remote: buf.build/protocolbuffers/go
     out: gen
     opt:

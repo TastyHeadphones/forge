@@ -19,6 +19,16 @@ proto/forge/v1/forge.proto                     # Forge annotations (vendored, ne
 proto/shared/v1/types.proto                    # Cross-service shared messages (optional)
 ```
 
+`proto/forge/v1/forge.proto` is a copy of forge's own file. `forge generate`
+vendors it (and `buf/validate/validate.proto`) the first time a proto imports
+it and the project has none, and never rewrites an existing copy:
+`forge lint --vendored-protos` reports a stale one. It is an import only — its
+Go is `forge/pkg/forgepb` — so a Go buf template must keep it out of its
+targets (`inputs: [{directory: proto, exclude_paths: [proto/forge/v1,
+proto/buf/validate]}]`, as the scaffolded `buf.gen.yaml` does); `forge generate`
+refuses a template that would generate it, because a second Go copy panics
+every binary at init.
+
 One service per `.proto` file (`forge lint --conventions` →
 `forgeconv-one-service-per-file`). Cross-service references go through
 `proto/shared/v1/types.proto`; never import another service's proto.
