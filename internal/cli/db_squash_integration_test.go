@@ -16,10 +16,12 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -77,4 +79,56 @@ func TestDBSquash_BaselineAndTheNextMigrationApplyInOneMigratekitRun(t *testing.
 		t.Fatal(err)
 	}
 	assertSquashedReleaseApplies(t, os.DirFS(release))
+}
+
+// Two squashes of one history write the same bytes. The header used to carry
+// the wall clock and the absolute --from-dir, so a re-cut never reproduced the
+// file and a reviewer could not tell "re-cut" from "changed" (reliant stripped
+// the header with `tail -n +6`). Each run here squashes from a different
+// directory, as two checkouts would.
+func TestDBSquash_IsByteForByteReproducible(t *testing.T) {
+	if testing.Short() {
+		t.Skip("boots two postgres containers for squash")
+	}
+	if err := exec.Command("docker", "info").Run(); err != nil {
+		t.Skipf("no docker daemon: %v", err)
+	}
+	var baselines [2][]byte
+	for i := range baselines {
+		history := t.TempDir()
+		for name, body := range squashHistory {
+			if err := os.WriteFile(filepath.Join(history, name), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		release := t.TempDir()
+		if err := runDBSquash(context.Background(), squashOptions{
+			FromDir:  history,
+			Baseline: "20260102000000_baseline",
+			OutDir:   release,
+			Image:    "postgres:16-alpine",
+			DBName:   "forge_squash",
+			DBUser:   "postgres",
+			DBPass:   "forge_squash",
+		}); err != nil {
+			t.Fatalf("squash %d: %v", i+1, err)
+		}
+		b, err := os.ReadFile(filepath.Join(release, "20260102000000_baseline.up.sql"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(b, []byte(history)) {
+			t.Errorf("squash %d wrote its source directory into the baseline", i+1)
+		}
+		baselines[i] = b
+	}
+	if !bytes.Equal(baselines[0], baselines[1]) {
+		a, b := strings.Split(string(baselines[0]), "\n"), strings.Split(string(baselines[1]), "\n")
+		for i := 0; i < len(a) && i < len(b); i++ {
+			if a[i] != b[i] {
+				t.Fatalf("two squashes of one history differ, first at line %d:\n  %s\n  %s", i+1, a[i], b[i])
+			}
+		}
+		t.Fatalf("two squashes of one history differ in length: %d vs %d lines", len(a), len(b))
+	}
 }
