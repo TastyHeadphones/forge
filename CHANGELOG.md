@@ -77,6 +77,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ListAuditEvents` read RPC) moved to its own sub-skill,
   `observability/audit-log`. The parent keeps a one-paragraph pointer that
   says when to load it, and is now 21,946 bytes.
+- **The ORM refuses a name your `internal/db` already declares, before it
+  writes anything.** forge projects each entity into the one `internal/db`
+  package (`Task`, `CreateTask`, `TaskStore`, the aggregate `Store` /
+  `NewStore`), and a project adopting forge usually has a data layer there
+  already. reliant's `type Task = core.Task` met task_orm_gen.go in the
+  validate build as `Task redeclared in this block`, and generate reverted
+  everything with neither the declaration nor a way out named. The
+  projection now renders first and refuses a collision with the project's
+  declaration (`file:line`), the entity and table behind it, and the three
+  resolutions: keep that table off forge's ORM by marking its CRUD-named rpcs
+  `// forge:custom` (the per-entity path off a hand-written or sqlc data
+  layer), hand the name to forge (rename yours; sqlc: `rename:`), or
+  `//forge:no-orm`. The ORM's package and names stay fixed rather than
+  configurable: every generated consumer and owned file relies on them, and
+  a project's coexistence need is per entity, not per package.
+- **The ORM no longer deletes a hand-written `internal/db/types.go`.** The
+  projection removed `internal/db/types.go` unconditionally (it was once
+  forge's own proto-era alias file), so a project whose data layer had a
+  `types.go`, the most ordinary name there is, lost it on the first generate
+  that projected an entity. Only a forge-written one is retired now.
 
 - **A `migratekit.Migrator` is one Postgres session, so concurrent
   `db migrate up` runs work behind a session-mode PgBouncer.** A Migrator held

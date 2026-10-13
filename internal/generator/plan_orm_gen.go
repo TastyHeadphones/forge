@@ -45,6 +45,24 @@ func GeneratePlanORM(root, modulePath, serviceName string, entities []config.Pla
 	}
 
 	dbDir := filepath.Join(root, "internal", "db")
+
+	// Render everything first, so a name the project already declares in
+	// internal/db is refused — naming its declaration — before a single
+	// file is written, rather than surfacing as `X redeclared` from the
+	// validate build after the whole generate ran.
+	outputs := make([]ormOutput, 0, len(entities)+1)
+	for _, ent := range entities {
+		outputs = append(outputs, ormOutput{
+			file:   naming.ToSnakeCase(ent.Name) + "_orm_gen.go",
+			entity: ent.Name,
+			src:    renderORMEntity(ent, hasRepoExtExtraType(root, ent.Name)),
+		})
+	}
+	outputs = append(outputs, ormOutput{file: storeGenFile, src: renderStoreInterfaces(entities)})
+	if err := checkORMNameCollisions(dbDir, entities, outputs); err != nil {
+		return err
+	}
+
 	if err := os.MkdirAll(dbDir, 0o755); err != nil {
 		return fmt.Errorf("create db directory: %w", err)
 	}
@@ -136,6 +154,17 @@ func GeneratePlanORM(root, modulePath, serviceName string, entities []config.Pla
 	// than in a user's package.
 	if err := writeStoreInterfaces(root, entities, cs); err != nil {
 		return fmt.Errorf("generate store interfaces: %w", err)
+	}
+
+	// internal/db/types.go was the proto-entity era's alias file; a stale
+	// alias to a deleted pb type would shadow a generated struct. It is
+	// removed only when forge wrote it: `types.go` is the most ordinary
+	// name a hand-written data layer has, and this used to delete one
+	// unconditionally on the first generate that projected an entity.
+	if body, rerr := os.ReadFile(filepath.Join(dbDir, "types.go")); rerr == nil && forgeWroteFile(body) {
+		if err := checksums.RemoveJournaled(filepath.Join(dbDir, "types.go")); err != nil {
+			return fmt.Errorf("retire internal/db/types.go: %w", err)
+		}
 	}
 	return nil
 }
