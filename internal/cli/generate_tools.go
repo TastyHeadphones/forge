@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -393,10 +395,16 @@ func runGoModTidyRoot(projectDir string) error {
 	cmd.Dir = projectDir
 	cmd.Env = goexec.Env()
 	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	// Streamed as before, and kept, so a failure can name its cause.
+	var stderr bytes.Buffer
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("go mod tidy in project root failed: %w", err)
+		modulePath, _ := codegen.GetModulePath(projectDir)
+		if cause := tidyFailureCause(stderr.String(), modulePath); cause != "" {
+			return &tidyImportError{cause: cause, err: err}
+		}
+		return fmt.Errorf("%w (fix go.mod or go.sum; go's output is above)", err)
 	}
 
 	fmt.Println("  ✅ go.mod tidied")

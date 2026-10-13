@@ -62,6 +62,10 @@ type ServiceTemplateData struct {
 	// Test scaffold templates reference this rather than re-pascal-casing
 	// ServiceName so the call site stays in sync with the actual factory.
 	TestHelperName string
+	// HasConfig is whether the project has typed config
+	// (ProjectHasTypedConfig): service.go imports <module>/pkg/config and
+	// declares Deps.Config only then.
+	HasConfig bool
 }
 
 // protoImportPath derives the relative proto import path for a service
@@ -147,6 +151,8 @@ func mapServiceDefToTemplateData(svc ServiceDef, projectDir ...string) ServiceTe
 		ProtoFileSymbol:     protoFileSymbol,
 		Methods:             methods,
 		TestHelperName:      ComputeTestHelperName(pkgName, pd),
+		// With no project to look at, keep the historical shape.
+		HasConfig: pd == "" || ProjectHasTypedConfig(pd),
 	}
 }
 

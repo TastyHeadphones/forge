@@ -1144,13 +1144,36 @@ func validateTestFiles(projectDir string, diags []string) error {
 	if more := len(owned) - 1; more > 0 {
 		quoted += fmt.Sprintf(" (+%d more compile error(s) in the output)", more)
 	}
+	fix := "a forge-generated _test.go file in this tree does not compile — this is a forge codegen bug worth reporting"
+	if seam := missingHarnessSeam(owned); seam != "" {
+		fix = seam
+	}
 	return &validateBuildError{
 		Output: output,
 		err: cliutil.WrapUserErr("forge generate (validate generated code)",
 			"generated test files do not compile", "",
-			"a forge-generated _test.go file in this tree does not compile — this is a forge codegen bug worth reporting",
+			fix,
 			errors.New(quoted)),
 	}
+}
+
+// missingHarnessSeam names the project seam a generated test harness
+// failed on, or "" when the errors are not that. The harness authenticates
+// its test caller through the project's pkg/middleware.ContextWithClaims —
+// the setter forge scaffolds with pkg/middleware. A project adopted in
+// place keeps its own pkg/middleware and auth package, and has no such
+// function; that is the project lacking a seam, not forge emitting broken
+// code, and the fix is one function in the project.
+func missingHarnessSeam(errs []string) string {
+	for _, e := range errs {
+		if strings.Contains(e, "_gen_test.go") && strings.Contains(e, "undefined: middleware.ContextWithClaims") {
+			return "the generated test harness installs its caller through pkg/middleware.ContextWithClaims, which this " +
+				"project's pkg/middleware does not declare. Add `func ContextWithClaims(ctx context.Context, c *auth.Claims) " +
+				"context.Context` (auth is github.com/reliant-labs/forge/pkg/auth) that puts the principal where your own " +
+				"auth reads it, so tests run as a signed-in caller the way your interceptor makes one"
+		}
+	}
+	return ""
 }
 
 // isForgeOwnedFile reports whether path is a file forge generates and

@@ -1278,7 +1278,10 @@ func populateComponentPresence(ctx *pipelineContext) (rawHasOperators bool) {
 	ctx.HasServices = projectDefinesConnectServices(ctx.ProjectDir)
 	ctx.HasAPI = dirExists(filepath.Join(ctx.ProjectDir, "proto", "api"))
 	ctx.HasDB = dirExists(filepath.Join(ctx.ProjectDir, "proto", "db"))
-	ctx.HasConfig = dirExists(filepath.Join(ctx.ProjectDir, "proto", "config"))
+	// Config protos, not the directory: an empty proto/config (a CLI
+	// scaffold leaves one) would have the loader write a pkg/config that
+	// imports gen/config/v1, which nothing generates.
+	ctx.HasConfig = codegen.HasConfigProtos(ctx.ProjectDir)
 	// HasWorkers / HasOperators are BOOLEAN presence gates (does the project
 	// have any worker/operator at all), NOT an enumeration of the set — generate
 	// does zero worker/operator discovery. They gate the bootstrap family of
@@ -2592,7 +2595,7 @@ func stepFrontendRenamedImports(ctx *pipelineContext) error {
 // codegen bugs but are actually go.mod skew.
 func stepGoModTidyRoot(ctx *pipelineContext) error {
 	if err := runGoModTidyRoot(ctx.ProjectDir); err != nil {
-		return fmt.Errorf("go mod tidy in project root failed: %w (subsequent `go build ./...` will fail with confusing missing-import errors; fix go.mod or go.sum)", err)
+		return fmt.Errorf("go mod tidy in project root failed: %w", err)
 	}
 	return nil
 }
