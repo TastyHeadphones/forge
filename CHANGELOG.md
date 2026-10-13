@@ -186,7 +186,22 @@ github.com/reliant-labs/forge/cmd/forge@<pin> <same args>` that needs no
   for all four drivers, and a lane a driver has no runner for is an error, not
   a silent fall-through to the full sweep. `--exported-vars` beside
   `--contract` runs the shared check once.
-
+- **`forge db squash` writes a migration, not a psql script.** It kept
+  pg_dump's session prelude, so the baseline ran
+  `SELECT pg_catalog.set_config('search_path', '', false)` on the migrator's
+  session: the next migration in the same run failed with `relation "x" does
+  not exist`, and `AutoMigrate` handed the connection back to the app's pool
+  with an empty `search_path`. Its line filter for psql meta-commands also
+  deleted any line beginning with `\` inside a function body or an inserted
+  value. squash now reads the dump the way postgres lexes it (quotes, `E''`
+  strings, quoted identifiers, dollar-quoted bodies, nested comments) and drops
+  only top-level `SET` / `set_config` statements and every psql meta-command
+  (`\restrict`, `\unrestrict`, …); every other statement is kept byte for byte.
+  A baseline that defines functions or procedures opens with
+  `set_config('check_function_bodies', 'false', true)`: pg_dump writes
+  functions before the tables a `LANGUAGE sql` body names, and the setting is
+  transaction-local, so it ends with the baseline. The `db/deploy-migrations`
+  skill's hand-cut (goose) recipe gains the same line.
 - **`forge env deploy <env> --dry-run` now predicts the real run's release
   decision, and a nested git checkout is no longer "dirt".** A bare
   `forge env deploy prod` cut and built a whole new release because an
