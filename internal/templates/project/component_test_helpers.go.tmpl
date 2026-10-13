@@ -18,19 +18,19 @@
 // is an intra-package testing seam, not public API.
 //
 // WHAT IS HERE VS IN forge/pkg/testkit. Everything below names a type that is
-// YOURS — this component's Deps, your *config.Config, your generated Connect
-// client — which is precisely what a library cannot name. The machinery that
+// YOURS — this component's Deps and what it takes{{if .IsService}}, your generated Connect
+// client{{end}} — which is precisely what a library cannot name. The machinery that
 // does not (a discard logger, an ephemeral-postgres database, migration
 // application, the test server + client pair, the option-application loop,
 // default claims) is testkit's, and this file calls it.
 //
-// The option constructors (WithLogger / WithConfig / WithDB) look generic but
-// are not movable: each returns a `func(*testConfig)` over a struct holding
-// your Config and Deps. A generic testkit.WithLogger[C, D] compiles, but Go
-// infers type parameters only from arguments and never from the return type,
-// so every call site in every project would have to write
-// `WithLogger[config.Config, Deps](lg)` instead of `WithLogger(lg)` — a worse
-// test to write, forever, to remove three lines from a generated file.
+// The option constructors (WithLogger and the rest) look generic but are not
+// movable: each returns a `func(*testConfig)` over a struct holding your Deps.
+// A generic testkit.WithLogger[C, D] compiles, but Go infers type parameters
+// only from arguments and never from the return type, so every call site in
+// every project would have to write `WithLogger[testConfig, Deps](lg)` instead
+// of `WithLogger(lg)` — a worse test to write, forever, to remove three lines
+// from a generated file.
 //
 // To customize production wiring, edit internal/app/providers.go. This file is
 // regenerated on every `forge generate`.
@@ -64,8 +64,13 @@ import (
 	"github.com/reliant-labs/forge/pkg/orm"
 {{- end}}
 	"github.com/reliant-labs/forge/pkg/testkit"
+{{- /* The config the component's Deps takes, when it takes one: never a
+       guess at <module>/pkg/config, which a project without typed config
+       does not have (codegen.DetectDepsConfigImport). */}}
+{{- if .ConfigImport}}
 
-	"{{.Module}}/pkg/config"
+	{{with .ConfigImportAlias}}{{.}} {{end}}"{{.ConfigImport}}"
+{{- end}}
 {{- if .IsService}}
 	"{{.Module}}/pkg/middleware"
 {{- end}}
@@ -80,7 +85,7 @@ import (
 {{- end}}
 )
 
-// TestOption configures the cross-cutting test defaults (logger, config{{if .HasDB}},
+// TestOption configures the cross-cutting test defaults (logger{{if .ConfigImport}}, config{{end}}{{if .HasDB}},
 // DB{{end}}) every factory in this file shares.
 //
 // There is no per-component option INTERFACE here (the retired
@@ -94,7 +99,9 @@ type TestOption func(*testConfig)
 
 type testConfig struct {
 	logger *slog.Logger
+{{- if .ConfigImport}}
 	cfg    *config.Config
+{{- end}}
 {{- if .HasDB}}
 	db     orm.Context
 {{- end}}
@@ -112,10 +119,13 @@ func WithLogger(l *slog.Logger) TestOption {
 	return func(c *testConfig) { c.logger = l }
 }
 
+{{- if .ConfigImport}}
+
 // WithConfig overrides the default test config.
 func WithConfig(cfg *config.Config) TestOption {
 	return func(c *testConfig) { c.cfg = cfg }
 }
+{{- end}}
 {{- if .HasDB}}
 
 // WithDB overrides the default test database.
@@ -182,9 +192,11 @@ func newTest{{.FieldName}}Deps(cfg *testConfig) Deps {
 	if deps.Logger == nil {
 		deps.Logger = cfg.logger.With("service", "{{.Name}}")
 	}
+{{- if .ConfigImport}}
 	if deps.Config == nil {
 		deps.Config = cfg.cfg
 	}
+{{- end}}
 {{- if .HasDB}}
 	if deps.DB == nil {
 		deps.DB = cfg.db
@@ -304,7 +316,7 @@ func NewTest{{.FieldName}}(t *testing.T, opts ...TestOption) {{if .ConstructorTy
 {{- if .HasLogger}}
 		Logger: cfg.logger.With("package", "{{.Name}}"),
 {{- end}}
-{{- if .HasConfig}}
+{{- if .ConfigImport}}
 		Config: cfg.cfg,
 {{- end}}
 {{- if .HasDB}}
@@ -323,7 +335,7 @@ func NewTest{{.FieldName}}(t *testing.T, opts ...TestOption) {{if .ConstructorTy
 {{- if .HasLogger}}
 		Logger: cfg.logger.With("package", "{{.Name}}"),
 {{- end}}
-{{- if .HasConfig}}
+{{- if .ConfigImport}}
 		Config: cfg.cfg,
 {{- end}}
 {{- if .HasDB}}
@@ -338,7 +350,9 @@ func defaultTestConfig(t *testing.T) *testConfig {
 	t.Helper()
 	return &testConfig{
 		logger: testkit.DiscardLogger(),
+{{- if .ConfigImport}}
 		cfg:    &config.Config{},
+{{- end}}
 {{- if .HasDB}}
 		// Bare real postgres — no schema (a fresh isolated database on the
 		// shared ephemeral postgres). Tests that exercise real SQL should

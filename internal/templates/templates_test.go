@@ -45,14 +45,15 @@ func TestComponentTestHelpersTemplate_MinimalService(t *testing.T) {
 		FieldName string
 		IsService bool
 
-		ConstructorName string
-		Fallible        bool
-		HasDB           bool
-		HasLogger       bool
-		HasConfig       bool
-		HasMigrationsFS bool
-		NeedsTime       bool
-		NeedsULID       bool
+		ConstructorName   string
+		Fallible          bool
+		HasDB             bool
+		HasLogger         bool
+		ConfigImport      string
+		ConfigImportAlias string
+		HasMigrationsFS   bool
+		NeedsTime         bool
+		NeedsULID         bool
 
 		ConnectServiceGoName   string
 		ProtoConnectImportPath string
@@ -506,20 +507,21 @@ func TestDeadAppSubstrateTemplatesRemoved(t *testing.T) {
 // so ONE package's naming broke codegen for the whole repository.
 func TestComponentTestHelpersTemplate_PackageContractName(t *testing.T) {
 	data := struct {
-		Module          string
-		Package         string
-		Name            string
-		FieldName       string
-		IsService       bool
-		ConstructorName string
-		ConstructorType string
-		Fallible        bool
-		HasDB           bool
-		HasLogger       bool
-		HasConfig       bool
-		HasMigrationsFS bool
-		NeedsTime       bool
-		NeedsULID       bool
+		Module            string
+		Package           string
+		Name              string
+		FieldName         string
+		IsService         bool
+		ConstructorName   string
+		ConstructorType   string
+		Fallible          bool
+		HasDB             bool
+		HasLogger         bool
+		ConfigImport      string
+		ConfigImportAlias string
+		HasMigrationsFS   bool
+		NeedsTime         bool
+		NeedsULID         bool
 
 		ConnectServiceGoName   string
 		ProtoConnectImportPath string
