@@ -37,6 +37,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   interface still binds. A bound type may still export the methods of every
   contract interface it satisfies, seams included.
 
+- **`forge env deploy` renders the env once; a cluster group's namespace is
+  where it applies and waits, never an input to what the env declares.**
+  Deploy re-rendered the whole env once per cluster group with that group's
+  namespace bound to KCL's `namespace` option. For control-plane prod's new
+  `observability` group that made `observability` the env namespace, so its
+  prune override `Namespace/${_namespace}@<hub>` became
+  `Namespace/observability@<hub>` and matched two objects (the env's own plus
+  the hub's declared `Namespace/observability`): the apply failed with
+  `override … matches 2 objects` while `forge env render prod` — which renders
+  with the env namespace only — passed. The env is now rendered once, with the
+  env namespace `forge env render` uses (`cluster.ApplyOpts.Render`), and each
+  group applies its cluster's partition of that one stream
+  (`ScopeManifestsToGroup`). `RenderManifests` and `forge env render` share one
+  render function. Regression tests drive the deploy's own dispatch against a
+  fixture whose second cluster group's namespace equals a namespace the env
+  declares on the first.
+
+- **A release that does not render is refused before its promotion is
+  recorded, with or without `--skip-preflight`.** The pre-record run of
+  `forge env deploy <env> <version>` now also renders every cluster group
+  through the apply's own path as a dry run (render, scope to the cluster,
+  partition into passes, template charts) and writes nothing. Before, the first
+  render of each group happened in the apply, after the compare-and-set write,
+  so a group the render or router refused left the ledger claiming a release
+  that was never live (control-plane prod, `20261013.044832-36da25fefcf9`).
+  `--skip-preflight` still waives the live-target checks (Secrets, images,
+  served kinds); it no longer waives the question "does this release render".
+
 - **A freshly scaffolded service lints clean again.** The `metrics` command
   scaffolded into every service binary (`cmd/<bin>/cmd/metrics.go`, #681)
   blank-imported `internal/metrics` with no comment, and the revive

@@ -7,6 +7,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/reliant-labs/forge/internal/clickstack"
 	"github.com/reliant-labs/forge/internal/cluster"
@@ -404,11 +405,17 @@ type applyOptsContext struct {
 
 // applyOptsBuilderFromContext returns an ApplyOptsBuilder closure
 // that captures the deploy-wide opts (mainK, image tag, env config,
-// dry-run, prune, kube-context) and emits a
-// per-group cluster.ApplyOpts. For K8sCluster groups the group's
-// Namespace overrides the closure's namespace — that's the new path
-// where the per-service deploy block dictates the namespace rather than
-// forge.yaml.
+// dry-run, prune, kube-context) and emits a per-group cluster.ApplyOpts.
+//
+// A group's Namespace is where that group's rollout is awaited (and what a
+// namespace-less Job or prune is resolved against). It is never a render
+// input: the env is rendered once, with the env namespace `forge env render`
+// uses, and each group applies the cluster-scoped partition of that one
+// stream. Rendering the env again per group with the group's namespace bound
+// to KCL's `namespace` option changed what the env DECLARED — a group whose
+// namespace equalled one the env declares on another cluster made two
+// objects answer to one override key, and the apply failed after the
+// promotion was recorded.
 //
 // Context is purely DECLARATIVE: every K8sCluster group already carries
 // its target cluster in group.Cluster (populated from the KCL
@@ -427,6 +434,10 @@ func applyOptsBuilderFromContext(p applyOptsContext) func(deploytarget.ServiceGr
 		topology, topologyEntities = p.Topology, p.TopologyEntities
 	}
 	scopeFor := clusterScopeForGroups(topology, topologyEntities)
+	// The env is rendered ONCE, here, for every group this builder emits: with
+	// the env namespace (FallbackNamespace is the deploy's resolved one), like
+	// `forge env render`. A group never gets a render of its own.
+	render := sharedEnvRender(p.MainK, p.ImageTag, p.FallbackNamespace, p.Env, p.EnvCfgKV, p.ImageDigests)
 	// Platform deps (helm-as-a-RENDERER) are env-level, not per-group. To
 	// apply each selected chart EXACTLY ONCE across a multi-group dispatch,
 	// attach the chart specs only to the FIRST k8s group processed —
@@ -480,6 +491,7 @@ func applyOptsBuilderFromContext(p applyOptsContext) func(deploytarget.ServiceGr
 			PruneCRDs:    true,
 			Targets:      p.Targets,
 			ClusterScope: scopeFor(group),
+			Render:       render,
 			HelmCharts:   charts,
 			Rollout:      p.Rollout,
 			OnStream:     p.OnStream,
@@ -778,4 +790,32 @@ func hostedArtifactKey(e *KCLEntities, w WorkloadEntity) string {
 		return hostedImageForDecl(e, imageRepository(w.Image))
 	}
 	return deploytarget.HostedArtifactName(w.Spec.Image)
+}
+
+// sharedEnvRender renders the env once, on first use, and hands the same
+// stream to every caller — the groups of one deploy. It binds the env
+// namespace, exactly as `forge env render` does, so the stream a group applies
+// is the stream the render printed.
+//
+// Lazy on purpose: the first group's apply is the first render of the apply
+// phase, so it still follows the secret projection and minting that precede
+// it. The result (an error included) is kept: a second render of the same
+// inputs could only disagree with the first.
+func sharedEnvRender(mainK, imageTag, namespace, env string, envCfgKV, imageDigests map[string]string) func(context.Context) (string, error) {
+	return sharedEnvRenderWith(func(ctx context.Context) (string, error) {
+		return cluster.RenderManifests(ctx, mainK, imageTag, namespace, env, envCfgKV, imageDigests)
+	})
+}
+
+// sharedEnvRenderWith is sharedEnvRender over any render function.
+func sharedEnvRenderWith(render func(context.Context) (string, error)) func(context.Context) (string, error) {
+	var (
+		once sync.Once
+		out  string
+		err  error
+	)
+	return func(ctx context.Context) (string, error) {
+		once.Do(func() { out, err = render(ctx) })
+		return out, err
+	}
 }

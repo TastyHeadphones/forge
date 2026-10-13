@@ -251,9 +251,26 @@ type ApplyOpts struct {
 	// on ImageTag, byte-identical to before.
 	ImageDigests map[string]string
 
-	// Namespace is the value bound to KCL's `namespace` -D variable and
-	// passed to every kubectl invocation. Required.
+	// Namespace is the namespace this apply WAITS in and prunes: the
+	// rollout wait lists Deployments and Jobs here, and a Job naming no
+	// namespace of its own is waited for here. Required.
+	//
+	// It is NOT a render input when Render is set. A deploy spanning several
+	// namespaces applies one group per (cluster, namespace), and re-rendering
+	// the env once per group with that group's namespace bound to KCL's
+	// `namespace` option changes what the env DECLARES — every override and
+	// URL keyed on the env namespace — so a group's render could disagree
+	// with `forge env render` about which objects exist. Without Render (the
+	// single-group callers: cluster reload, a direct apply) it is also the
+	// namespace the env is rendered with.
 	Namespace string
+
+	// Render, when set, supplies the env's manifest stream instead of
+	// RenderManifests(Namespace, …). A deploy renders the env ONCE, with the
+	// env namespace `forge env render` uses, and every group's apply
+	// partitions that one stream by cluster (ClusterScope) — the groups
+	// differ in where they apply and wait, never in what the env declares.
+	Render func(ctx context.Context) (string, error)
 
 	// EnvConfigKV is the per-env config map projected as additional
 	// `-D key=value` bindings to KCL. May be nil — the dev cluster
@@ -749,7 +766,15 @@ func applyRenderedCharts(ctx context.Context, kctx string, charts []renderedChar
 // the short "KCL render:" wrap and the framed deploy/up path used the longer
 // one, and tests pin both.
 func renderApplyManifests(ctx context.Context, opts ApplyOpts) (string, error) {
-	manifests, err := RenderManifests(ctx, opts.MainK, opts.ImageTag, opts.Namespace, opts.Env, opts.EnvConfigKV, opts.ImageDigests)
+	var (
+		manifests string
+		err       error
+	)
+	if opts.Render != nil {
+		manifests, err = opts.Render(ctx)
+	} else {
+		manifests, err = RenderManifests(ctx, opts.MainK, opts.ImageTag, opts.Namespace, opts.Env, opts.EnvConfigKV, opts.ImageDigests)
+	}
 	if err == nil {
 		WarnBlockingPDBs(manifests)
 		return manifests, nil
@@ -1181,29 +1206,14 @@ func renderDArgs(imageTag, namespace, env string, envCfgKV map[string]string, im
 // config overrides, and image digest pins. It runs from the project root
 // so deploy-as-data file reads resolve.
 func RenderManifests(ctx context.Context, mainK, imageTag, namespace, env string, envCfgKV map[string]string, imageDigests map[string]string) (string, error) {
-	dArgs := append(renderDArgs(imageTag, namespace, env, envCfgKV, imageDigests), kclrender.ReleaseDArgs(ctx)...)
-	// Render from the project root so the env main.k's relative imports
-	// (`..components`, `..ingress`) and the kcl.mod vendor path resolve.
-	// mainK is `<root>/deploy/kcl/<env>/main.k`; strip the four trailing path
-	// components to recover the project root. Resolution is cwd-relative, so
-	// the cwd is part of the contract. Empty (a relative mainK) falls back to
-	// the process cwd, matching the old behaviour.
-	workDir := projectRootFromMainK(mainK)
-	if workDir == "" {
-		if wd, err := os.Getwd(); err == nil {
-			workDir = wd
-		}
-	}
-	out, err := kclrender.Run(workDir, mainK, dArgs)
-	if err != nil {
-		return "", err
-	}
-	stream, _, err := extractManifestsIn(ctx, workDir, out)
+	stream, _, err := RenderManifestsWithOverrides(ctx, mainK, imageTag, namespace, env, envCfgKV, imageDigests)
 	return stream, err
 }
 
-// RenderManifestsWithOverrides is RenderManifests, additionally reporting
-// which Bundle.overrides landed — what `forge env render` summarizes.
+// RenderManifestsWithOverrides is the one render: `forge env render`,
+// `forge env deploy` and the preflight all reach KCL through it, so they
+// cannot disagree about what the env declares. It additionally reports which
+// Bundle.overrides landed — what `forge env render` summarizes.
 func RenderManifestsWithOverrides(ctx context.Context, mainK, imageTag, namespace, env string, envCfgKV map[string]string, imageDigests map[string]string) (string, []AppliedOverride, error) {
 	dArgs := append(renderDArgs(imageTag, namespace, env, envCfgKV, imageDigests), kclrender.ReleaseDArgs(ctx)...)
 	workDir := projectRootFromMainK(mainK)

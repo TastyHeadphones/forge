@@ -1414,6 +1414,29 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 		return err
 	}
 	if opts.preflightOnly {
+		// THE RENDER GATE. Before a promotion is recorded, every cluster
+		// group goes through the apply's own path — render, scope to its
+		// cluster, partition into passes, template its charts — as a dry
+		// run that writes nothing. A release the render or the router
+		// refuses is then refused with the binding unmoved. The ledger used
+		// to claim a release that had never rendered, because the first
+		// render of a group happened in the apply, after the write.
+		//
+		// This is not the live preflight and --skip-preflight does not skip
+		// it: that flag waives checks against the cluster's current state
+		// (Secrets, images), never the question "does this release render".
+		if err := renderGateDeployGroups(ctx, deployApplyInput{
+			groups: groups, topology: topology, topologyEntities: fullEntities,
+			entities: entities, hasK8sServices: hasK8sServices,
+			mainK: mainK, imageTag: imageTag, imageDigests: imageDigests,
+			namespace: namespace, envName: envName, deployContext: deployContext,
+			envCfgKV: envCfgKV, dryRun: true, prune: prune, cfg: cfg,
+			targets: targets, helmSpecs: helmSpecs,
+			rollout: opts.rollout, report: report,
+			directApplyAllowed: opts.directApplyAllowed,
+		}); err != nil {
+			return err
+		}
 		// The frontend half's own refusals, which otherwise fire only AFTER
 		// the cluster apply above has shipped — see preflightFrontendDeploys.
 		if opts.skipFrontend {
@@ -1782,6 +1805,26 @@ func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
 		registry.Register(deploytarget.K8sClusterProvider{ApplyOptsBuilder: builder})
 		return dispatchDeployGroupsBeforeClusters(ctx, registry, in.groups,
 			ensureDevDatabaseHook(in.cfg, in.topologyOrEntities(), in.envName, in.dryRun))
+	}
+	return nil
+}
+
+// renderGateDeployGroups renders every cluster group a deploy would apply, as a
+// dry run. It is applyDeployGroups with nothing to write: the same builder, the
+// same shared env render, the same per-cluster scoping and pass partition, so
+// "the pre-record gate accepted it" and "the apply can render it" are one
+// fact. Nothing is sent to a cluster (every ApplyOpts is DryRun), and the
+// manifests the dry run prints go to the caller's captured stdout.
+func renderGateDeployGroups(ctx context.Context, in deployApplyInput) error {
+	if !in.hasK8sServices || len(in.groups) == 0 {
+		return nil
+	}
+	in.dryRun = true
+	for i := range in.groups {
+		in.groups[i].DryRun = true
+	}
+	if err := applyDeployGroups(ctx, in); err != nil {
+		return fmt.Errorf("render gate: a cluster group of env %q does not render: %w", in.envName, err)
 	}
 	return nil
 }
