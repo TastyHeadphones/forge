@@ -58,6 +58,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`forgeconv-deps-are-interfaces` judges a generic dep by its
+  declaration.** A Deps field typed with an instantiated generic interface
+  (`streaming.UpdateHub[db.UserUpdate]`) was refused as "concrete type
+  `*ast.IndexExpr`" — wrong about the type, and naming a Go AST node instead
+  of it. An instantiation (`pkg.T[A]`, `pkg.T[A, B]`, same-package `T[A]`)
+  is now classified as the generic type it instantiates, so a generic
+  interface is silent and a generic struct still fires; a pointer to an
+  instantiation still fires as any pointer does. Findings render the type as
+  source (`*hub.Broker[Event]`), never as an AST node name.
 - **Schema-qualified and quoted table names read as the table, everywhere
   forge reads migration DDL as text.** pg_dump writes every table qualified
   (`CREATE TABLE public.tasks`), and `forge project shapes --kind table`
