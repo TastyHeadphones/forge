@@ -424,6 +424,27 @@ _obs_on = lambda b: Bundle -> bool {
     bool(b.observability and b.observability.enabled)
 }
 
+# The opt-out vocabulary. `enabled = False` opts out of all of it. These are
+# the keys of the release shape's observability_policy and, joined, the value
+# of the platform's namespace label.
+OBS_CATEGORIES = ["browser", "logs", "metadata", "metrics", "profiles", "traces"]
+
+# The categories the author explicitly opted out of, sorted. Profiles counts
+# only when set False: unset follows where the store is (off in a cluster by
+# default), which is not an opt-out. [] = nothing opted out.
+_obs_category_off = lambda s: any, c: str -> bool {
+    (c == "traces" and not s.traces) or (c == "metrics" and not s.metrics) or (c == "logs" and not s.logs) or (c == "metadata" and not s.metadata) or (c == "browser" and not s.browser) or (c == "profiles" and s.profiles == False)
+}
+_obs_disabled = lambda b: Bundle -> [str] {
+    _s = b.observability.signals if b.observability else Undefined
+    ([] if not b.observability else (OBS_CATEGORIES if not b.observability.enabled else [c for c in OBS_CATEGORIES if _obs_category_off(_s, c)]))
+}
+
+# Browser telemetry is off: the author disabled it, or everything.
+_obs_browser_off = lambda b: Bundle -> bool {
+    bool(b.observability) and (not b.observability.enabled or not b.observability.signals.browser)
+}
+
 # The base URL of the collector on this machine, for host processes and
 # frontend dev servers. "" when the env has none.
 _obs_local_endpoint = lambda b: Bundle -> str {
@@ -477,6 +498,7 @@ _obs_env = lambda rt: any, b: Bundle, env: {str:} -> {str:str} {
     ({OTEL_EXPORTER_OTLP_ENDPOINT = _ep, OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf"} if _obs_on(b) and _ep and _transport else {}) \
         | ({OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf"} if _obs_on(b) and rt.type == "hosted" and _transport else {}) \
         | ({OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT = _pep} if _pep and _transport and not _env_set(env, "OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT") else {}) \
+        | ({OTEL_SDK_DISABLED = "true"} if b.observability and not b.observability.enabled and not _env_set(env, "OTEL_SDK_DISABLED") else {}) \
         | ({OTEL_PROFILES_EXPORTER = "none"} if _sig and not _obs_profiles_on(b) and not _env_set(env, "OTEL_PROFILES_EXPORTER") else {}) \
         | ({OTEL_TRACES_EXPORTER = "none"} if _sig and not _sig.traces and not _env_set(env, "OTEL_TRACES_EXPORTER") else {}) \
         | ({OTEL_METRICS_EXPORTER = "none"} if _sig and not _sig.metrics and not _env_set(env, "OTEL_METRICS_EXPORTER") else {}) \
@@ -1156,6 +1178,13 @@ _render_observability = lambda b: Bundle -> any {
             "metrics": _o.signals.metrics
             "logs": _o.signals.logs
             "profiles": _obs_profiles_on(b)
+            "metadata": _o.signals.metadata
+            "browser": _o.signals.browser
+        }
+        # The opt-out, resolved: recorded in the release shape.
+        "policy": {
+            "enabled": _o.enabled
+            "disabled": _obs_disabled(b)
         }
         "sampling": {
             "traces_ratio": _o.sampling.traces_ratio
@@ -1529,23 +1558,36 @@ _frontend_violations = lambda f: Frontend -> [str] {
         # repository — but its host is the platform's to supply.
 }
 
+# A frontend's runtime_config as declared, with the browser opt-out applied:
+# when browser telemetry is off the SDK's ingest path is forced to "off", over
+# anything the author set, because the opt-out is the author's explicit word.
+_runtime_config_declared = lambda f: Frontend, bundle: Bundle -> {str:str | WorkloadURL} {
+    (f.runtime_config | {OTEL_ENDPOINT = "off"}) if _obs_browser_off(bundle) else f.runtime_config
+}
+
+# The framework's build/dev variable for the browser ingest path.
+_otel_endpoint_var = lambda f: Frontend -> str {
+    ("NEXT_PUBLIC_" if f.type == "nextjs" else ("VITE_" if f.type == "vite" else "EXPO_PUBLIC_")) + "OTEL_ENDPOINT"
+}
+
 # A frontend's runtime_config as the StaticSite spec's `runtimeConfig` wire
 # shape, references KEPT (the hosted lowering). Every name is still checked,
 # so a typo fails at load rather than at the operator.
 _runtime_config_spec = lambda f: Frontend, bundle: Bundle -> {str:} {
     _names = _env_names(bundle.workloads, bundle.infra, bundle.frontends)
-    _bad = [k + " -> " + v.name for k, v in f.runtime_config if typeof(v) != "str" and v.name not in _names]
+    _rcfg = _runtime_config_declared(f, bundle)
+    _bad = [k + " -> " + v.name for k, v in _rcfg if typeof(v) != "str" and v.name not in _names]
     assert len(_bad) == 0, \
         "Frontend '${f.name}'.runtime_config: forge.WorkloadURL names a workload this environment does not declare: " \
         + ", ".join(_bad) + ". Declared workloads: " + ", ".join(_names) + "."
-    {k: ({"value": v} if typeof(v) == "str" else {"workloadURL": {"name": _require_hosted_url_target(v.name, "Frontend '" + f.name + "'.runtime_config." + k, bundle) if _frontend_hosted(f) else v.name}}) for k, v in f.runtime_config}
+    {k: ({"value": v} if typeof(v) == "str" else {"workloadURL": {"name": _require_hosted_url_target(v.name, "Frontend '" + f.name + "'.runtime_config." + k, bundle) if _frontend_hosted(f) else v.name}}) for k, v in _rcfg}
 }
 
 # A frontend's runtime_config RESOLVED to literals — the document forge
 # writes itself. Empty for an OnHosted frontend (the control plane writes it).
 _runtime_config_resolved = lambda f: Frontend, bundle: Bundle -> {str:str} {
     {} if _frontend_hosted(f) else \
-        {k: (v if typeof(v) == "str" else _require_workload_url(v.name, "Frontend '" + f.name + "'.runtime_config." + k, bundle)) for k, v in f.runtime_config}
+        {k: (v if typeof(v) == "str" else _require_workload_url(v.name, "Frontend '" + f.name + "'.runtime_config." + k, bundle)) for k, v in _runtime_config_declared(f, bundle)}
 }
 
 # output.frontends[].runtime: {type, ...} — the dispatch key. Only the
@@ -1587,7 +1629,8 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
         "dev_runner": f.dev_runner
         "port": f.port
         "env_file": f.env_file if f.env_file else None
-        "env_vars": [_render_env_var(e) for e in f.env_vars]
+        "env_vars": [_render_env_var(e) for e in f.env_vars if not (_obs_browser_off(bundle) and e.name == _otel_endpoint_var(f))] \
+            + ([_render_env_var(EnvVar {name = _otel_endpoint_var(f), value = "off"})] if _obs_browser_off(bundle) else [])
         "config": _render_frontend_config(f.config) if f.config else None
         "runtime": _render_frontend_runtime(f.runtime)
         # Where an OnHosted frontend's release is pushed: the reference the

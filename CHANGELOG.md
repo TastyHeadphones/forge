@@ -166,6 +166,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the control plane to evaluate; a shape that declares none encodes and hashes as
   before. `output.observability.alerts` is a new optional render-contract key.
   See `observability/alerts` and `migrations/v0.1.45` section 9.
+- **Observability opt-out: `enabled = False`, or per category.** Hosted
+  observability is on by default; `forge.ObservabilitySignals` gains `metadata`
+  (customer metadata: pod CPU/memory against limits, restarts and last exit
+  reason, events, image and version, collected by the platform's node agent) and
+  `browser` (the frontend SDK) beside `traces`, `metrics`, `logs` and `profiles`.
+  A disabled signal renders `OTEL_<SIGNAL>_EXPORTER=none`; `enabled = False`
+  renders `OTEL_SDK_DISABLED=true`; `browser` (or everything) off renders
+  `OTEL_ENDPOINT=off` into every frontend's runtime config and build variable.
+  The resolved policy is recorded in the release shape as `observability_policy`
+  (`{enabled, disabled[]}`, omitted when nothing is opted out), so the platform
+  enforces it at the source. Disabled data is never collected, stored or billed.
 
 - **`pkg/alerting`: a SQL alert-rule evaluator in the Prometheus shape.** A
   rule's `expr` is one ClickHouse SELECT; every row it returns is a firing

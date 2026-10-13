@@ -238,6 +238,7 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 		ControlPlaneSecrets: in.Shape.ControlPlaneSecrets,
 		Alerts:              in.Shape.Alerts,
 		AlertRoutes:         in.Shape.AlertRoutes,
+		ObservabilityPolicy: in.Shape.ObservabilityPolicy,
 		Applier:             in.Shape.Applier,
 	}.Canonical()
 	if err := shape.Validate(); err != nil {

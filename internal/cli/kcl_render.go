@@ -1154,7 +1154,9 @@ type ObservabilityEntity struct {
 	ProfilesEndpoint string                     `json:"profiles_endpoint,omitempty"`
 	Destination      *ObservabilityDestEntity   `json:"destination,omitempty"`
 	Signals          ObservabilitySignalsEntity `json:"signals"`
-	Sampling         struct {
+	// Policy is the resolved opt-out, recorded in the release shape.
+	Policy   *ObservabilityPolicyEntity `json:"policy,omitempty"`
+	Sampling struct {
 		TracesRatio            float64 `json:"traces_ratio"`
 		ErrorsAlways           bool    `json:"errors_always"`
 		DestinationTailSamples bool    `json:"destination_tail_samples"`
@@ -1198,6 +1200,16 @@ type ObservabilitySignalsEntity struct {
 	Metrics  bool `json:"metrics"`
 	Logs     bool `json:"logs"`
 	Profiles bool `json:"profiles"`
+	Metadata bool `json:"metadata"`
+	Browser  bool `json:"browser"`
+}
+
+// ObservabilityPolicyEntity is Observability's resolved opt-out: Disabled
+// names the categories (traces, metrics, logs, profiles, metadata, browser)
+// the author switched off, every one when Enabled is false.
+type ObservabilityPolicyEntity struct {
+	Enabled  bool     `json:"enabled"`
+	Disabled []string `json:"disabled,omitempty"`
 }
 
 // kclRenderRaw is the JSON shape of `output` (P2 map §9.1). Workloads are

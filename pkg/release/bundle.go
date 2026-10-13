@@ -374,6 +374,13 @@ type Shape struct {
 	// wins unless a route continues. Receivers are NAMES: their secrets live
 	// in the control plane. Order is significant and is preserved.
 	AlertRoutes []ShapeAlertRoute `json:"alert_routes,omitempty"`
+	// ObservabilityPolicy is the env's resolved observability opt-out
+	// (forge.Observability): what the author switched off. It is how the
+	// platform learns what NOT to collect, enforced at the source (the node
+	// agent, the operator's injection, the browser ingest). Omitted when the
+	// env declares no observability or opts out of nothing, so every shape
+	// recorded before the field encodes and hashes exactly as it did.
+	ObservabilityPolicy *ShapeObservabilityPolicy `json:"observability_policy,omitempty"`
 	// Applier is who applies this env when it DECLARES one: "forge" for a real
 	// environment forge applies on purpose (the platform's own env, which its
 	// own hub must not apply). Empty means undeclared, and omitted, so every
@@ -483,6 +490,50 @@ type ShapeAlertRoute struct {
 // Key identifies the Secret within a shape: (cluster, namespace, name).
 func (s ShapeControlPlaneSecret) Key() string {
 	return s.Cluster + "/" + s.Namespace + "/" + s.Name
+}
+
+// Observability opt-out categories: the closed vocabulary of
+// [ShapeObservabilityPolicy.Disabled]. "metadata" is customer metadata, the
+// per-workload container data the platform's node agent collects (pod
+// CPU/memory, restarts, last exit reason, events, image and version).
+const (
+	ObsCategoryTraces   = "traces"
+	ObsCategoryMetrics  = "metrics"
+	ObsCategoryLogs     = "logs"
+	ObsCategoryProfiles = "profiles"
+	ObsCategoryMetadata = "metadata"
+	ObsCategoryBrowser  = "browser"
+)
+
+// ObsCategories is every opt-out category, sorted.
+var ObsCategories = []string{
+	ObsCategoryBrowser, ObsCategoryLogs, ObsCategoryMetadata,
+	ObsCategoryMetrics, ObsCategoryProfiles, ObsCategoryTraces,
+}
+
+// ShapeObservabilityPolicy is the observability an env opted OUT of. Disabled
+// lists categories, sorted; Enabled = false means everything is off (and
+// Disabled then lists every category). Absent policy, or an empty Disabled
+// with Enabled true, means everything is on.
+type ShapeObservabilityPolicy struct {
+	Enabled  bool     `json:"enabled"`
+	Disabled []string `json:"disabled,omitempty"`
+}
+
+// Off reports whether category is opted out under this policy.
+func (p *ShapeObservabilityPolicy) Off(category string) bool {
+	if p == nil {
+		return false
+	}
+	if !p.Enabled {
+		return true
+	}
+	for _, d := range p.Disabled {
+		if d == category {
+			return true
+		}
+	}
+	return false
 }
 
 // ShapeObject is one rendered Kubernetes object.
@@ -597,6 +648,25 @@ func (s Shape) Validate() error {
 	if s.Applier != "" && s.Applier != ApplierForge {
 		return fmt.Errorf("%w: shape applier %q (expected %q or none)", ErrInvalid, s.Applier, ApplierForge)
 	}
+	if p := s.ObservabilityPolicy; p != nil {
+		valid := map[string]bool{}
+		for _, c := range ObsCategories {
+			valid[c] = true
+		}
+		seen := map[string]bool{}
+		for _, d := range p.Disabled {
+			if !valid[d] {
+				return fmt.Errorf("%w: shape observability_policy disables %q (expected one of %s)", ErrInvalid, d, strings.Join(ObsCategories, ", "))
+			}
+			if seen[d] {
+				return fmt.Errorf("%w: shape observability_policy disables %q twice", ErrInvalid, d)
+			}
+			seen[d] = true
+		}
+		if !p.Enabled && len(p.Disabled) != len(ObsCategories) {
+			return fmt.Errorf("%w: shape observability_policy is disabled as a whole and must list every category", ErrInvalid)
+		}
+	}
 	delivered := map[string]bool{}
 	for _, c := range s.ControlPlaneSecrets {
 		if strings.TrimSpace(c.Name) == "" || strings.TrimSpace(c.Namespace) == "" || strings.TrimSpace(c.Cluster) == "" {
@@ -700,6 +770,11 @@ func (s Shape) Canonical() Shape {
 		sort.Slice(out.ControlPlaneSecrets, func(i, j int) bool {
 			return out.ControlPlaneSecrets[i].Key() < out.ControlPlaneSecrets[j].Key()
 		})
+	}
+	if s.ObservabilityPolicy != nil {
+		pol := *s.ObservabilityPolicy
+		pol.Disabled = sortedStrings(pol.Disabled)
+		out.ObservabilityPolicy = &pol
 	}
 	// Alerts sort by name. Routes do NOT sort: first match wins, so their order
 	// is part of their meaning.
