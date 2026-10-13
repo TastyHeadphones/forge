@@ -39,9 +39,9 @@ const (
 // events (crash loops, failed pulls, evictions).
 //
 // It reads node-derived telemetry, which only a deployed environment has: a
-// `forge env up` stack draws these panels empty. The tenant is stamped from
-// namespace labels, never from the payload, so the panels cannot be spoofed by
-// a workload.
+// `forge env up` stack draws these panels empty. The owning org and environment
+// are stamped from namespace labels, never from the payload, so a workload
+// cannot spoof what these panels show.
 //
 // Every panel is a line, number or search panel: a table over metrics is not
 // something the console's query engine runs, so the per-container images and

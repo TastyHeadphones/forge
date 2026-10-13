@@ -313,7 +313,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `AutoMigrate`, which cannot know its binary's commands, names
   `forge db migrate force N` from a checkout of the release (new
   `migratekit.ForceCommand`, tested to resolve) and the binary's own `db
-migrate force N` where it has one. The `db` and `db/deploy-migrations`
+  migrate force N` where it has one. The `db` and `db/deploy-migrations`
   skills, `docs/concepts.md` and the `forge db squash` doc stop naming the
   golang-migrate CLI or crediting its lock. `db.go` is scaffolded once, so an
   existing project gains `force` by copying it from a fresh scaffold.
@@ -427,7 +427,7 @@ migrate force N` where it has one. The `db` and `db/deploy-migrations`
   forge's own setters keep to `env_var`: the KCL env map and the secret store
   key name it alone. Flag help now lists the env vars that set a flag,
   permanent aliases included (`--environment string   … [env: RELIANT_ENV,
-NODE_ENV]`). A required-field error names every alias. `forge generate`
+  NODE_ENV]`). A required-field error names every alias. `forge generate`
   refuses an alias that repeats any env var or alias another field of the same
   process reads (a command config counts its binary's root config), repeats
   the field's own `env_var`, has no `env_var` beside it, is not a variable
@@ -439,7 +439,7 @@ NODE_ENV]`). A required-field error names every alias. `forge generate`
 
 - **Alert rules, declared per env: `forge.AlertRule`, `forge.AlertRoute`,
   `forge.AlertDefault`.** On `forge.Observability.alerts = forge.Alerts {rules,
-defaults, routes}`. A rule is the Prometheus shape with the condition inside
+  defaults, routes}`. A rule is the Prometheus shape with the condition inside
   `expr`, a single native ClickHouse SELECT over the OpenTelemetry tables whose
   every row is a firing instance (non-`value` columns are labels, `value` the
   sample); `severity` is a label (critical | warning | info, default warning).
@@ -662,7 +662,7 @@ github.com/reliant-labs/forge/cmd/forge@<pin> <same args>` that needs no
   in-place scaffold into an empty directory, keep `error`. The `migration`
   skill and `docs/concepts.md` now document both defaults and when to flip.
 - **`forge lint` runs every lane flag it is given.** `forge lint --conventions
---contract` ran whichever lane came first in the dispatch chain, skipped the
+  --contract` ran whichever lane came first in the dispatch chain, skipped the
   other without a word, and printed ✅ — a green verdict over a lane that never
   executed (text mode, `--quiet`/`--scope`, `--json` and `--gate-json` alike).
   Every named lane now runs, each exactly as it runs alone, and one verdict
@@ -679,7 +679,7 @@ github.com/reliant-labs/forge/cmd/forge@<pin> <same args>` that needs no
   the way it vendors `buf/validate/validate.proto`: the first run whose protos
   import it and that finds no copy writes forge's own (with the `forgepb`
   `go_package`); an existing copy is never rewritten, so `forge lint
---vendored-protos` stays the drift guard. Because a project's own Go template
+  --vendored-protos` stays the drift guard. Because a project's own Go template
   may target all of `proto/`, generate now refuses one whose `protoc-gen-go`
   would compile a vendored proto — a second Go registration of a descriptor
   `forgepb` (or protovalidate) already registers panics every binary at init —
@@ -692,7 +692,7 @@ github.com/reliant-labs/forge/cmd/forge@<pin> <same args>` that needs no
   pg_dump's session prelude, so the baseline ran
   `SELECT pg_catalog.set_config('search_path', '', false)` on the migrator's
   session: the next migration in the same run failed with `relation "x" does
-not exist`, and `AutoMigrate` handed the connection back to the app's pool
+  not exist`, and `AutoMigrate` handed the connection back to the app's pool
   with an empty `search_path`. Its line filter for psql meta-commands also
   deleted any line beginning with `\` inside a function body or an inserted
   value. squash now reads the dump the way postgres lexes it (quotes, `E''`
@@ -708,7 +708,7 @@ not exist`, and `AutoMigrate` handed the connection back to the app's pool
   `FORGE_CONFIG`.** Every forge-built binary read `FORGE_CONFIG`, so a shell that
   set it for one forge app made every other forge binary started from that
   shell load that app's file and die at startup (`FORGE_CONFIG=/x.yaml reliant
-server worker` → `config file "/x.yaml" does not exist`), including a daemon
+  server worker` → `config file "/x.yaml" does not exist`), including a daemon
   a desktop app launches with the login environment. The variable is now
   `<BINARY>_CONFIG`, derived from `(forge.v1.binary_config).binary`
   (`RELIANT_CONFIG`, `IDP_PROVISION_ONESHOT_CONFIG`) and shared by a binary's
@@ -719,7 +719,7 @@ server worker` → `config file "/x.yaml" does not exist`), including a daemon
   `config.ConfigPathEnv` is removed from `forge/pkg/config`. The variable is
   recorded on the `--config` flag, so `--help` names it, and a missing file now
   says where its path came from (`(from env RELIANT_CONFIG) ... point
-RELIANT_CONFIG at a readable file, or unset it`). New in `pkg/config`:
+  RELIANT_CONFIG at a readable file, or unset it`). New in `pkg/config`:
   `ConfigPathEnvFor(binary)`, and `RegisterConfigFlag(cmd, env)`, which
   registers `--config` with a chosen variable — called on a binary's root
   before the generated `Register*Flags`, it is the override. `forge generate`
@@ -736,8 +736,8 @@ RELIANT_CONFIG at a readable file, or unset it`). New in `pkg/config`:
   the ones registered on the command path through the cobra-level
   `Register*` functions (recorded on the command), so a key none of them
   declares is still a loud error, now naming them all (`unknown key
-"jwks_ulr": no config this command loads has such a field (ApiServerConfig,
-ReliantConfig)`), and nested keys stay strict. One file serves one process:
+  "jwks_ulr": no config this command loads has such a field (ApiServerConfig,
+  ReliantConfig)`), and nested keys stay strict. One file serves one process:
   `server worker` refuses a key only `server api` reads. A key two loaded
   configs both declare is refused at load, and `forge generate` refuses a root
   and a command config of one binary that share a top-level field name, as it
