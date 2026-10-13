@@ -20,21 +20,40 @@ package cli
 // conflict; a merge that touched only fingerprints is clean, and the stale
 // fingerprint is exactly what `forge generate` refreshes.
 //
-// Wiring is declarative and per clone, like core.hooksPath:
-//   - .gitattributes names the driver for forge's generated files
-//     (`merge=forge-generated`);
+// Beyond fingerprints, the driver settles the two kinds of file every branch
+// that adds a service changes (P3b friction F16, 33 parallel lanes):
+//   - forge's committed state files (.forge/scaffolded.json, hashes.json,
+//     disowned.json) merge key by key (checksums.MergeStateFile), so two
+//     lanes' births and hashes never conflict;
+//   - a forge render both sides changed whose line merge still conflicts —
+//     the aggregated dashboard spec, the service mount list — is not content
+//     a person resolves either. When both sides are forge's own renders, the
+//     driver keeps this side's (still a verifiable render) and the next
+//     `forge generate` renders the merged inputs over it. A side carrying a
+//     hand edit keeps the conflict, so nothing human is dropped.
+//
+// Wiring is per clone, like core.hooksPath, and needs nothing committed:
 //   - every forge command run in the project (re)writes the driver's command
-//     into .git/config (ensureGeneratedMergeDriver).
-// A clone with the attribute and without the config gets git's built-in merge,
-// which is exactly today's behaviour — never worse.
+//     into .git/config and the attributes that route forge's files to it into
+//     the clone's info/attributes (ensureGeneratedMergeDriver). A project
+//     adopted in place, which never got forge's .gitattributes, merges
+//     through the driver all the same. FORGE_NO_MERGE_DRIVER=1 opts out of
+//     the driver alone; FORGE_NO_GIT_HOOKS=1 (or FORGE_NO_HOOKS) keeps forge
+//     out of the clone's git configuration altogether, driver included.
+//   - a new project's .gitattributes also names the driver, so the routing
+//     is visible in the tree.
+// A clone where forge has not run yet gets git's built-in merge, which is the
+// old behaviour — never worse.
 
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -164,20 +183,92 @@ func recertify(merged []byte) []byte {
 	return bytes.Replace(merged, []byte(key+old), []byte(key+checksums.BodyHash(merged)), 1)
 }
 
+// mergeGeneratedPath merges one file git routed to the driver. relPath is
+// git's %P (repository-relative), empty when an older driver command did not
+// pass it. note, when set, says what the driver decided for the reader of
+// the merge output.
+func mergeGeneratedPath(ctx context.Context, relPath string, base, ours, theirs []byte, markerSize int) (merged []byte, clean bool, note string, err error) {
+	if relPath != "" {
+		if m, ok := checksums.MergeStateFile(relPath, base, ours, theirs); ok {
+			return m, true, "", nil
+		}
+	}
+	merged, clean, err = mergeGenerated(ctx, base, ours, theirs, markerSize)
+	if err != nil {
+		return nil, false, "", err
+	}
+	keep := "kept this side's render; run `forge generate` to render both sides' inputs into it"
+	switch {
+	case relPath != "" && !checksums.Stampable(relPath):
+		// A comment-incapable output (JSON) is certified by
+		// .forge/hashes.json, which keeps THIS side's hash where both sides
+		// re-rendered (MergeStateFile). A merged body — clean or not —
+		// would match no recorded hash, and generate would refuse it as a
+		// hand edit. So when this side is forge's verified render, keep it.
+		if unstampableRenderOfOurs(relPath, ours) {
+			return ours, true, keep, nil
+		}
+		// The descriptor is rewritten whole on every generate and certified
+		// by nothing: a clean merge stands, a conflict takes this side.
+		if path.Base(relPath) == "forge_descriptor.json" && !clean {
+			return ours, true, keep, nil
+		}
+	case !clean && checksums.Verify(ours) == checksums.Pristine && checksums.Verify(theirs) == checksums.Pristine:
+		// Two pristine renders still conflicting: both are pure functions
+		// of inputs that merged, so the conflict holds no human content.
+		return ours, true, keep, nil
+	}
+	return merged, clean, "", nil
+}
+
+// unstampableRenderOfOurs reports whether ours is forge's render of a
+// comment-incapable output: its body hash is the one THIS side's
+// .forge/hashes.json records for it. The project root is the nearest
+// directory above relPath holding forge.yaml (the driver runs at the top of
+// the work tree, and relPath is relative to it); this side's hashes come
+// from HEAD, which is this side in a merge, a rebase and a cherry-pick alike.
+func unstampableRenderOfOurs(relPath string, ours []byte) bool {
+	rel := filepath.ToSlash(relPath)
+	for dir := path.Dir(rel); ; dir = path.Dir(dir) {
+		prefix := ""
+		if dir != "." {
+			prefix = dir + "/"
+		}
+		if _, err := os.Stat(filepath.FromSlash(prefix + "forge.yaml")); err == nil {
+			data, err := exec.CommandContext(context.Background(), "git", "cat-file", "blob", "HEAD:"+prefix+checksums.HashesFile).Output()
+			if err != nil {
+				return false
+			}
+			var h struct {
+				Files map[string]string `json:"files"`
+			}
+			if json.Unmarshal(data, &h) != nil {
+				return false
+			}
+			recorded, ok := h.Files[strings.TrimPrefix(rel, prefix)]
+			return ok && recorded == checksums.BodyHash(ours)
+		}
+		if dir == "." || dir == "/" {
+			return false
+		}
+	}
+}
+
 // newMergeGeneratedCmd is the driver git invokes:
 //
-//	forge merge-generated %O %A %B %L
+//	forge merge-generated %O %A %B %L %P
 //
 // It writes the result into %A, as git's driver contract requires, and exits
-// non-zero on a conflict.
+// non-zero on a conflict. %P (the path being merged) is optional, so a
+// driver command an older forge wrote keeps working.
 func newMergeGeneratedCmd() *cobra.Command {
 	return &cobra.Command{
 		// git runs this mid-merge: no hook activation, no other side effects.
 		Annotations: map[string]string{skipHookActivationAnnotation: ""},
-		Use:         "merge-generated <base> <ours> <theirs> [marker-size]",
+		Use:         "merge-generated <base> <ours> <theirs> [marker-size] [path]",
 		Short:       "git merge driver for forge-generated files (configured by forge; not run by hand)",
 		Hidden:      true,
-		Args:        cobra.RangeArgs(3, 4),
+		Args:        cobra.RangeArgs(3, 5),
 		// A merge driver's stdout/stderr land in the middle of git's own
 		// output; nothing here should print a usage block.
 		SilenceUsage: true,
@@ -195,17 +286,24 @@ func newMergeGeneratedCmd() *cobra.Command {
 				return err
 			}
 			marker := 7
-			if len(args) == 4 {
+			if len(args) >= 4 {
 				if n, perr := strconv.Atoi(args[3]); perr == nil {
 					marker = n
 				}
 			}
-			merged, clean, err := mergeGenerated(cmd.Context(), base, ours, theirs, marker)
+			relPath := ""
+			if len(args) == 5 {
+				relPath = args[4]
+			}
+			merged, clean, note, err := mergeGeneratedPath(cmd.Context(), relPath, base, ours, theirs, marker)
 			if err != nil {
 				return err
 			}
 			if err := os.WriteFile(args[1], merged, 0o644); err != nil {
 				return err
+			}
+			if note != "" {
+				fmt.Fprintf(cmd.ErrOrStderr(), "forge merge-generated %s: %s\n", relPath, note)
 			}
 			if !clean {
 				return exitCodeError{code: 1, msg: "conflicts outside forge's fingerprint lines remain"}
@@ -215,27 +313,202 @@ func newMergeGeneratedCmd() *cobra.Command {
 	}
 }
 
-// ensureGeneratedMergeDriver writes the driver's command into the clone's
-// config when the project's .gitattributes names it. Best-effort and silent,
-// like ensureGitHooksActivated: a merge without it is today's merge.
+// ensureGeneratedMergeDriver configures the clone to merge forge's files
+// through the driver: the driver command in the repository config, and the
+// attributes routing the project's generated and state files to it in the
+// clone's info/attributes. Both are per clone and shared by every linked
+// worktree, like core.hooksPath. Best-effort and idempotent; it says one line
+// when it changes something.
+//
+// The attributes live in info/attributes, not .gitattributes, because they
+// must reach every forge project: one adopted in place keeps its own
+// .gitattributes (reliant had none), and forge does not rewrite a file the
+// project owns. They are scoped to the project's directory, so a forge
+// project inside a larger repository routes only its own files.
+//
+// The command names this binary by absolute path. A bare name resolves on
+// PATH at merge time, which is either nothing (a pinned forge run by path)
+// or a different forge. Two guards keep that path valid for the next merge:
+// an ephemeral binary (`go run`, a test's build, anything under the temp
+// directory) is never written, because it is gone by then; and a command
+// already naming an existing forge binary with %P is left alone, so
+// worktrees running different forge builds do not rewrite the shared
+// config on every command.
+//
+// FORGE_NO_GIT_HOOKS / FORGE_NO_HOOKS keep forge out of the clone's git
+// configuration altogether (a test suite running forge against a developer's
+// checkout sets it); FORGE_NO_MERGE_DRIVER skips only the driver.
 func ensureGeneratedMergeDriver(root string) {
-	if gitHooksOptOut() != "" {
+	if gitHooksOptOut() != "" || os.Getenv(mergeDriverOptOutEnv) != "" {
 		return
 	}
-	attrs, err := os.ReadFile(filepath.Join(root, ".gitattributes"))
-	if err != nil || !bytes.Contains(attrs, []byte("merge="+generatedMergeDriver)) {
+	// Any git work tree, including one where the project sits in a
+	// subdirectory of the repository.
+	if exec.CommandContext(context.Background(), "git", "-C", root, "rev-parse", "--is-inside-work-tree").Run() != nil {
 		return
 	}
-	if _, err := os.Stat(filepath.Join(root, ".git")); err != nil {
-		return
-	}
-	want := cmdutil.Name() + " merge-generated %O %A %B %L"
+	// The routes are harmless without a command (git merges a file whose
+	// driver is undefined as text), so they are written even when this
+	// binary cannot be the command.
+	changed := writeMergeAttributes(root)
 	key := "merge." + generatedMergeDriver + ".driver"
 	cur, _ := exec.CommandContext(context.Background(), "git", "-C", root, "config", "--get", key).Output()
-	if strings.TrimSpace(string(cur)) == want {
-		return
+	if command, ok := mergeDriverCommand(); ok {
+		if current := strings.TrimSpace(string(cur)); current != command && !driverCommandUsable(current) {
+			_ = exec.CommandContext(context.Background(), "git", "-C", root, "config", "--local",
+				"merge."+generatedMergeDriver+".name", "forge-generated files: merge, keeping fingerprint lines for forge generate to refresh").Run()
+			if exec.CommandContext(context.Background(), "git", "-C", root, "config", "--local", key, command).Run() == nil {
+				changed = true
+			}
+		}
 	}
-	_ = exec.CommandContext(context.Background(), "git", "-C", root, "config", "--local",
-		"merge."+generatedMergeDriver+".name", "forge-generated files: merge, keeping fingerprint lines for forge generate to refresh").Run()
-	_ = exec.CommandContext(context.Background(), "git", "-C", root, "config", "--local", key, want).Run()
+	if changed {
+		fmt.Fprintln(os.Stderr,
+			"forge: configured this clone to merge forge's generated and state files through `forge merge-generated` (.git/config, info/attributes). Disable with "+mergeDriverOptOutEnv+"=1.")
+	}
+}
+
+// mergeDriverOptOutEnv skips wiring the merge driver into a clone, leaving
+// git hook activation alone.
+const mergeDriverOptOutEnv = "FORGE_NO_MERGE_DRIVER"
+
+// driverCommandUsable reports whether a configured driver command already
+// does the job: it passes %P (so it is a forge that merges state files) and
+// its binary still exists.
+func driverCommandUsable(command string) bool {
+	if !strings.HasSuffix(command, "%P") {
+		return false
+	}
+	bin := command
+	if strings.HasPrefix(bin, "'") {
+		end := strings.Index(bin[1:], "'")
+		if end < 0 {
+			return false
+		}
+		bin = bin[1 : end+1]
+	} else if i := strings.IndexByte(bin, ' '); i >= 0 {
+		bin = bin[:i]
+	}
+	info, err := os.Stat(bin)
+	return err == nil && !info.IsDir()
+}
+
+// ephemeralExecutable reports whether exe will be gone by the next merge: a
+// `go test` binary, a `go run` build, or anything under the temp directory.
+func ephemeralExecutable(exe string) bool {
+	if strings.HasSuffix(exe, ".test") || strings.Contains(exe, string(filepath.Separator)+"go-build") {
+		return true
+	}
+	tmp, err := filepath.EvalSymlinks(os.TempDir())
+	if err != nil {
+		tmp = os.TempDir()
+	}
+	rel, err := filepath.Rel(tmp, exe)
+	return err == nil && !strings.HasPrefix(rel, "..")
+}
+
+// mergeDriverCommand is the driver command line for this binary: its
+// absolute path plus the route that reaches merge-generated (`forge`, or
+// `reliant forge` when forge is mounted as a subcommand). ok is false for an
+// ephemeral binary, which must never become a repository's merge driver.
+func mergeDriverCommand() (string, bool) {
+	exe, err := mergeDriverExecutable()
+	if err != nil {
+		return "", false
+	}
+	if resolved, rerr := filepath.EvalSymlinks(exe); rerr == nil {
+		exe = resolved
+	}
+	if ephemeralExecutable(exe) {
+		return "", false
+	}
+	words := strings.Fields(cmdutil.Name())
+	words[0] = "'" + strings.ReplaceAll(exe, "'", `'\''`) + "'"
+	return strings.Join(words, " ") + " merge-generated %O %A %B %L %P", true
+}
+
+// mergeDriverExecutable is os.Executable, a seam for tests: an ephemeral
+// binary is refused as a driver, so a test that exercises the wiring names
+// the binary it means.
+var mergeDriverExecutable = os.Executable
+
+// mergeAttributesBegin and mergeAttributesEnd bracket forge's block in
+// info/attributes, so it is replaced in place and nothing else is touched.
+const (
+	mergeAttributesBegin = "# >>> forge merge-generated (managed by forge; FORGE_NO_MERGE_DRIVER=1 stops it)"
+	mergeAttributesEnd   = "# <<< forge merge-generated"
+)
+
+// generatedMergePatterns are the files routed to the driver, relative to
+// the project root: forge's generated outputs and its committed state.
+var generatedMergePatterns = []string{
+	"*_gen.go", "*_gen.ts", "*_gen.test.ts", "*_gen.json", "*_gen.ndjson",
+	"forge_descriptor.json",
+	".forge/scaffolded.json", ".forge/hashes.json", ".forge/disowned.json",
+}
+
+// writeMergeAttributes writes forge's block into the clone's
+// info/attributes, scoped to root's directory within the repository.
+// Reports whether the file changed.
+func writeMergeAttributes(root string) bool {
+	attrPath, err := exec.CommandContext(context.Background(), "git", "-C", root, "rev-parse", "--path-format=absolute", "--git-path", "info/attributes").Output()
+	if err != nil {
+		return false
+	}
+	prefix, err := exec.CommandContext(context.Background(), "git", "-C", root, "rev-parse", "--show-prefix").Output()
+	if err != nil {
+		return false
+	}
+	block := mergeAttributesBlock(strings.TrimSpace(string(prefix)))
+	file := strings.TrimSpace(string(attrPath))
+	existing, _ := os.ReadFile(file)
+	updated := replaceManagedBlock(string(existing), block)
+	if updated == string(existing) {
+		return false
+	}
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+		return false
+	}
+	return os.WriteFile(file, []byte(updated), 0o644) == nil
+}
+
+// mergeAttributesBlock renders the block for a project at prefix (git's
+// --show-prefix: "" at the repository root, else "dir/sub/").
+func mergeAttributesBlock(prefix string) string {
+	var b strings.Builder
+	b.WriteString(mergeAttributesBegin + "\n")
+	for _, p := range generatedMergePatterns {
+		switch {
+		case prefix == "":
+			// A pattern with no slash matches at any depth; one with a
+			// slash is anchored to the repository root.
+			b.WriteString(p)
+		case strings.Contains(p, "/"):
+			b.WriteString(prefix + p)
+		default:
+			b.WriteString(prefix + "**/" + p)
+		}
+		b.WriteString(" merge=" + generatedMergeDriver + "\n")
+	}
+	b.WriteString(mergeAttributesEnd + "\n")
+	return b.String()
+}
+
+// replaceManagedBlock swaps forge's block in content for block, appending
+// it when there is none.
+func replaceManagedBlock(content, block string) string {
+	start := strings.Index(content, mergeAttributesBegin)
+	if start >= 0 {
+		if end := strings.Index(content[start:], mergeAttributesEnd); end >= 0 {
+			end += start + len(mergeAttributesEnd)
+			if end < len(content) && content[end] == '\n' {
+				end++
+			}
+			return content[:start] + block + content[end:]
+		}
+	}
+	if content != "" && !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	return content + block
 }

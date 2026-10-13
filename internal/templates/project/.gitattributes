@@ -21,9 +21,18 @@
 # forge:hash header, the mock fixtures' SEED_FINGERPRINT, the descriptor's
 # source_hash). Those would otherwise conflict between any two branches that
 # change a migration, a proto, or a generated body; the driver keeps this
-# side's value and the next `forge generate` refreshes it. forge writes the
-# driver's command into .git/config; a clone without it merges as before.
+# side's value and the next `forge generate` refreshes it. Two branches that
+# each add a service also both change forge's state files under .forge/
+# (merged key by key) and its aggregated renders (when both sides are forge's
+# renders, the driver keeps this side's and `forge generate` renders both).
+# forge writes the driver's command into .git/config and these same routes
+# into .git/info/attributes; a clone where forge has not run merges as before.
 *_gen.go merge=forge-generated
 *_gen.ts merge=forge-generated
 *_gen.test.ts merge=forge-generated
+*_gen.json merge=forge-generated
+*_gen.ndjson merge=forge-generated
 forge_descriptor.json merge=forge-generated
+.forge/scaffolded.json merge=forge-generated
+.forge/hashes.json merge=forge-generated
+.forge/disowned.json merge=forge-generated

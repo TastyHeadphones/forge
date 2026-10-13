@@ -119,6 +119,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whose consequences pins already reach one by one, and it would contradict
   the tree. A `kind: cli` project with handlers would have handler codegen
   running while `forge scaffold` refused it.
+- **Two branches that each add a service merge or rebase without a person
+  resolving forge's files.** Every such branch changes the same files: the
+  birth ledger, `.forge/hashes.json`, the descriptor, the aggregated
+  dashboard spec, alert defaults and saved searches, and the generated
+  service mounts. In the P3b pilot's 33 parallel lanes each one conflicted on
+  every rebase (F16). The `forge-generated` merge driver now settles them:
+  - `.forge/scaffolded.json`, `hashes.json` and `disowned.json` merge key by
+    key (`checksums.MergeStateFile`) and are rendered exactly as forge writes
+    them.
+  - A generated file whose line merge still conflicts, when both sides are
+    forge's verifiable renders, keeps this side's render. The next
+    `forge generate` renders both sides' inputs over it. A comment-incapable
+    output (JSON) keeps this side's render whenever both sides changed it,
+    because its certifying hash is this side's. A hand-edited side keeps the
+    conflict.
+  - Every forge command now wires the driver into the clone: the driver
+    command goes in `.git/config` and the attributes routing forge's files
+    in `info/attributes`, scoped to the project's directory. A project
+    adopted in place, which never got forge's `.gitattributes` (reliant), is
+    covered without editing a file it owns. The command names the binary by
+    absolute path, because a bare `forge` resolved on PATH at merge time to
+    nothing or to another version. It never names an ephemeral binary
+    (`go run`, a test build, anything under the temp directory), and it
+    leaves an existing `%P` command alone while its binary exists, so
+    worktrees on different forge builds do not keep rewriting the shared
+    config. `FORGE_NO_MERGE_DRIVER=1` skips the driver alone.
+    `FORGE_NO_GIT_HOOKS=1` (or `FORGE_NO_HOOKS`) still keeps forge out of the
+    clone's git configuration altogether, driver included.
+  - The scaffolded `.gitattributes` names the new routes too.
+
+  One file can still conflict: a forge project's own `internal/app/compose.go`,
+  where `forge generate` injects each component. Take either side and run
+  `forge generate`, which re-injects the other side's component.
 
 - **A failed `forge generate` that changed no Go file no longer builds the
   project to report on its rollback.** After reverting a failed run, generate

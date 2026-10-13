@@ -169,7 +169,8 @@ func TestGitattributesTemplateDeclaresTheDriver(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"*_gen.ts merge=forge-generated", "forge_descriptor.json merge=forge-generated"} {
+	for _, want := range []string{"*_gen.ts merge=forge-generated", "forge_descriptor.json merge=forge-generated",
+		"*_gen.json merge=forge-generated", ".forge/scaffolded.json merge=forge-generated", ".forge/hashes.json merge=forge-generated"} {
 		if !strings.Contains(string(b), want) {
 			t.Errorf(".gitattributes template lacks %q", want)
 		}
@@ -189,4 +190,154 @@ func plainGitMergeConflicts(t *testing.T, base, ours, theirs []byte) int {
 		return exitErr.ExitCode()
 	}
 	return 0
+}
+
+// Two pristine renders whose line merge still conflicts hold no human
+// content: the driver keeps this side's render, which stays verifiable, for
+// `forge generate` to re-render from the merged inputs.
+func TestMergeGeneratedPath_PristineConflictKeepsOurs(t *testing.T) {
+	render := func(body string) []byte {
+		stamped, ok := checksums.Stamp("internal/app/mounts_gen.go", []byte(body))
+		if !ok {
+			t.Fatal("stamp")
+		}
+		return stamped
+	}
+	base := render("package app\n\nvar m = []string{\n\t\"system\",\n}\n")
+	ours := render("package app\n\nvar m = []string{\n\t\"question\",\n\t\"system\",\n}\n")
+	theirs := render("package app\n\nvar m = []string{\n\t\"run\",\n\t\"system\",\n}\n")
+	if _, clean, _ := mergeGenerated(context.Background(), base, ours, theirs, 7); clean {
+		t.Fatal("precondition: adjacent insertions conflict as lines")
+	}
+	merged, clean, note, err := mergeGeneratedPath(context.Background(), "internal/app/mounts_gen.go", base, ours, theirs, 7)
+	if err != nil || !clean || string(merged) != string(ours) || note == "" {
+		t.Fatalf("want this side's render, clean, with a note; clean=%v note=%q err=%v\n%s", clean, note, err, merged)
+	}
+
+	// A hand-edited side keeps the conflict: nothing human is dropped.
+	edited := []byte(strings.Replace(string(theirs), "\"run\",", "\"run\", // mine", 1))
+	if _, clean, _, _ := mergeGeneratedPath(context.Background(), "internal/app/mounts_gen.go", base, ours, edited, 7); clean {
+		t.Error("a conflict against a hand-edited side must stay a conflict")
+	}
+}
+
+// Forge wires the driver into ANY clone of a forge project: one adopted in
+// place with no forge .gitattributes, or a project in a repository
+// subdirectory. The command names the binary by absolute path.
+func TestEnsureGeneratedMergeDriver_WiresAnyForgeClone(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	repo := t.TempDir()
+	if out, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	project := filepath.Join(repo, "svc")
+	writeTreeFileT(t, filepath.Join(project, "forge.yaml"), "name: svc\nmodule_path: example.com/svc\n")
+	prev := mergeDriverExecutable
+	mergeDriverExecutable = func() (string, error) { return "/opt/forge bin/forge", nil }
+	t.Cleanup(func() { mergeDriverExecutable = prev })
+	for _, env := range []string{"FORGE_NO_GIT_HOOKS", "FORGE_NO_HOOKS", "FORGE_NO_MERGE_DRIVER"} {
+		t.Setenv(env, "")
+	}
+
+	ensureGeneratedMergeDriver(project)
+	ensureGeneratedMergeDriver(project) // idempotent
+
+	got, err := exec.Command("git", "-C", repo, "config", "--get", "merge.forge-generated.driver").Output()
+	if err != nil {
+		t.Fatalf("driver not configured: %v", err)
+	}
+	cmd := strings.TrimSpace(string(got))
+	if !strings.HasPrefix(cmd, "'/opt/forge bin/forge'") || !strings.HasSuffix(cmd, "merge-generated %O %A %B %L %P") {
+		t.Errorf("driver command = %q, want the quoted absolute binary and %%P", cmd)
+	}
+	attrs, err := os.ReadFile(filepath.Join(repo, ".git", "info", "attributes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"svc/**/*_gen.json merge=forge-generated", "svc/.forge/hashes.json merge=forge-generated", "svc/.forge/scaffolded.json merge=forge-generated"} {
+		if !strings.Contains(string(attrs), want) {
+			t.Errorf("info/attributes lacks %q:\n%s", want, attrs)
+		}
+	}
+	if n := strings.Count(string(attrs), mergeAttributesBegin); n != 1 {
+		t.Errorf("the managed block must appear once, got %d:\n%s", n, attrs)
+	}
+	out, _ := exec.Command("git", "-C", repo, "check-attr", "merge", "--", "svc/deploy/observability/alert-defaults_gen.json", "other/x_gen.json").Output()
+	if !strings.Contains(string(out), "svc/deploy/observability/alert-defaults_gen.json: merge: forge-generated") || strings.Contains(string(out), "other/x_gen.json: merge: forge-generated") {
+		t.Errorf("routing must cover the project's files and only them:\n%s", out)
+	}
+
+}
+
+// FORGE_NO_MERGE_DRIVER skips the driver; FORGE_NO_GIT_HOOKS (and its old
+// spelling FORGE_NO_HOOKS) keeps forge out of the clone's git configuration
+// altogether, as a test suite running forge against a developer's checkout
+// needs. An ephemeral binary is never written, because it is gone by the
+// next merge.
+func TestEnsureGeneratedMergeDriver_OptOutsAndEphemeralBinaries(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	prev := mergeDriverExecutable
+	t.Cleanup(func() { mergeDriverExecutable = prev })
+	clone := func() string {
+		dir := t.TempDir()
+		if out, err := exec.Command("git", "init", "-q", dir).CombinedOutput(); err != nil {
+			t.Fatalf("git init: %v\n%s", err, out)
+		}
+		writeTreeFileT(t, filepath.Join(dir, "forge.yaml"), "name: o\nmodule_path: example.com/o\n")
+		return dir
+	}
+	configured := func(dir string) string {
+		out, _ := exec.Command("git", "-C", dir, "config", "--get", "merge.forge-generated.driver").Output()
+		return strings.TrimSpace(string(out))
+	}
+
+	mergeDriverExecutable = func() (string, error) { return "/opt/forge/bin/forge", nil }
+	for _, env := range []string{"FORGE_NO_MERGE_DRIVER", "FORGE_NO_GIT_HOOKS", "FORGE_NO_HOOKS"} {
+		t.Run(env, func(t *testing.T) {
+			for _, e := range []string{"FORGE_NO_MERGE_DRIVER", "FORGE_NO_GIT_HOOKS", "FORGE_NO_HOOKS"} {
+				t.Setenv(e, "")
+			}
+			t.Setenv(env, "1")
+			dir := clone()
+			ensureGeneratedMergeDriver(dir)
+			if got := configured(dir); got != "" {
+				t.Errorf("%s=1 must leave the driver unconfigured, got %q", env, got)
+			}
+		})
+	}
+
+	for _, e := range []string{"FORGE_NO_MERGE_DRIVER", "FORGE_NO_GIT_HOOKS", "FORGE_NO_HOOKS"} {
+		t.Setenv(e, "")
+	}
+	for _, exe := range []string{filepath.Join(os.TempDir(), "go-build123", "exe", "forge"), "/work/cli.test"} {
+		mergeDriverExecutable = func() (string, error) { return exe, nil }
+		dir := clone()
+		ensureGeneratedMergeDriver(dir)
+		if got := configured(dir); got != "" {
+			t.Errorf("an ephemeral binary %s must not become the driver, got %q", exe, got)
+		}
+		// The routes are still written: harmless without a command.
+		if attrs, _ := os.ReadFile(filepath.Join(dir, ".git", "info", "attributes")); !strings.Contains(string(attrs), mergeAttributesBegin) {
+			t.Errorf("the routes must be written even when the command is not:\n%s", attrs)
+		}
+	}
+
+	// A configured command that passes %P and whose binary exists is kept:
+	// another worktree's forge must not rewrite it on every command.
+	dir := clone()
+	kept := filepath.Join(t.TempDir(), "forge")
+	writeTreeFileT(t, kept, "#!/bin/sh\n")
+	want := "'" + kept + "' merge-generated %O %A %B %L %P"
+	if out, err := exec.Command("git", "-C", dir, "config", "merge.forge-generated.driver", want).CombinedOutput(); err != nil {
+		t.Fatalf("seed config: %v\n%s", err, out)
+	}
+	mergeDriverExecutable = func() (string, error) { return "/opt/forge/bin/forge", nil }
+	ensureGeneratedMergeDriver(dir)
+	if got := configured(dir); got != want {
+		t.Errorf("a usable driver command was rewritten: %q, want %q", got, want)
+	}
 }

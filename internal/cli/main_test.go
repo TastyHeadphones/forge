@@ -247,11 +247,16 @@ func useFakeCredentialHelper(t *testing.T, token string) {
 }
 
 func pluginInvocation(args []string) ([]string, bool) {
-	switch {
-	case len(args) >= 1 && args[0] == "protoc-gen-forge":
-		return args, true
-	case len(args) >= 2 && args[0] == "forge" && args[1] == "protoc-gen-forge":
-		return args[1:], true
+	// protoc-gen-forge is buf's plugin; merge-generated is git's merge
+	// driver (merge_generated_git_test.go configures the test binary as
+	// one, so a real `git merge` runs the production driver).
+	for _, sub := range []string{"protoc-gen-forge", "merge-generated"} {
+		switch {
+		case len(args) >= 1 && args[0] == sub:
+			return args, true
+		case len(args) >= 2 && args[0] == "forge" && args[1] == sub:
+			return args[1:], true
+		}
 	}
 	return nil, false
 }
