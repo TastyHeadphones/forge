@@ -1,7 +1,6 @@
 package migratekit
 
 import (
-	"context"
 	"errors"
 	"maps"
 	"slices"
@@ -53,7 +52,7 @@ func failedAtThird(t *testing.T) (string, error) {
 
 func appliedVersions(t *testing.T, dsn string) map[uint]string {
 	t.Helper()
-	got, err := readApplied(context.Background(), openRecordDB(t, dsn))
+	got, err := onSession(t, openRecordDB(t, dsn), readApplied)
 	if err != nil {
 		t.Fatal(err)
 	}

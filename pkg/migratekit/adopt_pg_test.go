@@ -2,7 +2,6 @@ package migratekit
 
 import (
 	"bytes"
-	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -90,7 +89,7 @@ func gooseRows(t *testing.T, db *sql.DB) int {
 
 func appliedRecord(t *testing.T, db *sql.DB) map[uint]string {
 	t.Helper()
-	rec, err := readApplied(context.Background(), db)
+	rec, err := onSession(t, db, readApplied)
 	if err != nil {
 		t.Fatal(err)
 	}

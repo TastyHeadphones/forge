@@ -35,30 +35,43 @@ import (
 // cannot deadlock; a binary from before this lock takes only the second.
 const runLockKey = 7250513029716893483
 
+// ONE SESSION DOES THE WHOLE RUN.
+//
+// Every statement migratekit issues during a run executes on the connection
+// that holds the run lock, never on a second one from the pool. At boot that
+// connection is borrowed from the server's own pool, and a desktop or
+// monolith build running embedded postgres may cap that pool at ONE: a run
+// that held the run lock and then asked the pool for another connection
+// waited forever for the one it was holding. The record helpers therefore
+// take a *sql.Conn, not a *sql.DB, so a pool cannot be handed to them.
+//
+// At boot golang-migrate's driver shares that session too, which adds one
+// rule: no migratekit transaction may be open across a call into
+// golang-migrate. Its SetVersion (behind Force, and every step of Up) opens a
+// transaction of its own on the same session, and postgres does not nest
+// them — the inner BEGIN is a warning, and golang-migrate's COMMIT commits
+// migratekit's work early and drops its transaction-scoped locks. Where a
+// record must stay locked across a golang-migrate write (adoption, Force),
+// the record's lock is held at SESSION level around both, with the record's
+// own transaction committed before golang-migrate runs (withSessionLock).
+
 // lockRun blocks until conn's session holds the run lock. The caller keeps
 // conn for the whole run and must unlockRun it.
 func lockRun(ctx context.Context, conn *sql.Conn) error {
-	if _, err := conn.ExecContext(ctx, fmt.Sprintf("SELECT pg_advisory_lock(%d)", int64(runLockKey))); err != nil {
+	if err := advisoryLock(ctx, conn, runLockKey); err != nil {
 		return fmt.Errorf("take the migration run lock: %w", err)
 	}
 	return nil
 }
 
 // unlockRun releases the run lock.
-//
-// A session lock belongs to the server SESSION, not to the *sql.Conn handle,
-// and closing the handle hands the session back to the pool still holding
-// it — every later run against the database would then wait forever. So a
-// connection whose unlock fails is discarded (driver.ErrBadConn) rather than
-// returned; closing the session is what releases the lock then.
 func unlockRun(ctx context.Context, conn *sql.Conn) {
-	if _, err := conn.ExecContext(ctx, fmt.Sprintf("SELECT pg_advisory_unlock(%d)", int64(runLockKey))); err != nil {
-		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
-	}
+	advisoryUnlock(ctx, conn, runLockKey)
 }
 
-// withRunLock runs fn holding the run lock on a connection of its own from db.
-func withRunLock(ctx context.Context, db *sql.DB, fn func() error) error {
+// withRunLock runs fn holding the run lock on a connection of its own from
+// db. fn does the run's work on that connection (see ONE SESSION above).
+func withRunLock(ctx context.Context, db *sql.DB, fn func(conn *sql.Conn) error) error {
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
@@ -68,5 +81,36 @@ func withRunLock(ctx context.Context, db *sql.DB, fn func() error) error {
 		return err
 	}
 	defer unlockRun(ctx, conn)
+	return fn(conn)
+}
+
+// withSessionLock runs fn while conn's session holds the advisory lock key:
+// a record's lock that must outlive the record's transaction, because a
+// golang-migrate write follows it (see ONE SESSION above). fn must finish
+// every transaction it opens before it returns — the unlock runs on the same
+// session, and a transaction left open would swallow it.
+func withSessionLock(ctx context.Context, conn *sql.Conn, key int64, fn func() error) error {
+	if err := advisoryLock(ctx, conn, key); err != nil {
+		return err
+	}
+	defer advisoryUnlock(ctx, conn, key)
 	return fn()
+}
+
+func advisoryLock(ctx context.Context, conn *sql.Conn, key int64) error {
+	_, err := conn.ExecContext(ctx, fmt.Sprintf("SELECT pg_advisory_lock(%d)", key))
+	return err
+}
+
+// advisoryUnlock releases a session advisory lock.
+//
+// A session lock belongs to the server SESSION, not to the *sql.Conn handle,
+// and closing the handle hands the session back to the pool still holding
+// it — every later run against the database would then wait forever. So a
+// connection whose unlock fails is discarded (driver.ErrBadConn) rather than
+// returned; closing the session is what releases the lock then.
+func advisoryUnlock(ctx context.Context, conn *sql.Conn, key int64) {
+	if _, err := conn.ExecContext(ctx, fmt.Sprintf("SELECT pg_advisory_unlock(%d)", key)); err != nil {
+		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+	}
 }

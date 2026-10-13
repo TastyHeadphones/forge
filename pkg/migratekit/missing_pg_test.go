@@ -1,7 +1,6 @@
 package migratekit
 
 import (
-	"context"
 	"errors"
 
 	"strings"
@@ -157,7 +156,7 @@ func TestBootstrapAdoptsAPreRecordDatabaseWithoutRefusing(t *testing.T) {
 		t.Errorf("up over a bootstrapped database = %+v; want no change", res)
 	}
 
-	records, err := readApplied(context.Background(), db)
+	records, err := onSession(t, db, readApplied)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +238,7 @@ func TestConcurrentMigratorsBootstrapSafely(t *testing.T) {
 	}
 
 	// The winner applied B exactly once and the record is consistent.
-	records, err := readApplied(context.Background(), db)
+	records, err := onSession(t, db, readApplied)
 	if err != nil {
 		t.Fatal(err)
 	}

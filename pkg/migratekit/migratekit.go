@@ -107,11 +107,12 @@ type Options struct {
 // Migrator is an open migration session. Always Close it.
 type Migrator struct {
 	m *migrate.Migrate
-	// db is a plain connection for the backward-compatibility record (see
-	// ahead.go). golang-migrate's driver owns its own connection and exposes
-	// no query surface, so the record needs one of its own. Nil on a
-	// Migrator built around a bare *migrate.Migrate (stateOf), which only
-	// ever reads the version.
+	// db is where a run takes its one session — the run lock and every
+	// record (applied.go, ahead.go, adopt.go) — see runlock.go.
+	// golang-migrate's driver owns its own connection and exposes no query
+	// surface, so the records need one of their own. Nil on a Migrator
+	// built around a bare *migrate.Migrate (stateOf), which only ever reads
+	// the version.
 	db *sql.DB
 	// source is what this binary embeds, parsed once at Open.
 	source sourceSet
@@ -154,7 +155,7 @@ func Open(opts Options) (*Migrator, error) {
 	// against the same database would otherwise race the CREATE. See
 	// runlock.go.
 	var m *migrate.Migrate
-	err = withRunLock(context.Background(), db, func() (err error) {
+	err = withRunLock(context.Background(), db, func(*sql.Conn) (err error) {
 		m, err = migrate.NewWithSourceInstance("iofs", source, NormalizeDSN(opts.DSN))
 		return err
 	})
@@ -317,50 +318,50 @@ type Result struct {
 // *AdoptionError and nothing runs. See adopt.go.
 //
 // The whole run holds migratekit's run lock, shared with AutoMigrate, so
-// replicas racing a release through either entry point take turns. See
-// runlock.go.
+// replicas racing a release through either entry point take turns, and does
+// all of its own work on the one connection that holds it. See runlock.go.
 func (mg *Migrator) Up() (res Result, err error) {
-	err = withRunLock(context.Background(), mg.db, func() error {
-		res, err = mg.up()
+	ctx := context.Background()
+	err = withRunLock(ctx, mg.db, func(conn *sql.Conn) error {
+		res, err = mg.up(ctx, conn)
 		return err
 	})
 	return res, err
 }
 
-// up is Up's body, run under the run lock.
-func (mg *Migrator) up() (Result, error) {
-	ctx := context.Background()
+// up is Up's body, run on conn, which holds the run lock.
+func (mg *Migrator) up(ctx context.Context, conn *sql.Conn) (Result, error) {
 	before, err := mg.State()
 	if err != nil {
 		return Result{}, err
 	}
-	before, adopted, err := adopt(ctx, mg.db, mg.m, mg.source, before)
+	before, adopted, err := adopt(ctx, conn, mg.m, mg.source, before)
 	if err != nil {
 		return Result{}, err
 	}
 	// Settled: a schema left dirty is checked as of the last version that
 	// finished, so it reaches golang-migrate's dirty refusal instead of
 	// reporting the half-applied version as missing.
-	if err := checkApplied(ctx, mg.db, mg.source, before.settled()); err != nil {
+	if err := checkApplied(ctx, conn, mg.source, before.settled()); err != nil {
 		return Result{}, err
 	}
-	if ahead, err := classifyAhead(ctx, mg.db, mg.source, before); err != nil || ahead != nil {
+	if ahead, err := classifyAhead(ctx, conn, mg.source, before); err != nil || ahead != nil {
 		if err != nil {
 			return Result{}, err
 		}
 		return Result{Before: before, After: before, Ahead: ahead}, nil
 	}
-	if err := recordCompat(ctx, mg.db, mg.source); err != nil {
+	if err := recordCompat(ctx, conn, mg.source); err != nil {
 		return Result{}, err
 	}
 	res, err := mg.apply(mg.m.Up)
 	if err != nil {
-		if recErr := recordFailedRun(ctx, mg.db, mg.m, mg.source, before); recErr != nil {
+		if recErr := recordFailedRun(ctx, conn, mg.m, mg.source, before); recErr != nil {
 			return Result{}, errors.Join(err, recErr)
 		}
 		return Result{}, err
 	}
-	if err := recordApplied(ctx, mg.db, mg.source, res.Before, res.After); err != nil {
+	if err := recordApplied(ctx, conn, mg.source, res.Before, res.After); err != nil {
 		return Result{}, err
 	}
 	res.Adopted = adopted
@@ -384,12 +385,20 @@ func (mg *Migrator) up() (Result, error) {
 // passed and never recorded, and reported it MISSING.
 //
 // It runs under the run lock, so it never interleaves with a replica's Up or a
-// server's AutoMigrate. The version is written while the record's transaction
-// still holds appliedLockKey, as adopt does, so no reader sees the two
+// server's AutoMigrate. The record and the version are both written while the
+// session holds appliedLockKey, as adopt does, so no reader sees the two
 // disagree.
+//
+// The record is committed FIRST, then the version. A crash between the two
+// leaves the record ahead of a version that is still the old one, and running
+// the same Force again finishes the job: forceApplied is idempotent. The
+// reverse order left the forced version with no record, which Up refuses as
+// MISSING, and re-running the Force did not repair it: the version it starts
+// from already claims the forced one, so it records nothing new.
 func (mg *Migrator) Force(version int) error {
-	err := withRunLock(context.Background(), mg.db, func() error {
-		return mg.force(version)
+	ctx := context.Background()
+	err := withRunLock(ctx, mg.db, func(conn *sql.Conn) error {
+		return mg.force(ctx, conn, version)
 	})
 	if err != nil {
 		return fmt.Errorf("force migration version %d: %w", version, err)
@@ -397,28 +406,26 @@ func (mg *Migrator) Force(version int) error {
 	return nil
 }
 
-// force is Force's body, run under the run lock.
-func (mg *Migrator) force(version int) error {
-	ctx := context.Background()
-	before, err := mg.State()
-	if err != nil {
-		return err
-	}
-	tx, err := mg.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf("SELECT pg_advisory_xact_lock(%d)", int64(appliedLockKey))); err != nil {
-		return err
-	}
-	if err := forceApplied(ctx, tx, mg.source, before, version); err != nil {
-		return err
-	}
-	if err := mg.m.Force(version); err != nil {
-		return err
-	}
-	return tx.Commit()
+// force is Force's body, run on conn, which holds the run lock.
+func (mg *Migrator) force(ctx context.Context, conn *sql.Conn, version int) error {
+	return withSessionLock(ctx, conn, appliedLockKey, func() error {
+		before, err := mg.State()
+		if err != nil {
+			return err
+		}
+		tx, err := conn.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		if err := forceApplied(ctx, tx, mg.source, before, version); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		return mg.m.Force(version)
+	})
 }
 
 // apply is the ceremony behind Up: read state, run, fold

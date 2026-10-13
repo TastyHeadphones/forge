@@ -135,11 +135,11 @@ func (s sourceSet) latest() uint {
 // When it is ahead, the verdict comes from compatTable: every recorded version
 // the binary does not know, up to the schema's version, must be declared
 // compatible, and the schema's own version must be recorded at all.
-func classifyAhead(ctx context.Context, db *sql.DB, source sourceSet, state State) (*Ahead, error) {
+func classifyAhead(ctx context.Context, conn *sql.Conn, source sourceSet, state State) (*Ahead, error) {
 	if !state.Applied || state.Dirty || source.has(state.Version) {
 		return nil, nil
 	}
-	records, err := readCompat(ctx, db)
+	records, err := readCompat(ctx, conn)
 	if err != nil {
 		return nil, err
 	}
@@ -170,16 +170,16 @@ func classifyAhead(ctx context.Context, db *sql.DB, source sourceSet, state Stat
 // readCompat returns version → declared-compatible from compatTable. An absent
 // table is an empty record, not an error: every database migrated before this
 // record existed has none.
-func readCompat(ctx context.Context, db *sql.DB) (map[uint]bool, error) {
+func readCompat(ctx context.Context, conn *sql.Conn) (map[uint]bool, error) {
 	var exists bool
-	if err := db.QueryRowContext(ctx, "SELECT to_regclass('"+compatTable+"') IS NOT NULL").Scan(&exists); err != nil {
+	if err := conn.QueryRowContext(ctx, "SELECT to_regclass('"+compatTable+"') IS NOT NULL").Scan(&exists); err != nil {
 		return nil, fmt.Errorf("read migration compatibility record: %w", err)
 	}
 	out := map[uint]bool{}
 	if !exists {
 		return out, nil
 	}
-	rows, err := db.QueryContext(ctx, "SELECT version, backward_compatible FROM "+compatTable)
+	rows, err := conn.QueryContext(ctx, "SELECT version, backward_compatible FROM "+compatTable)
 	if err != nil {
 		return nil, fmt.Errorf("read migration compatibility record: %w", err)
 	}
@@ -210,7 +210,7 @@ func readCompat(ctx context.Context, db *sql.DB) (map[uint]bool, error) {
 // The statement is built from LITERALS — numbers this package parsed from
 // filenames, and true/false — so it needs no array binding and runs the same
 // under every database/sql postgres driver.
-func recordCompat(ctx context.Context, db *sql.DB, source sourceSet) error {
+func recordCompat(ctx context.Context, conn *sql.Conn, source sourceSet) error {
 	if len(source) == 0 {
 		return nil
 	}
@@ -218,7 +218,7 @@ func recordCompat(ctx context.Context, db *sql.DB, source sourceSet) error {
 	for i, m := range source {
 		values[i] = fmt.Sprintf("(%d, %t)", m.Version, m.BackwardCompatible)
 	}
-	tx, err := db.BeginTx(ctx, nil)
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("record migration compatibility: %w", err)
 	}
