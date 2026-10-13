@@ -2,41 +2,46 @@ package testkit
 
 import "fmt"
 
-// StubNotConfigured is what a forge-synthesized test stub returns from a
-// method whose ONLY result is `error`.
+// StubNotConfigured is what a forge-synthesized test stub returns, as its
+// error result, from a method the test never programmed.
 //
-// # Why these methods, and only these
+// # The stubs
 //
 // The generated test harness auto-stubs every required interface-typed
 // Deps field so NewTest<Service>(t) constructs without the test wiring
-// each collaborator by hand. Each stub method returns its results' zero
-// values — which is right for a method that returns a VALUE: the zero of
-// []string is "no rows", of *Doc is "not found", and a caller can inspect
-// it and act.
+// each collaborator by hand. Each stub is a programmable double: a
+// <Method>Func field per method, plus an embedded contractkit.Recorder.
+// A test that drives a handler through the dependency sets the Func
+// fields for the methods it reaches.
 //
-// A method returning only `error` has no such value. Its zero is nil, and
-// nil from an error-only method is not an empty answer — it is an
-// affirmative claim that the operation SUCCEEDED, which a stub that did
-// nothing has not earned. Where that method is a policy check, nil means
-// PERMITTED, so a test that never overrode the field ran with the check
-// disabled and asserted against nothing.
+// # Why an unprogrammed method refuses instead of answering nil
 //
-// That is not hypothetical. A dogfood run wrote a test asserting that a
-// caller without the required role could not obtain an upload URL. It
-// failed: the handler returned the URL, because the auto-stub had
-// authorized the call. The application's own authorization code was
-// correct and the harness had switched it off, silently, with no output
-// anywhere saying so.
+// Any method whose last result is `error` returns this error (with zero
+// values beside it) until its Func is set. A nil error is not an empty
+// answer, it is an affirmative claim that the call SUCCEEDED, and a stub
+// that did nothing has not earned it:
+//
+//   - From a lookup, (nil, nil) means "found" — Go's convention is that a
+//     nil error makes the value valid — so `chat, err := repo.GetChat(..)`
+//     followed by `chat.UserID` dereferences nil. Worse, a handler's
+//     not-found and failure branches became unreachable through the stub,
+//     because it could only ever say "found". Every reliant P3b lane
+//     hand-wrote a fake to get past it.
+//   - From a policy check, nil means PERMITTED. A dogfood run wrote a test
+//     asserting a caller without the required role could not obtain an
+//     upload URL; it failed, because the stub had authorized the call. The
+//     application's own authorization code was correct and the harness had
+//     switched it off, silently.
+//
+// A method with no error result has no channel to refuse on and returns
+// its zero values.
 //
 // # The same default forge already makes for mocks
 //
 // contractkit.MockNotSet is this error's twin: a forge-generated
 // MockService returns it when a method is invoked whose Func field the
-// test never assigned. Both say the same thing — "this double was never
-// configured for this call" — and both turn a silent wrong answer into a
-// loud, named failure. The two generated doubles projected from one
-// contract previously disagreed about which way to fail; they no longer
-// do.
+// test never assigned. Both lead with the same "<Double>.<Method>Func not
+// set" fingerprint, so an assertion on that text holds for either double.
 //
 // The pair is deliberately NOT one function. contractkit is imported by
 // generated production-adjacent mock code; testkit is the test-harness
@@ -44,19 +49,22 @@ import "fmt"
 //
 // # What a test does about it
 //
-// Override the field. The harness generates a With<Service>Deps option
-// for exactly this:
+// Program the method, or supply a real implementation, through the
+// harness's With<Service>Deps option:
 //
-//	svc := documents.NewTestDocuments(t,
-//	    documents.WithDocumentsDeps(func(d *documents.Deps) {
-//	        d.Policy = &policy.MockService{RequireRoleFunc: allowEditor}
-//	    }))
+//	repo := &questions.StubRepo{
+//	    GetChatFunc: func(context.Context, string) (*db.Chat, error) {
+//	        return nil, db.ErrNotFound
+//	    },
+//	}
+//	svc := questions.NewTestQuestions(t, questions.WithQuestionsDeps(questions.Deps{Repo: repo}))
 //
 // The error names the stub type and the method, so a test that trips it
 // is told precisely which collaborator to configure.
 func StubNotConfigured(stubType, method string) error {
-	return fmt.Errorf("%s.%s: forge test stub not configured — this stub returns only error, "+
-		"so returning nil would claim a success it never performed (for a policy check, nil means ALLOW). "+
-		"Supply a real implementation for this dependency via the generated With<Service>Deps option",
-		stubType, method)
+	return fmt.Errorf("%s.%sFunc not set: forge test stub not configured — an unprogrammed stub never "+
+		"answers nil, because a nil error claims the call succeeded (for a lookup, \"found\"; for a "+
+		"policy check, ALLOW). Set %sFunc on the stub, or supply a real implementation for this "+
+		"dependency via the generated With<Service>Deps option",
+		stubType, method, method)
 }

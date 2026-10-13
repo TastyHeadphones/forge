@@ -60,6 +60,9 @@ import (
 {{- if .NeedsULID}}
 	"github.com/oklog/ulid/v2"
 {{- end}}
+{{- if .AutoStubs}}
+	"github.com/reliant-labs/forge/pkg/contractkit"
+{{- end}}
 {{- if .HasDB}}
 	"github.com/reliant-labs/forge/pkg/orm"
 {{- end}}
@@ -206,10 +209,11 @@ func newTest{{.FieldName}}Deps(cfg *testConfig) Deps {
 {{- range .AutoStubs}}
 	// Auto-stub {{.FieldName}} ({{.InterfaceQualified}}). Synthesized so
 	// validateDeps accepts NewTest{{$parent.FieldName}} construction without
-	// hand-rolled stubs in the project. Override via With{{$parent.FieldName}}Deps
-	// when a test cares about real behavior on this surface.
+	// hand-rolled stubs in the project. A test that reaches this dependency
+	// programs the methods it calls — With{{$parent.FieldName}}Deps(Deps{ {{- .FieldName}}: &{{.StubType}}{...}}) —
+	// or supplies a real implementation; an unprogrammed one fails loudly.
 	if deps.{{.FieldName}} == nil {
-		deps.{{.FieldName}} = {{.StubType}}{}
+		deps.{{.FieldName}} = &{{.StubType}}{}
 	}
 {{- end}}
 {{- range .UnresolvedStubs}}
@@ -239,23 +243,29 @@ func newTest{{.FieldName}}Deps(cfg *testConfig) Deps {
 {{- $svc := . }}
 {{- range .AutoStubs}}
 
-// {{.StubType}} satisfies {{.InterfaceQualified}} so NewTest{{$svc.FieldName}} can
-// construct the service even when the field is required by validateDeps.
-// Supply a real implementation via With{{$svc.FieldName}}Deps(...) when a test
-// exercises this collaborator.
+// {{.StubType}} stands in for {{.InterfaceQualified}} (Deps.{{.FieldName}}) so
+// NewTest{{$svc.FieldName}} can construct the service even when the field is
+// required by validateDeps. It is the same shape as a forge contract mock:
+// program a method by setting its <Method>Func field, and assert calls through
+// the embedded contractkit.Recorder.
 //
-// Methods returning a VALUE return that value's zero — an empty slice, a
-// nil pointer, "" — which a caller can inspect and act on.
+//	stub := &{{.StubType}}{ /* <Method>Func: func(...) (...) { ... } */ }
+//	svc := NewTest{{$svc.FieldName}}(t, With{{$svc.FieldName}}Deps(Deps{ {{- .FieldName}}: stub}))
+//	// ...
+//	stub.CallCount("<Method>")
 //
-// Methods returning ONLY error FAIL CLOSED: they return
-// testkit.StubNotConfigured rather than nil. nil from an error-only method
-// is not an empty answer, it is a claim that the operation SUCCEEDED — and
-// for a policy check, nil means ALLOW. A stub that returned it would
-// silently disable the check in every test that did not override this
-// field, so a denial assertion would pass while asserting nothing. Calling
-// one of these methods without configuring the dependency is a test
-// failure naming the method.
-type {{.StubType}} struct{}
+// An UNPROGRAMMED method that returns an error returns
+// testkit.StubNotConfigured, naming this stub and the method, with zero values
+// beside it. It never answers nil: a nil error claims the call succeeded,
+// which for a lookup means "found" (and the handler dereferences the nil it
+// got) and for a policy check means ALLOW. A method with no error result
+// returns its zero values.
+type {{.StubType}} struct {
+	contractkit.Recorder
+{{- range .Methods}}
+	{{.Name}}Func {{.FuncType}}
+{{- end}}
+}
 {{- if .CrossPackage}}
 
 // Compile-time guard: the stub really satisfies the cross-package interface
@@ -265,11 +275,23 @@ type {{.StubType}} struct{}
 // so without this assertion an interface declared in a package imported solely
 // for this stub would be an unused import (build failure). Emitted only for
 // cross-package stubs; a local stub's package is this one.
-var _ {{.InterfaceQualified}} = {{.StubType}}{}
+var _ {{.InterfaceQualified}} = (*{{.StubType}})(nil)
 {{- end}}
 {{- $stub := .StubType }}
 {{range .Methods}}
-func ({{$stub}}) {{.Name}}({{.Params}}){{if .Results}} {{.Results}}{{end}} { {{if .ReturnStatement}}{{.ReturnStatement}} {{end}}}
+
+func ({{.Receiver}} *{{$stub}}) {{.Name}}({{.NamedParams}}){{if .Results}} {{.Results}}{{end}} {
+	{{.Receiver}}.Recorder.Record("{{.Name}}"{{with .RecordArgs}}, {{.}}{{end}})
+	if {{.Receiver}}.{{.Name}}Func != nil {
+		{{if .Results}}return {{end}}{{.Receiver}}.{{.Name}}Func({{.CallArgs}})
+{{- if not .Results}}
+		return
+{{- end}}
+	}
+{{- if .ReturnStatement}}
+	{{.ReturnStatement}}
+{{- end}}
+}
 {{- end}}
 {{- end}}
 

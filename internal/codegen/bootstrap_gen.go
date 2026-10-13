@@ -596,18 +596,22 @@ type DepsFuncDefault struct {
 }
 
 // DepsAutoStub describes one synthesized interface implementation
-// emitted into the generated pkg/app/testing.go for a service-owned
-// Deps field. The stub satisfies the field's interface with zero-value
-// returns; it exists so NewTest<Svc>(t) can construct the Service even
-// when the field is required by validateDeps. Tests that exercise real
-// behavior continue to override via With<Svc>Deps(...).
+// emitted into a service's generated helpers_gen_test.go for a
+// service-owned Deps field. It exists so NewTest<Svc>(t) can construct
+// the Service even when the field is required by validateDeps, and it is
+// a programmable double shaped like a contract mock: a <Method>Func field
+// per method, an embedded contractkit.Recorder, and a loud
+// testkit.StubNotConfigured error from every error-returning method the
+// test did not program (see programStubMethods).
 type DepsAutoStub struct {
 	// FieldName is the Deps field name as declared (e.g. "Repo").
 	FieldName string
-	// StubType is the unqualified Go identifier the template should use
-	// for the synthesized stub struct (e.g. "stubApiRepo"). Generated
-	// from the service alias + field name so two services with the same
-	// Deps-field name don't collide at the package level.
+	// StubType is the exported Go identifier of the synthesized stub
+	// struct: "Stub" + the Deps field name (StubRepo). It is exported so
+	// the external <pkg>_test package — where the scaffolded tests live —
+	// can construct one with its Func fields set. Field names are unique
+	// within one Deps, and each helper file is its own component's, so no
+	// package prefix is needed to keep stubs apart.
 	StubType string
 	// InterfaceQualified is the package-qualified type expression used
 	// when injecting the stub into Deps in NewTest<Svc>.
@@ -1360,9 +1364,15 @@ func rewriteStubAlias(stub *DepsAutoStub, oldAlias, newAlias string) {
 	repl := newAlias + "."
 	stub.InterfaceQualified = strings.ReplaceAll(stub.InterfaceQualified, old, repl)
 	for m := range stub.Methods {
-		stub.Methods[m].Params = strings.ReplaceAll(stub.Methods[m].Params, old, repl)
-		stub.Methods[m].Results = strings.ReplaceAll(stub.Methods[m].Results, old, repl)
-		stub.Methods[m].ReturnStatement = strings.ReplaceAll(stub.Methods[m].ReturnStatement, old, repl)
+		meth := &stub.Methods[m]
+		for _, s := range []*string{&meth.Params, &meth.Results, &meth.ReturnStatement, &meth.NamedParams, &meth.FuncType} {
+			*s = strings.ReplaceAll(*s, old, repl)
+		}
+		for _, list := range [][]string{meth.ParamTypes, meth.ResultTypes, meth.ResultZeros} {
+			for i := range list {
+				list[i] = strings.ReplaceAll(list[i], old, repl)
+			}
+		}
 	}
 }
 
@@ -1565,81 +1575,113 @@ func computeAutoStubs(handlerDir, _ string) ([]DepsAutoStub, []UnresolvedAutoStu
 			})
 		}
 	}
-	// Make stub-type names predictable + collision-free across the
-	// file: stub<UpperPackage><FieldName>. handlerDir's last segment
-	// IS the service Go-package name (naming.ServicePackage), so use it
-	// directly. The CrossPackage flag does not affect the stub-type
-	// identifier — it lives in pkg/app, not in the imported package,
-	// so the service-name prefix still gives us per-service uniqueness.
-	pkg := filepath.Base(handlerDir)
+	// Stub<FieldName>: see DepsAutoStub.StubType. The CrossPackage flag
+	// does not affect the identifier — the stub lives in the handler's
+	// own helper file, never in the interface's package.
 	for i := range stubs {
-		stubs[i].StubType = "stub" + upperFirst(pkg) + stubs[i].FieldName
-		failClosedErrorOnlyMethods(&stubs[i])
+		stubs[i].StubType = "Stub" + stubs[i].FieldName
+		programStubMethods(&stubs[i])
 	}
 	return stubs, unresolved
 }
 
-// errorOnlyResult is the result signature this rule applies to: a method
-// whose entire return is one bare `error`. Matched on the rendered result
-// text, which is what both resolvers produce ("error" for the single-result
-// case, a parenthesized list otherwise) — so the two branches need no
-// separate handling.
-const errorOnlyResult = "error"
-
-// failClosedErrorOnlyMethods rewrites a stub's error-only methods to
-// return testkit.StubNotConfigured instead of nil.
+// programStubMethods renders each of a stub's methods as a programmable
+// double: it records the call, delegates to the test's <Method>Func when
+// one is set, and otherwise returns what an unconfigured double honestly
+// can.
 //
-// # The defect
+// # Every error-returning method refuses when unprogrammed
 //
-// Every other stub method returns its results' zero values, which is
-// correct: the zero of a VALUE result is a legible "nothing" the caller
-// can inspect. A method returning only `error` has no value, so its zero
-// — nil — is not an empty answer but an affirmative success the stub
-// never performed. Where that method is a gate the application consults
-// before acting, nil means PERMITTED: a handler test that did not
-// override the Deps field ran with the gate disabled, and its denial
-// assertions passed vacuously.
+// A method whose last result is `error` returns its other results' zero
+// values plus testkit.StubNotConfigured — the same default forge's
+// contract mocks make with contractkit.MockNotSet, one generator over.
 //
-// # Why the rule is structural, not name-based
+// It used to apply only to methods returning nothing BUT error, on the
+// theory that (T, error) has a legible zero: nil, nil as "nothing found".
+// Handlers do not read it that way. Go's convention is that a nil error
+// means the lookup SUCCEEDED, so `chat, err := repo.GetChat(...)` followed
+// by `chat.UserID` dereferences nil — and a test could not reach a
+// handler's not-found or failure branch through the stub at all, because
+// the stub could only ever answer "found, and it is nil". Every P3b lane in
+// reliant hand-wrote a fake to get past it. An error-only method had the
+// same flaw in its strongest form (nil from a policy check means ALLOW);
+// the rule is now the general one, and stated on the signature rather
+// than on names: a stub that did not do the work cannot claim it did.
 //
-// The tempting alternative is to detect gate-SHAPED methods by name and
-// fail closed only there. It is worse in both directions. It fails open
-// for every such seam spelled some other way (Check, Ensure, Assert,
-// Verify, Gate, Allow), which is most of them, and the failure is
-// silent — the property that made this dangerous. And it teaches that a
-// naming convention is load-bearing, so a rename quietly removes a
-// safety default.
+// Methods with no error result return their zero values, as contract mocks
+// do; there is no channel to refuse on.
 //
-// The result signature is the honest signal: a stub that returns only
-// `error` cannot report anything EXCEPT success or failure, and it did
-// not do the work. That is as true of Close() and Flush() as of any
-// permission check, and the answer is the same for all of them. This
-// generator stubs every interface on a handler's Deps, so the rule has
-// to hold for all of them or it is not a rule.
+// # Programmable
 //
-// # Blast radius, and why this is the right scope
+// Construction never calls a method, so NewTest<Svc>(t) still builds with
+// no overrides. A test that drives a handler through a dependency programs
+// exactly the methods it needs, and an unprogrammed one names itself:
 //
-// These stubs exist so a handler test can construct Deps without wiring
-// every collaborator. That purpose is preserved exactly: construction
-// never calls a method, so NewTest<Service> still builds with no
-// overrides. Only a test that CALLS an unconfigured error-only method
-// changes behavior — and it changes from silently succeeding to failing
-// with a message naming the stub and method.
+//	repo := &StubRepo{GetChatFunc: func(context.Context, string) (*db.Chat, error) {
+//	    return nil, db.ErrNotFound
+//	}}
+//	svc := NewTestQuestion(t, WithQuestionDeps(Deps{Repo: repo}))
 //
-// The scope is deliberately not wider. Failing closed on every method
-// (including (T, error) ones) would break legitimate tests that read
-// through a collaborator to set up, and it would be wrong on the merits:
-// those methods have a real zero-value answer. Narrower — policy names
-// only — would leave the seam failing open wherever the name did not
-// match, which is not worth shipping.
-func failClosedErrorOnlyMethods(stub *DepsAutoStub) {
-	for i, m := range stub.Methods {
-		if strings.TrimSpace(m.Results) != errorOnlyResult {
-			continue
-		}
-		stub.Methods[i].ReturnStatement = fmt.Sprintf(
-			"return testkit.StubNotConfigured(%q, %q)", stub.StubType, m.Name)
+// The embedded contractkit.Recorder lets the same test assert what was
+// called (repo.CallCount("ResolveQuestion")).
+func programStubMethods(stub *DepsAutoStub) {
+	for i := range stub.Methods {
+		programStubMethod(stub.StubType, &stub.Methods[i])
 	}
+}
+
+// programStubMethod fills one method's programmable rendering. The
+// receiver and parameter names must not shadow anything the body spells:
+// the result types' package qualifiers (in `*new(pkg.T)` zeroes),
+// testkit, and new.
+func programStubMethod(stubType string, m *InterfaceMethod) {
+	taken := map[string]bool{"testkit": true, "new": true, "nil": true}
+	for _, z := range m.ResultZeros {
+		for q := range qualifiersIn(z) {
+			taken[q] = true
+		}
+	}
+	for _, r := range m.ResultTypes {
+		for q := range qualifiersIn(r) {
+			taken[q] = true
+		}
+	}
+	m.Receiver = freeIdent("s", taken)
+	taken[m.Receiver] = true
+
+	var named, call, record []string
+	for i, t := range m.ParamTypes {
+		name := freeIdent(fmt.Sprintf("a%d", i), taken)
+		named = append(named, name+" "+t)
+		record = append(record, name)
+		if strings.HasPrefix(t, "...") {
+			call = append(call, name+"...")
+		} else {
+			call = append(call, name)
+		}
+	}
+	m.NamedParams = strings.Join(named, ", ")
+	m.CallArgs = strings.Join(call, ", ")
+	m.RecordArgs = strings.Join(record, ", ")
+	m.FuncType = "func(" + m.Params + ")"
+	if m.Results != "" {
+		m.FuncType += " " + m.Results
+	}
+
+	if n := len(m.ResultTypes); n > 0 && strings.TrimSpace(m.ResultTypes[n-1]) == "error" {
+		zeros := append([]string(nil), m.ResultZeros...)
+		zeros[n-1] = fmt.Sprintf("testkit.StubNotConfigured(%q, %q)", stubType, m.Name)
+		m.ReturnStatement = "return " + strings.Join(zeros, ", ")
+	}
+}
+
+// freeIdent returns base, or base with trailing underscores until it is
+// not in taken.
+func freeIdent(base string, taken map[string]bool) string {
+	for taken[base] {
+		base += "_"
+	}
+	return base
 }
 
 // computeFuncDefaults walks a service's Deps and classifies each REQUIRED
