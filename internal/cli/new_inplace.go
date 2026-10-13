@@ -400,6 +400,29 @@ func summarizePaths(paths []string) string {
 		strings.Join(paths[:maxSummaryPaths], ", "), len(paths)-maxSummaryPaths, len(paths))
 }
 
+// dirHoldsProject reports whether an in-place target already holds something
+// besides its .git directory — that is, whether `--in-place` is adopting an
+// existing project rather than scaffolding a new one into an empty checkout.
+//
+// It deliberately does not ask WHAT the content is. The decision it feeds
+// (the typed-config guardrail's starting strictness) is cheap to get wrong
+// in one direction and costly in the other: a near-empty checkout read as an
+// adoption starts advisory and is one edit from gating, while an adopted
+// project read as greenfield fails its first `forge lint` on every env read
+// it already has.
+func dirHoldsProject(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.Name() != ".git" {
+			return true
+		}
+	}
+	return false
+}
+
 // gitWorkTreeRoot reports whether dir is inside an existing git work tree —
 // the repository root or any subdirectory of it — and returns that tree's
 // top level. A missing git binary, or a dir outside any repository, reports

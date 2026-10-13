@@ -280,6 +280,13 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 	if genInRootModule {
 		fmt.Println("gen/ already holds Go packages of this module (no gen/go.mod): forge keeps it in the root module — no gen/go.mod, and go.work uses only the root.")
 	}
+	// An in-place target that already holds a project is adopted, not
+	// created: its existing env reads make the typed-config guardrail start
+	// advisory (generator.ProjectGenerator.Adopting).
+	adopting := inPlace && dirHoldsProject(targetPath)
+	if adopting {
+		fmt.Println("Adopting an existing project: forge.yaml starts the typed-config guardrail advisory (config.enforce_typed_access: warn), so `forge lint` reports the env reads already here instead of failing on them. Set it to error once they all read the typed config.")
+	}
 	modulePath, defaulted := defaultModulePath(modulePath, projectName)
 	if defaulted {
 		fmt.Printf("Go module path: %s (no --mod given; pass --mod github.com/<you>/%s to set the path you will publish under)\n", modulePath, projectName)
@@ -375,6 +382,7 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 			disableFeatures:    disableFeatures,
 			forgePin:           forgePin,
 			genInRootModule:    genInRootModule,
+			adopting:           adopting,
 		},
 		bufPlugins: bufPluginsNormalized,
 		inPlace:    inPlace,
@@ -595,6 +603,9 @@ type newGeneratorConfig struct {
 	// genInRootModule reports an in-place target whose root module already
 	// owns gen/ (rootModuleOwnsGen; generator.ProjectGenerator.GenInRootModule).
 	genInRootModule bool
+	// adopting reports an in-place target that already holds a project
+	// (dirHoldsProject; generator.ProjectGenerator.Adopting).
+	adopting bool
 }
 
 // configureProjectGenerator builds and configures the project generator from
@@ -620,6 +631,7 @@ func configureProjectGenerator(c newGeneratorConfig) (*generator.ProjectGenerato
 	gen.GoVersionOverride = c.goVersion
 	gen.ForgePin = c.forgePin
 	gen.GenInRootModule = c.genInRootModule
+	gen.Adopting = c.adopting
 	if len(c.frontendNames) > 0 {
 		gen.FrontendName = c.frontendNames[0]
 	}

@@ -42,14 +42,15 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		// skills emitter tell "chose the default" apart from "predates the
 		// field" (see ProjectConfig.Harness).
 		Harness: string(g.Harness.Normalized()),
-		// Greenfield projects have no legacy env-reading debt, so scaffold
-		// the typed-access guardrail in its strict, gating form. NOTE: this
-		// is DIFFERENT from the schema default for an ABSENT key, which is
-		// "warn" (so existing projects upgrade without a flag-day). The
-		// explicit "error" survives NormalizeForWrite (it is not a section
-		// default) and renders the `config:` block into forge.yaml.
+		// The typed-access guardrail is written explicitly either way:
+		// "error" for greenfield, "warn" for a project adopted in place,
+		// whose existing env reads would otherwise fail the first lint
+		// (scaffoldTypedAccess). An explicit value survives
+		// NormalizeForWrite (it is not a section default), so the `config:`
+		// block always renders and records the choice where the user flips
+		// it.
 		Config: config.ConfigGuardConfig{
-			EnforceTypedAccess: config.EnforceTypedAccessError,
+			EnforceTypedAccess: g.scaffoldTypedAccess(),
 		},
 	}
 
