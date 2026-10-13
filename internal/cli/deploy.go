@@ -4189,6 +4189,10 @@ func runDeployPreflight(ctx context.Context, in deployPreflightInput) error {
 		opts.Context = in.deployCtx
 		opts.Secrets = cluster.KubectlSecretGetter{}
 		opts.ConfigMaps = cluster.KubectlConfigMapGetter{}
+		// Each referenced Secret / ConfigMap is checked on the cluster its
+		// referencing object is applied to, by the deploy's own router. Nil
+		// for a single-cluster env, where everything lands on deployCtx.
+		opts.DocumentContexts = preflightDocumentContexts(in.groups, in.entities)
 		// CRD / served-kind gate: verify the cluster serves every NON-CORE kind
 		// the bundle renders (e.g. GRPCRoute needs the Gateway API channel)
 		// BEFORE the apply. Without it a missing CRD fails `no matches for kind`

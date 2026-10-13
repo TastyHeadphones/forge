@@ -1151,7 +1151,7 @@ func (r *deployReport) rolloutObserver() func(cluster.RolloutObservation) {
 // pulls is the text in the manifest, so classifying that text is the only way
 // the pinning report cannot drift from what actually ships.
 func imagesFromManifests(manifests string) []string {
-	refs := cluster.CollectManifestRefs(manifests)
+	refs := cluster.CollectManifestRefs(manifests, cluster.RefPlacement{})
 	out := make([]string, 0, len(refs.Images))
 	for ref := range refs.Images {
 		out = append(out, ref)

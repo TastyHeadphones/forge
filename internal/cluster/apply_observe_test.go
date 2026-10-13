@@ -77,7 +77,7 @@ func TestCollectManifestGVKs_YieldsTheResourceIdentitiesAReportNeeds(t *testing.
 // the pinning report: the references as the manifest carries them, which is what
 // the kubelet will actually pull.
 func TestCollectManifestRefs_YieldsTheImageReferencesAsRendered(t *testing.T) {
-	refs := CollectManifestRefs(applyObserveManifests)
+	refs := CollectManifestRefs(applyObserveManifests, RefPlacement{})
 	if len(refs.Images) != 2 {
 		t.Fatalf("want 2 distinct images, got %d: %v", len(refs.Images), refs.Images)
 	}

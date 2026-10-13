@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The deploy preflight checks a referenced Secret or ConfigMap where its pod
+  reads it.** The manifest-driven check recorded references by name only and
+  looked every one up in the env's deploy namespace on the primary cluster, so
+  a workload rendered into another namespace, or onto another cluster, was
+  refused for a Secret that existed exactly where it is used. control-plane's
+  prod release was blocked on `control-plane-prod/obs-credentials` and
+  `control-plane-prod/otel-agent-token`, which live in `observability-data` and
+  `observability` (on both clusters). A reference is now located by the
+  referencing object's `metadata.namespace` (the deploy namespace when unset)
+  and, in a multi-cluster env, by the deploy's own router — the same
+  attribution `forge env render` prints in its `# cluster:` headers. The same
+  location drives the rest of the gate: a rendered Secret satisfies only
+  references in its own namespace, a Secret the deploy provisions is exempt
+  only in the namespace it is provisioned into, a declared
+  `forge.ExternalSecret` folds in only the keys referenced from its namespace
+  on the cluster being checked, and `imagePullSecrets` are resolved from the
+  pod's namespace and cluster. On a run that spans clusters every finding,
+  declared prerequisites included, is reported as `<context>:<namespace>/<name>`
+  (previously `<context>/<namespace>/<name>` for declared prerequisites only).
+  An absent ConfigMap is reported as `(the ConfigMap does not exist)` rather
+  than `(the Secret does not exist)`.
+
 - **`migratekit.AutoMigrate` works on a pool capped at one connection.** It
   held one pool connection (the run lock and golang-migrate's driver) and then
   asked the same pool for another for every record it keeps — applied,

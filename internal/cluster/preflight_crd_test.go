@@ -236,14 +236,13 @@ func TestPreflight_NoContextSkipsCRDCheck(t *testing.T) {
 // The structured result records a MissingCRD distinctly, and OK() reports the
 // run as failing.
 func TestRunPreflightChecks_MissingCRDIsBlock(t *testing.T) {
-	refs := CollectManifestRefs(grpcRouteManifest)
 	opts := PreflightOpts{
 		Manifests:   grpcRouteManifest,
 		Context:     "gke_prod",
 		Namespace:   "app-prod",
 		ServedKinds: fakeServedKinds{served: servedSet("", "Service")},
 	}
-	res, err := runPreflightChecks(context.Background(), opts, refs)
+	res, err := runPreflightChecks(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("a missing CRD is a structured block, not an abort: %v", err)
 	}

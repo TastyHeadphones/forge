@@ -198,7 +198,9 @@ type UndeclaredSecretMount struct {
 // in-stream, or minted by a KubeconfigSecret, always PASSES — only a truly
 // undeclared name fails.
 func CheckSecretSupply(manifests string, supplied []SecretSupply) []UndeclaredSecretMount {
-	refs := CollectManifestRefs(manifests)
+	// Unplaced: this gate is name-based, so where a reference resolves does
+	// not enter into it.
+	refs := CollectManifestRefs(manifests, RefPlacement{})
 	if len(refs.Secrets) == 0 {
 		return nil
 	}
@@ -223,12 +225,15 @@ func CheckSecretSupply(manifests string, supplied []SecretSupply) []UndeclaredSe
 	// false-failing on a pull secret that legitimately lives only in the
 	// cluster. The live preflight remains the backstop for a genuinely-missing
 	// pull secret.
-	pullSecrets := refs.ImagePullSecrets
+	pullSecrets := map[string]struct{}{}
+	for ref := range refs.ImagePullSecrets {
+		pullSecrets[ref.Name] = struct{}{}
+	}
 
 	// DEMAND→supply match. Record which workloads mount each unsatisfied name.
 	workloadsBySecret := secretMountWorkloads(manifests)
 	var out []UndeclaredSecretMount
-	for name := range refs.Secrets {
+	for name := range refs.secretNames() {
 		if name == "" {
 			continue // defensive: an unnamed reference can't be matched
 		}
@@ -262,14 +267,9 @@ func secretMountWorkloads(manifests string) map[string][]string {
 		if err := yaml.Unmarshal([]byte(doc), &node); err != nil {
 			continue
 		}
-		// Per-document refs.
-		docRefs := ManifestRefs{
-			Secrets:          map[string]map[string]struct{}{},
-			ConfigMaps:       map[string]map[string]struct{}{},
-			Images:           map[string]struct{}{},
-			ImagePullSecrets: map[string]struct{}{},
-		}
-		collectRefs(node, &docRefs)
+		// Per-document refs, unplaced: only the names matter here.
+		docRefs := newManifestRefs()
+		collectRefs(node, refSink{refs: &docRefs, contexts: []string{""}})
 		if len(docRefs.Secrets) == 0 {
 			continue
 		}
@@ -277,11 +277,12 @@ func secretMountWorkloads(manifests string) map[string][]string {
 		if name == "" {
 			continue
 		}
-		for secret := range docRefs.Secrets {
+		for ref := range docRefs.Secrets {
+			secret := ref.Name
 			if secret == "" {
 				continue
 			}
-			if _, ok := docRefs.ImagePullSecrets[secret]; ok {
+			if _, ok := docRefs.ImagePullSecrets[ref]; ok {
 				continue
 			}
 			if bySecret[secret] == nil {

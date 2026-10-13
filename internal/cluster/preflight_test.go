@@ -283,7 +283,7 @@ spec:
 // --- CollectManifestRefs -------------------------------------------------
 
 func TestCollectManifestRefs(t *testing.T) {
-	refs := CollectManifestRefs(deploymentManifest + "\n---\n" + jobWithEnvFrom)
+	refs := CollectManifestRefs(deploymentManifest+"\n---\n"+jobWithEnvFrom, RefPlacement{})
 
 	// Images.
 	wantImages := []string{"ghcr.io/acme/api:abc123", "ghcr.io/acme/migrate:abc123"}
@@ -297,7 +297,7 @@ func TestCollectManifestRefs(t *testing.T) {
 	}
 
 	// secretKeyRef keys.
-	appKeys := refs.Secrets["app-secrets"]
+	appKeys := byName(refs.Secrets)["app-secrets"]
 	if _, ok := appKeys["service_secret"]; !ok {
 		t.Errorf("app-secrets should reference service_secret; got %v", appKeys)
 	}
@@ -306,7 +306,7 @@ func TestCollectManifestRefs(t *testing.T) {
 	}
 
 	// envFrom secretRef → whole-Secret marker (key "").
-	bulkKeys := refs.Secrets["bulk-secrets"]
+	bulkKeys := byName(refs.Secrets)["bulk-secrets"]
 	if _, ok := bulkKeys[""]; !ok {
 		t.Errorf("bulk-secrets should carry the whole-Secret marker; got %v", bulkKeys)
 	}
@@ -365,17 +365,17 @@ spec:
           configMap:
             name: zitadel-steps
 `
-	refs := CollectManifestRefs(stream)
+	refs := CollectManifestRefs(stream, RefPlacement{})
 
-	if _, ok := refs.ConfigMaps["zitadel-steps"]; ok {
+	if _, ok := byName(refs.ConfigMaps)["zitadel-steps"]; ok {
 		t.Errorf("zitadel-steps is rendered by this stream and must not be required: %v", refs.ConfigMaps)
 	}
-	if _, ok := refs.Secrets["self-made"]; ok {
+	if _, ok := byName(refs.Secrets)["self-made"]; ok {
 		t.Errorf("self-made Secret is rendered by this stream and must not be required: %v", refs.Secrets)
 	}
 	// The genuinely external reference must STILL be required — this is the
 	// check's whole value, and over-subtracting would silently gut it.
-	if _, ok := refs.Secrets["provisioned-elsewhere"]; !ok {
+	if _, ok := byName(refs.Secrets)["provisioned-elsewhere"]; !ok {
 		t.Errorf("provisioned-elsewhere is NOT in the stream and must remain required: %v", refs.Secrets)
 	}
 	// Images are never self-provided: an image is satisfied by a registry.
@@ -433,18 +433,18 @@ spec:
             name: optional-cm-volume
             optional: true
 `
-	refs := CollectManifestRefs(job)
+	refs := CollectManifestRefs(job, RefPlacement{})
 	for _, name := range []string{"root-once", "optional-bulk", "optional-volume"} {
-		if _, ok := refs.Secrets[name]; ok {
+		if _, ok := byName(refs.Secrets)[name]; ok {
 			t.Errorf("optional Secret %q must not be demanded; got %v", name, refs.Secrets)
 		}
 	}
 	for _, name := range []string{"optional-flags", "optional-cm-volume"} {
-		if _, ok := refs.ConfigMaps[name]; ok {
+		if _, ok := byName(refs.ConfigMaps)[name]; ok {
 			t.Errorf("optional ConfigMap %q must not be demanded; got %v", name, refs.ConfigMaps)
 		}
 	}
-	if _, ok := refs.Secrets["approles"]["service-secret-id"]; !ok {
+	if _, ok := byName(refs.Secrets)["approles"]["service-secret-id"]; !ok {
 		t.Errorf("a required secretKeyRef beside an optional one must still be demanded; got %v", refs.Secrets)
 	}
 	if misses := CheckSecretSupply(job, []SecretSupply{{Name: "approles"}}); len(misses) != 0 {
@@ -453,7 +453,7 @@ spec:
 }
 
 func TestCollectManifestRefs_Empty(t *testing.T) {
-	refs := CollectManifestRefs("")
+	refs := CollectManifestRefs("", RefPlacement{})
 	if len(refs.Secrets) != 0 || len(refs.Images) != 0 {
 		t.Fatalf("empty manifests should yield no refs; got %+v", refs)
 	}
@@ -668,47 +668,47 @@ func TestPreflight_SecretGetterErrorAborts(t *testing.T) {
 // --- CollectManifestRefs: new shapes -------------------------------------
 
 func TestCollectManifestRefs_SecretVolumesAndPullSecrets(t *testing.T) {
-	refs := CollectManifestRefs(secretVolumeManifest)
+	refs := CollectManifestRefs(secretVolumeManifest, RefPlacement{})
 
 	// volumes[].secret.secretName — the ClusterClient external=True shape.
-	if _, ok := refs.Secrets["external-kubeconfig"][""]; !ok {
+	if _, ok := byName(refs.Secrets)["external-kubeconfig"][""]; !ok {
 		t.Errorf("secret volume should record external-kubeconfig (existence-only); got %v", refs.Secrets)
 	}
 	// volumes[].projected.sources[].secret.name
-	if _, ok := refs.Secrets["projected-secret"][""]; !ok {
+	if _, ok := byName(refs.Secrets)["projected-secret"][""]; !ok {
 		t.Errorf("projected secret source should be recorded; got %v", refs.Secrets)
 	}
 	// imagePullSecrets[].name — recorded in Secrets (existence)…
-	if _, ok := refs.Secrets["registry-creds"][""]; !ok {
+	if _, ok := byName(refs.Secrets)["registry-creds"][""]; !ok {
 		t.Errorf("imagePullSecret should be recorded in Secrets; got %v", refs.Secrets)
 	}
 	// …AND in ImagePullSecrets (the registry-credential source).
-	if _, ok := refs.ImagePullSecrets["registry-creds"]; !ok {
+	if _, ok := pullSecretNames(refs)["registry-creds"]; !ok {
 		t.Errorf("imagePullSecret should be recorded in ImagePullSecrets; got %v", refs.ImagePullSecrets)
 	}
 	// A non-pull-secret reference must NOT leak into ImagePullSecrets.
-	if _, ok := refs.ImagePullSecrets["external-kubeconfig"]; ok {
+	if _, ok := pullSecretNames(refs)["external-kubeconfig"]; ok {
 		t.Errorf("a secret-volume name must not be recorded as an imagePullSecret; got %v", refs.ImagePullSecrets)
 	}
 	// volumes[].configMap.name
-	if _, ok := refs.ConfigMaps["proxy-settings"][""]; !ok {
+	if _, ok := byName(refs.ConfigMaps)["proxy-settings"][""]; !ok {
 		t.Errorf("configMap volume should be recorded; got %v", refs.ConfigMaps)
 	}
 	// volumes[].projected.sources[].configMap.name
-	if _, ok := refs.ConfigMaps["projected-config"][""]; !ok {
+	if _, ok := byName(refs.ConfigMaps)["projected-config"][""]; !ok {
 		t.Errorf("projected configMap source should be recorded; got %v", refs.ConfigMaps)
 	}
 }
 
 func TestCollectManifestRefs_ConfigMapKeyRefs(t *testing.T) {
-	refs := CollectManifestRefs(configMapKeyRefManifest)
+	refs := CollectManifestRefs(configMapKeyRefManifest, RefPlacement{})
 
 	// configMapKeyRef → keyed reference.
-	if _, ok := refs.ConfigMaps["app-config"]["log_level"]; !ok {
+	if _, ok := byName(refs.ConfigMaps)["app-config"]["log_level"]; !ok {
 		t.Errorf("configMapKeyRef should record app-config/log_level; got %v", refs.ConfigMaps)
 	}
 	// envFrom configMapRef → whole-ConfigMap marker.
-	if _, ok := refs.ConfigMaps["bulk-config"][""]; !ok {
+	if _, ok := byName(refs.ConfigMaps)["bulk-config"][""]; !ok {
 		t.Errorf("envFrom configMapRef should record the whole-ConfigMap marker; got %v", refs.ConfigMaps)
 	}
 }
@@ -733,7 +733,7 @@ spec:
   ports:
     - port: 80
 `
-	refs := CollectManifestRefs(noRefs)
+	refs := CollectManifestRefs(noRefs, RefPlacement{})
 	if len(refs.Secrets) != 0 {
 		t.Errorf("no Secret references expected; got %v", refs.Secrets)
 	}
@@ -835,7 +835,6 @@ func TestPreflight_InconclusiveImageWarnsAndProceeds(t *testing.T) {
 // The inconclusive verdict is surfaced as a structured ImageWarning, distinct
 // from a confirmed MissingImage.
 func TestRunPreflightChecks_InconclusiveIsWarningNotMiss(t *testing.T) {
-	refs := CollectManifestRefs(deploymentManifest)
 	opts := PreflightOpts{
 		Manifests: deploymentManifest,
 		Images:    fakeImageChecker{inconclusive: keySet("ghcr.io/acme/api:abc123")},
@@ -844,7 +843,7 @@ func TestRunPreflightChecks_InconclusiveIsWarningNotMiss(t *testing.T) {
 		// asserts only the image-inconclusive behavior.
 		SecretSupply: []SecretSupply{{Name: "app-secrets", Kind: SupplyGenerated}},
 	}
-	res, err := runPreflightChecks(context.Background(), opts, refs)
+	res, err := runPreflightChecks(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("inconclusive image must not abort: %v", err)
 	}
@@ -896,12 +895,11 @@ func TestPreflight_AuthDeniedImageBlocks(t *testing.T) {
 // The auth-denied verdict is a BLOCKING UnverifiableImage, NOT a non-blocking
 // ImageWarning — that distinction is the whole fix.
 func TestRunPreflightChecks_AuthDeniedIsBlockNotWarning(t *testing.T) {
-	refs := CollectManifestRefs(deploymentManifest)
 	opts := PreflightOpts{
 		Manifests: deploymentManifest,
 		Images:    fakeImageChecker{authDenied: keySet("ghcr.io/acme/api:abc123")},
 	}
-	res, err := runPreflightChecks(context.Background(), opts, refs)
+	res, err := runPreflightChecks(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("auth-denied image must not abort the preflight: %v", err)
 	}
@@ -925,8 +923,6 @@ func TestRunPreflightChecks_AuthDeniedIsBlockNotWarning(t *testing.T) {
 // Before the fix this auth-denied lookup was a false UnverifiableImage block.
 func TestRunPreflightChecks_AuthDeniedButClusterCredsConfirmPresent(t *testing.T) {
 	const ref = "ghcr.io/acme/private-api:abc123"
-	refs := CollectManifestRefs(pullSecretManifest)
-
 	var seenDir string
 	var seenNames []string
 	opts := PreflightOpts{
@@ -941,7 +937,7 @@ func TestRunPreflightChecks_AuthDeniedButClusterCredsConfirmPresent(t *testing.T
 		PullCreds: fakePullCredsResolver{namesSeen: &seenNames},
 	}
 
-	res, err := runPreflightChecks(context.Background(), opts, refs)
+	res, err := runPreflightChecks(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("credentialed retry must not abort the preflight: %v", err)
 	}
@@ -967,7 +963,6 @@ func TestRunPreflightChecks_AuthDeniedButClusterCredsConfirmPresent(t *testing.T
 // is authoritative both ways.
 func TestRunPreflightChecks_AuthDeniedClusterCredsConfirmMiss(t *testing.T) {
 	const ref = "ghcr.io/acme/private-api:abc123"
-	refs := CollectManifestRefs(pullSecretManifest)
 	opts := PreflightOpts{
 		Manifests: pullSecretManifest,
 		Context:   "gke_prod",
@@ -978,7 +973,7 @@ func TestRunPreflightChecks_AuthDeniedClusterCredsConfirmMiss(t *testing.T) {
 		},
 		PullCreds: fakePullCredsResolver{},
 	}
-	res, err := runPreflightChecks(context.Background(), opts, refs)
+	res, err := runPreflightChecks(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("unexpected abort: %v", err)
 	}
@@ -992,7 +987,6 @@ func TestRunPreflightChecks_AuthDeniedClusterCredsConfirmMiss(t *testing.T) {
 // image it cannot confirm. No regression of the auth-denied semantics.
 func TestRunPreflightChecks_AuthDeniedClusterCredsAlsoDenied_KeepsBlock(t *testing.T) {
 	const ref = "ghcr.io/acme/private-api:abc123"
-	refs := CollectManifestRefs(pullSecretManifest)
 	opts := PreflightOpts{
 		Manifests: pullSecretManifest,
 		Context:   "gke_prod",
@@ -1003,7 +997,7 @@ func TestRunPreflightChecks_AuthDeniedClusterCredsAlsoDenied_KeepsBlock(t *testi
 		},
 		PullCreds: fakePullCredsResolver{},
 	}
-	res, err := runPreflightChecks(context.Background(), opts, refs)
+	res, err := runPreflightChecks(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("unexpected abort: %v", err)
 	}
@@ -1017,7 +1011,6 @@ func TestRunPreflightChecks_AuthDeniedClusterCredsAlsoDenied_KeepsBlock(t *testi
 // the credentials-absent path.
 func TestRunPreflightChecks_AuthDeniedNoPullSecret_KeepsBlock(t *testing.T) {
 	const ref = "ghcr.io/acme/api:abc123"
-	refs := CollectManifestRefs(deploymentManifest) // no imagePullSecrets
 	opts := PreflightOpts{
 		Manifests: deploymentManifest,
 		Context:   "gke_prod",
@@ -1028,7 +1021,7 @@ func TestRunPreflightChecks_AuthDeniedNoPullSecret_KeepsBlock(t *testing.T) {
 		},
 		PullCreds: fakePullCredsResolver{},
 	}
-	res, err := runPreflightChecks(context.Background(), opts, refs)
+	res, err := runPreflightChecks(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("unexpected abort: %v", err)
 	}
