@@ -320,6 +320,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`forge generate` validates without linking, and loads the tree once.**
+  The validate step ran `go build -o /dev/null ./...`, which links every main
+  package and throws the binary away, then loaded the whole tree again through
+  go/packages to typecheck `_test.go` files, type-checking every dependency
+  from source. On reliant (19 main packages, cgo, so each link is an external
+  gcc/ld run) that was 217s of a 258s run. It is now one
+  `go list -e -export -test -deps ./...`: go list runs the real compiler on
+  every package and every test variant (it reports their export data) through
+  the shared build cache, and never links. A main package's compile error
+  still fails validation; the one linker-only error a generator can cause, a
+  main package without `func main`, is checked directly. Errors are read from
+  go list's per-package JSON, so a broken library is reported once, not once
+  per importer. Ownership rules are unchanged: a non-test compile error or a
+  forge-owned `_test.go` fails the run, a user-owned `_test.go` warns. The
+  test variants it compiles are the ones `go test` builds next, which then
+  finds them cached. The post-rollback "does the restored tree compile?"
+  check uses the same no-link compile. If go list itself cannot run, both
+  fall back to `go build`. Measured on reliant (load average 60-110 on 16
+  cores): a `forge generate` that changes nothing went from 274s to 51s
+  (validate 206s to 14s); one that rewrote two files from 236s to 142s
+  (validate 218s to 97s, most of it compiling their dependents' test
+  variants, which `go test` then reuses); and from an empty build cache the
+  validate commands went from 872s (`go build` 814s, typecheck 58s) to 617s.
+  On re-pin, the first generate in a checkout compiles every package's test
+  variant once (about 200s on reliant when the non-test build is already
+  cached); every later run, and the next `go test`, reuses them.
 - **A config env var set to `""` is unset, for every field type.**
   `pkg/config`'s env layer read an empty variable as a value for strings, bytes
   and lists, and as unset for numbers, bools and durations. So `TEMPORAL_HOST=`

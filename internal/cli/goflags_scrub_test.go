@@ -54,8 +54,10 @@ func TestGoSubprocesses_DoNotInheritCallerModMod(t *testing.T) {
 		run  func()
 	}{
 		{"forge version compatibility (go list -m)", func() { forgecompat.ResolveProjectForge(project) }},
-		{"go build validate", func() { _ = runGoBuildValidate(project) }},
-		{"test-file typecheck (go/packages)", func() { _ = validateTestFilesTypecheck(project) }},
+		// go list -export -test, then (go list failing here) the go build
+		// fallback: every call is recorded, and both must arrive scrubbed.
+		{"compile validate", func() { _ = runGoBuildValidate(project) }},
+		{"post-rollback compile check", func() { _ = goBuildRestoredTree(project) }},
 		{"bridged-module tidy probe", func() { _, _ = runGoOffWorkspace(project, "mod", "tidy", "-diff") }},
 		{"tools install version resolve (go list -m)", func() {
 			resolveToolVersion(context.Background(), project, requiredProtoTools[0], "")
