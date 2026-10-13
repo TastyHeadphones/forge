@@ -2094,6 +2094,7 @@ _render_kubeconfig_secret = lambda k: KubeconfigSecret -> any {
                     "api_groups": r.api_groups
                     "resources": r.resources
                     "verbs": r.verbs
+                    "resource_names": r.resource_names
                 } for r in k.service_account.rules
             ]
         } if k.service_account else None

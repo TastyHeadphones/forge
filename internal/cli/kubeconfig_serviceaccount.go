@@ -329,6 +329,9 @@ func renderPolicyRules(rules []KubeconfigPolicyRuleEntity) string {
 		b.WriteString("- apiGroups: " + yamlStringList(groups) + "\n")
 		b.WriteString("  resources: " + yamlStringList(r.Resources) + "\n")
 		b.WriteString("  verbs: " + yamlStringList(r.Verbs) + "\n")
+		if len(r.ResourceNames) > 0 {
+			b.WriteString("  resourceNames: " + yamlStringList(r.ResourceNames) + "\n")
+		}
 	}
 	return b.String()
 }

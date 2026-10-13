@@ -327,3 +327,31 @@ func TestMintDeployKubeconfigSecrets_OnlyMintingDeclarations(t *testing.T) {
 		t.Fatalf("nil entities: %v", err)
 	}
 }
+
+// TestServiceAccountRBACManifests_ResourceNames pins that a rule limited to
+// named objects renders `resourceNames`, and that a rule without any renders
+// none (an empty list would be harmless, but the diff against live objects
+// forge converges should stay minimal).
+func TestServiceAccountRBACManifests_ResourceNames(t *testing.T) {
+	sa := &KubeconfigServiceAccountEntity{
+		Name:      "flux-hub-applier",
+		Namespace: "control-plane-prod",
+		Rules: []KubeconfigPolicyRuleEntity{
+			{
+				APIGroups:     []string{"rbac.authorization.k8s.io"},
+				Resources:     []string{"clusterroles"},
+				Verbs:         []string{"bind"},
+				ResourceNames: []string{"flux-tenant-reconciler", "flux-tenant-source"},
+			},
+			{Resources: []string{"namespaces"}, Verbs: []string{"get"}},
+		},
+	}
+	got := serviceAccountRBACManifests(sa, "flux-hub-applier-forge-token")
+	want := `resourceNames: ["flux-tenant-reconciler", "flux-tenant-source"]`
+	if !strings.Contains(got, want) {
+		t.Errorf("rendered rules missing %q:\n%s", want, got)
+	}
+	if n := strings.Count(got, "resourceNames:"); n != 1 {
+		t.Errorf("resourceNames rendered %d times, want 1 (only the named rule):\n%s", n, got)
+	}
+}

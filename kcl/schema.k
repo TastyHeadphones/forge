@@ -1745,14 +1745,24 @@ schema KubeconfigPolicyRule:
                        for every group.
       * `resources`  — resource plurals ("namespaces", "tiers", "*").
       * `verbs`      — verbs granted ("get", "list", "create", "*").
+      * `resource_names` — limit the rule to these named objects (RBAC
+                       `resourceNames`). Default [] (every object of the
+                       resources). The way to grant `bind` or `escalate`
+                       on two specific roles, or `get` on one Secret,
+                       without a separate hand-written ClusterRole.
+                       Kubernetes cannot restrict `list`, `watch`,
+                       `create` or `deletecollection` by name.
     """
     api_groups: [str] = [""]
     resources: [str]
     verbs: [str]
+    resource_names: [str] = []
 
     check:
         len(resources) > 0, "KubeconfigPolicyRule.resources is required"
         len(verbs) > 0, "KubeconfigPolicyRule.verbs is required"
+        all n in resource_names { n != "" }, \
+            "KubeconfigPolicyRule.resource_names must not contain an empty name (an empty entry matches no object, so the rule would silently grant nothing)"
 
 
 schema KubeconfigServiceAccount:

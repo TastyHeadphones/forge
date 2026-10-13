@@ -55,6 +55,13 @@ _hub = forge.KubeconfigSecret {
                 resources = ["roles", "rolebindings"]
                 verbs = ["get", "list", "watch", "create", "update", "patch"]
             }
+            # A rule limited to named objects: `bind` on exactly two roles.
+            forge.KubeconfigPolicyRule {
+                api_groups = ["rbac.authorization.k8s.io"]
+                resources = ["clusterroles"]
+                verbs = ["bind"]
+                resource_names = ["flux-tenant-reconciler", "flux-tenant-source"]
+            }
         ]
     }
 }
@@ -111,9 +118,12 @@ assert_hub_target_context = _h.target_context == "gke_reliant-labs_us-central1_p
 # The service_account block projects, with its rules.
 assert_hub_sa_name = _h.service_account.name == "flux-hub-applier"
 assert_hub_sa_ns = _h.service_account.namespace == "control-plane-prod"
-assert_hub_rule_count = len(_h.service_account.rules) == 3
+assert_hub_rule_count = len(_h.service_account.rules) == 4
 assert_hub_rule_groups = _h.service_account.rules[0].api_groups == ["forge.dev"]
 assert_hub_rule_verbs = _h.service_account.rules[0].verbs == ["*"]
+# resource_names projects through, and defaults to [] (every object).
+assert_hub_rule_resource_names = _h.service_account.rules[3].resource_names == ["flux-tenant-reconciler", "flux-tenant-source"]
+assert_hub_rule_resource_names_default = _h.service_account.rules[0].resource_names == []
 # Cluster-wide: no namespaces => a ClusterRole.
 assert_hub_cluster_wide = _h.service_account.namespaces == []
 

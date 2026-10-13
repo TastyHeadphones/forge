@@ -384,6 +384,9 @@ type KubeconfigPolicyRuleEntity struct {
 	APIGroups []string `json:"api_groups,omitempty"`
 	Resources []string `json:"resources"`
 	Verbs     []string `json:"verbs"`
+	// ResourceNames limits the rule to these named objects. Empty means every
+	// object of Resources.
+	ResourceNames []string `json:"resource_names,omitempty"`
 }
 
 // GatewayEntity mirrors the kcl/schema.k Gateway. Listeners are inlined.
