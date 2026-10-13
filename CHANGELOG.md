@@ -39,6 +39,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A failed `forge generate` that changed no Go file no longer builds the
+  project to report on its rollback.** After reverting a failed run, generate
+  ran `go build ./...` over the restored tree to say whether it compiles. It
+  did that on every rollback, so a run that failed a pre-flight check after
+  rewriting only `forge.yaml` spent about 9 minutes on reliant building Go
+  sources that were byte-for-byte the ones the user started with. The check
+  now runs only when the run changed a Go build input: a `.go` file, cgo or
+  assembly source, `go.mod`/`go.sum`/`go.work`, or anything under `vendor/`.
+  A rewrite with identical bytes is not a change; a Go file changed outside
+  the rollback journal still counts, and so does any run whose pre-run
+  fingerprint could not be taken. When it skips, the report says the run
+  changed no Go file, so there was nothing to recompile, instead of claiming
+  the tree compiles.
 - **`forge project migrate import --from goose` splits a NO TRANSACTION file
   into one migration per statement.** It used to write the file whole under an
   `-- x-no-tx-wrap: true` header, which nothing reads: golang-migrate has no

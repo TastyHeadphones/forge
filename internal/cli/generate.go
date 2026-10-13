@@ -711,6 +711,7 @@ func rollbackGeneratedTreeVerified(absPath string, stepErr error, onlyReadOnlyRa
 	if len(preserved) > 0 {
 		writeFailedGenerateErrorFile(absPath, stepErr)
 	}
+	changed := checksums.ChangedJournalPaths(absPath)
 	journaled := checksums.JournaledPaths()
 	restored, failed := checksums.RestoreRollbackReport(absPath)
 	residue := verifyRestoredTree(absPath, preRun, append(journaled, restored...), failed)
@@ -735,7 +736,16 @@ func rollbackGeneratedTreeVerified(absPath string, stepErr error, onlyReadOnlyRa
 	// always: a file kept from an earlier successful run can depend on one
 	// this run generated and just reverted (compose.go vs the reverted
 	// blobstore/middleware_gen.go). See goBuildRestoredTree.
-	consistency := goBuildRestoredTree(absPath)
+	//
+	// Only when the run touched a Go build input, though. If it did not, the
+	// Go sources the compiler would read are the ones the user started with,
+	// so the verdict could only describe the pre-run tree — and it cost a
+	// full build of the project to learn that (about 9 minutes on reliant,
+	// after a run that changed nothing but forge.yaml).
+	consistency := rollbackConsistency{SkippedNoGoChange: true}
+	if goBuildInputsTouched(changed, residue) {
+		consistency = restoredTreeCompileCheck(absPath)
+	}
 
 	writeRollbackReport(os.Stderr, rollbackReport{
 		Restored:    restored,
