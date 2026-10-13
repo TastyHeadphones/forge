@@ -136,7 +136,6 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 			Fallible        bool
 			HasDB           bool
 			HasLogger       bool
-			HasConfig       bool
 			HasMigrationsFS bool
 			NeedsTime       bool
 			NeedsULID       bool
@@ -145,6 +144,9 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 			ProtoConnectImportPath string
 			ProtoConnectPkg        string
 			MountMethod            string
+
+			ConfigImport      string
+			ConfigImportAlias string
 
 			// The template ranges over these stub/func-seam slices. They
 			// are always empty at initial-scaffold time (the service has no
@@ -175,6 +177,12 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 			ProtoConnectImportPath: svc.ProtoConnectImportPath,
 			ProtoConnectPkg:        svc.ProtoConnectPkg,
 			MountMethod:            svc.MountMethod,
+
+			// The config the scaffolded service.go's Deps takes
+			// (`Config *config.Config`, from the project's pkg/config).
+			// forge generate reads the same field back from the source
+			// (codegen.DetectDepsConfigImport), so the two renders agree.
+			ConfigImport: g.ModulePath + "/pkg/config",
 
 			ExtraImports: nil, // No cross-package auto-stubs at initial scaffold time
 		}

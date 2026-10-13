@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -998,10 +999,19 @@ type componentTestHelperData struct {
 	Fallible        bool
 	HasDB           bool
 	HasLogger       bool
-	HasConfig       bool
 	HasMigrationsFS bool
 	NeedsTime       bool
-	NeedsULID       bool
+
+	// ConfigImport is the import path of the config the component's Deps
+	// takes (`Config *config.Config`), read from its source by
+	// DetectDepsConfigImport. Empty means it takes none, and the harness
+	// then has no config to default, no WithConfig option, and no config
+	// import: it imports only what the component itself does.
+	ConfigImport string
+	// ConfigImportAlias is "config" when ConfigImport's last segment is not
+	// already config, so the harness can always spell the type config.Config.
+	ConfigImportAlias string
+	NeedsULID         bool
 
 	ConnectServiceGoName   string
 	ProtoConnectImportPath string
@@ -1066,6 +1076,8 @@ func writeComponentTestHelpers(data bootstrapTestingTemplateData, projectDir str
 			FuncDefaults:           svc.FuncDefaults,
 			FuncTodos:              svc.FuncTodos,
 		}
+		dir := filepath.Join(projectDir, "internal", "handlers", filepath.FromSlash(svc.ImportPath))
+		d.setConfigImport(dir)
 		for _, fd := range svc.FuncDefaults {
 			if fd.NeedsTime {
 				d.NeedsTime = true
@@ -1080,7 +1092,6 @@ func writeComponentTestHelpers(data bootstrapTestingTemplateData, projectDir str
 		// imports still apply.
 		d.ExtraImports = extraImportsExcluding(mergeExtraImports(
 			[]BootstrapTestServiceData{svc}), svc.Package)
-		dir := filepath.Join(projectDir, "internal", "handlers", filepath.FromSlash(svc.ImportPath))
 		if err := renderComponentTestHelpers(d, dir, projectDir, cs); err != nil {
 			return err
 		}
@@ -1096,10 +1107,10 @@ func writeComponentTestHelpers(data bootstrapTestingTemplateData, projectDir str
 			Fallible:        pkg.Fallible,
 			HasDB:           pkg.HasDB,
 			HasLogger:       pkg.HasLogger,
-			HasConfig:       pkg.HasConfig,
 			HasMigrationsFS: data.HasMigrationsFS,
 		}
 		dir := filepath.Join(projectDir, "internal", filepath.FromSlash(pkg.ImportPath))
+		d.setConfigImport(dir)
 		// The helper returns what New returns. A package whose contract
 		// interface is not called Service (keywrap's KeyWrapper) would
 		// otherwise get a helper naming a type that does not exist.
@@ -1111,6 +1122,16 @@ func writeComponentTestHelpers(data bootstrapTestingTemplateData, projectDir str
 		}
 	}
 	return nil
+}
+
+// setConfigImport records the config the component in dir takes, if any (see
+// componentTestHelperData.ConfigImport).
+func (d *componentTestHelperData) setConfigImport(dir string) {
+	d.ConfigImport = DetectDepsConfigImport(dir)
+	d.ConfigImportAlias = ""
+	if d.ConfigImport != "" && path.Base(d.ConfigImport) != "config" {
+		d.ConfigImportAlias = "config"
+	}
 }
 
 // renderComponentTestHelpers renders one component's helper file into dir.

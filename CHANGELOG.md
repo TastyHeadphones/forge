@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The test harness imports a config only for a component that takes one.**
+  `helpers_gen_test.go` imported `<module>/pkg/config` for every service and
+  every wired contract package, and declared `WithConfig` and a
+  `&config.Config{}` default around it. A project without typed config (no
+  `proto/config`, so no `pkg/config`; reliant, when it adopted contracts) got
+  a harness that did not compile beside each of them. The harness now reads
+  the component's `Deps.Config` field: when it is `*<pkg>.Config` the harness
+  imports that package (the one the component's own Deps names, aliased
+  `config` when its path does not end in `config`) and keeps `WithConfig`, the
+  default and the Deps fill. A component without the field gets none of them.
+  A service whose Deps has no `Config` no longer gets `deps.Config = cfg.cfg`,
+  which did not compile either.
+
 - **A freshly scaffolded service lints clean again.** The `metrics` command
   scaffolded into every service binary (`cmd/<bin>/cmd/metrics.go`, #681)
   blank-imported `internal/metrics` with no comment, and the revive

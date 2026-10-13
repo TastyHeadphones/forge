@@ -69,6 +69,80 @@ func DetectDepsDBField(dir string) (bool, error) {
 	return false, nil
 }
 
+// DetectDepsConfigImport returns the import path of the package that declares
+// the type of the component's `Deps.Config` field, when that field is a
+// pointer to a type named Config from another package (`Config
+// *config.Config`, usually the project's generated pkg/config). It returns ""
+// when Deps has no such field.
+//
+// The test harness hands a component a config only through this field, so
+// this is the one fact that decides whether the harness needs a config import
+// at all, and which. It used to import `<module>/pkg/config` unconditionally:
+// a project with no typed config (no proto/config, so no pkg/config) got a
+// helpers_gen_test.go that did not compile for every component, whether or
+// not any of them took a config.
+func DetectDepsConfigImport(dir string) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	fset := token.NewFileSet()
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		file, perr := parser.ParseFile(fset, filepath.Join(dir, entry.Name()), nil, parser.SkipObjectResolution)
+		if perr != nil {
+			continue
+		}
+		for _, decl := range file.Decls {
+			genDecl, ok := decl.(*ast.GenDecl)
+			if !ok || genDecl.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range genDecl.Specs {
+				typeSpec, ok := spec.(*ast.TypeSpec)
+				if !ok || typeSpec.Name.Name != "Deps" {
+					continue
+				}
+				structType, ok := typeSpec.Type.(*ast.StructType)
+				if !ok {
+					continue
+				}
+				for _, field := range structType.Fields.List {
+					if !fieldNamed(field, "Config") {
+						continue
+					}
+					star, ok := field.Type.(*ast.StarExpr)
+					if !ok {
+						return ""
+					}
+					sel, ok := star.X.(*ast.SelectorExpr)
+					if !ok || sel.Sel.Name != "Config" {
+						return ""
+					}
+					qual, ok := sel.X.(*ast.Ident)
+					if !ok {
+						return ""
+					}
+					return fileImportMap(file)[qual.Name]
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// fieldNamed reports whether a struct field declares name.
+func fieldNamed(field *ast.Field, name string) bool {
+	for _, n := range field.Names {
+		if n.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 // DetectConstructorType returns the pretty-printed FIRST return type of the
 // exported `func New(...)` in dir — the type the constructor produces. For a
 // handler service whose New returns (*Service, error) it is "*Service"; for
