@@ -106,6 +106,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A rotated `OTEL_EXPORTER_OTLP_HEADERS_FILE` is noticed by its content.**
+  The headers file was re-read only when its identity, size or mtime moved. On
+  Windows `os.SameFile` resolves a stat'ed path when it is called, so it
+  compared the current file with itself, and on any OS a same-size rewrite
+  inside one filesystem clock tick kept its mtime: a renewed token of the same
+  length could be missed until the next change. Each recheck now reads the
+  file (a few hundred bytes, once per 5s per process) and re-parses it when
+  the bytes differ. `TestHeadersFileIsReReadOnlyWhenItChanges` failed on the
+  Windows runner for this reason.
+
 - **A fresh checkout no longer regenerates a committed, current `gen/` before
   every build.** The build's staleness check compared modification times.
   git writes `gen/` before `proto/` (index order), so on every clone the
