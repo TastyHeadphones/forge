@@ -38,6 +38,11 @@ const observeLibImport = "github.com/reliant-labs/forge/pkg/observe"
 // user-owned extension seam), same package as the decorator.
 const observeChainSeamFunc = "newObserveChain"
 
+// decoratorReceiver is the receiver every generated wrapper method declares.
+// A contract parameter of the same name is renamed in the wrapper instead
+// (MethodDef.withBodyScopedNames).
+const decoratorReceiver = "o"
+
 // observedImport is one rendered import line for the decorator's import block.
 // Alias is empty when the import needs no explicit alias (the path's leaf
 // segment already names the package).
@@ -57,6 +62,7 @@ type observedMethod struct {
 // observedData is the input to observedTmpl.
 type observedData struct {
 	Package     string
+	Receiver    string
 	Imports     []observedImport
 	Iface       string
 	Constructor string
@@ -98,7 +104,7 @@ type {{ .StructName }} struct {
 	chain *observe.ComponentChain
 }
 {{ range .Methods }}
-func (o *{{ $.StructName }}) {{ .Name }}({{ .Signature }}){{ if .Results }} {{ .Results }}{{ end }} {
+func ({{ $.Receiver }} *{{ $.StructName }}) {{ .Name }}({{ .Signature }}){{ if .Results }} {{ .Results }}{{ end }} {
 	{{ .Body }}
 }
 {{ end }}`))
@@ -141,6 +147,9 @@ func WriteObservedDecorator(cf *File, dir, ifaceName, ctorName, structName, opNa
 
 	methods := make([]observedMethod, 0, len(target.Methods))
 	for _, m := range target.Methods {
+		// Render from a copy whose parameter names cannot shadow what the
+		// wrapper body spells — see decoratorBodyIdents.
+		m = m.withBodyScopedNames(decoratorBodyIdents(m)...)
 		body := renderObservedBody(m, opNamespace)
 		if m.SkipObserve {
 			// Method-level `// forge:no-observe`: the wrapper still exists (the
@@ -158,6 +167,7 @@ func WriteObservedDecorator(cf *File, dir, ifaceName, ctorName, structName, opNa
 
 	data := observedData{
 		Package:     cf.Package,
+		Receiver:    decoratorReceiver,
 		Imports:     observedImports(cf, *target),
 		Iface:       ifaceName,
 		Constructor: ctorName,
@@ -205,12 +215,26 @@ func RemoveObservedDecorator(dir string) error {
 // component's package dir (sibling to mock_gen.go), not package-qualified.
 func observedFileName() string { return "middleware_gen.go" }
 
+// decoratorBodyIdents lists the identifiers a wrapper body for m declares or
+// references beyond m's own types: the receiver, the context package
+// (context.Background(), the closure's context.Context), and the capture
+// locals renderObservedBody introduces — r0..rN for the non-error results,
+// err for the chain's error, e for the closure's. A parameter named any of
+// these would be shadowed by, or shadow, the decorator's own use of it.
+func decoratorBodyIdents(m MethodDef) []string {
+	idents := []string{decoratorReceiver, "context", "err", "e"}
+	for i := range m.Results {
+		idents = append(idents, fmt.Sprintf("r%d", i))
+	}
+	return idents
+}
+
 // renderDirectBody renders a wrapper method that delegates DIRECTLY to the
 // inner implementation, bypassing the observe chain entirely. Used for methods
 // carrying the method-level `// forge:no-observe` marker (MethodDef.SkipObserve).
 // A method with results returns the inner call; a void method just invokes it.
 func renderDirectBody(m MethodDef) string {
-	call := fmt.Sprintf("o.inner.%s(%s)", m.Name, m.CallArgs())
+	call := fmt.Sprintf("%s.inner.%s(%s)", decoratorReceiver, m.Name, m.CallArgs())
 	if len(m.Results) == 0 {
 		return call
 	}
@@ -225,7 +249,8 @@ func renderDirectBody(m MethodDef) string {
 // logging still apply; there is simply no parent context to propagate.
 func renderObservedBody(m MethodDef, opNamespace string) string {
 	op := fmt.Sprintf("%q", opNamespace+"."+m.Name)
-	inner := fmt.Sprintf("o.inner.%s(%s)", m.Name, m.CallArgs())
+	inner := fmt.Sprintf("%s.inner.%s(%s)", decoratorReceiver, m.Name, m.CallArgs())
+	chain := decoratorReceiver + ".chain"
 
 	outerCtx := "context.Background()"
 	closureParam := "_ context.Context"
@@ -240,14 +265,14 @@ func renderObservedBody(m MethodDef, opNamespace string) string {
 	case len(results) == 1 && results[0].TypeExpr == "error":
 		// error-only: one-liner through the general primitive.
 		return fmt.Sprintf(
-			"return o.chain.Run(%s, %s, func(%s) error {\n\treturn %s\n})",
-			outerCtx, op, closureParam, inner)
+			"return %s.Run(%s, %s, func(%s) error {\n\treturn %s\n})",
+			chain, outerCtx, op, closureParam, inner)
 
 	case len(results) == 2 && results[1].TypeExpr == "error":
 		// (T, error): the common shape — generic sugar keeps it a one-liner.
 		return fmt.Sprintf(
-			"return o.chain.Around(%s, %s, func(%s) (%s, error) {\n\treturn %s\n})",
-			outerCtx, op, closureParam, results[0].TypeExpr, inner)
+			"return %s.Around(%s, %s, func(%s) (%s, error) {\n\treturn %s\n})",
+			chain, outerCtx, op, closureParam, results[0].TypeExpr, inner)
 	}
 
 	// General shapes: no results, multiple non-error results, or a non-error
@@ -262,8 +287,8 @@ func renderObservedBody(m MethodDef, opNamespace string) string {
 	if len(nonErr) == 0 && !lastIsErr {
 		// Pure void method: no results at all.
 		return fmt.Sprintf(
-			"_ = o.chain.Run(%s, %s, func(%s) error {\n\t%s\n\treturn nil\n})",
-			outerCtx, op, closureParam, inner)
+			"_ = %s.Run(%s, %s, func(%s) error {\n\t%s\n\treturn nil\n})",
+			chain, outerCtx, op, closureParam, inner)
 	}
 
 	var b strings.Builder
@@ -274,51 +299,24 @@ func renderObservedBody(m MethodDef, opNamespace string) string {
 	}
 
 	if lastIsErr {
-		// `var err error` + `=`, NEVER `err :=`, when the interface method
-		// NAMED its error result.
-		//
-		// The template re-emits the method's result list verbatim, so a
-		// named `err` is already declared in the wrapper's scope and `:=`
-		// is a redeclaration: "no new variables on left side of :=". The
-		// generator reported success, gofmt was happy, and the build broke
-		// in the USER's package, in a file they are told never to edit.
-		//
-		// An UNNAMED result list keeps `err :=`, which is the idiomatic
-		// spelling and what every existing decorator renders. Only a named
-		// error switches to plain assignment, so this fix is invisible to
-		// the shape that was already correct.
-		errName, assign := "err", ":="
-		if named := nonEmptyResultName(results[len(results)-1]); named != "" {
-			errName, assign = named, "="
-		}
-		fmt.Fprintf(&b, "%s %s o.chain.Run(%s, %s, func(%s) error {\n",
-			errName, assign, outerCtx, op, closureParam)
+		// `err :=` is safe: the wrapper's result list is unnamed and no
+		// parameter is named err (withBodyScopedNames), so nothing in scope
+		// declares it already.
+		fmt.Fprintf(&b, "err := %s.Run(%s, %s, func(%s) error {\n",
+			chain, outerCtx, op, closureParam)
 		b.WriteString("\tvar e error\n")
 		fmt.Fprintf(&b, "\t%s = %s\n", strings.Join(append(append([]string{}, names...), "e"), ", "), inner)
 		b.WriteString("\treturn e\n})\n")
-		fmt.Fprintf(&b, "return %s, %s", strings.Join(names, ", "), errName)
+		fmt.Fprintf(&b, "return %s, err", strings.Join(names, ", "))
 		return b.String()
 	}
 
 	// One or more non-error results, no error result.
-	fmt.Fprintf(&b, "_ = o.chain.Run(%s, %s, func(%s) error {\n", outerCtx, op, closureParam)
+	fmt.Fprintf(&b, "_ = %s.Run(%s, %s, func(%s) error {\n", chain, outerCtx, op, closureParam)
 	fmt.Fprintf(&b, "\t%s = %s\n", strings.Join(names, ", "), inner)
 	b.WriteString("\treturn nil\n})\n")
 	fmt.Fprintf(&b, "return %s", strings.Join(names, ", "))
 	return b.String()
-}
-
-// nonEmptyResultName returns a result's declared name, or "" when the result
-// is unnamed or named with the blank identifier.
-//
-// `_` is treated as unnamed deliberately: a blank result declares nothing
-// assignable, so the decorator must introduce its own variable exactly as it
-// does for a bare type.
-func nonEmptyResultName(r ParamDef) string {
-	if r.Name == "_" {
-		return ""
-	}
-	return r.Name
 }
 
 // observedImports assembles the decorator's import block: every package the

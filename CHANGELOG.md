@@ -19,6 +19,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   guard (`TestGoTemplatesJustifyBlankImports`) checks every Go template for
   the same, under `-short`. An existing project's `metrics.go` is yours once
   written: add the comment above the import by hand.
+- **A contract parameter may be named anything; the generated mock,
+  decorator and test stubs still compile.** An interface method has no body,
+  so `Run(ctx context.Context, m Manifest)` is legal Go. The mock that
+  implements it does have one, and its receiver is `m`: the parameter
+  redeclared it and `mock_gen.go` did not build (reliant renamed httpaction's
+  parameters to get past it). The same shape broke `middleware_gen.go` for a
+  parameter named `o` (its receiver), `context`, `r0`/`r1` or `err` (its
+  capture locals), or after the package a sibling parameter's type comes from
+  (`user user.User`); a parameter `e error` compiled and forwarded nil instead
+  of the caller's error. The test harness's auto-stubs broke on `new`, a local
+  type's name, or a result type's package. Mocks and decorators now rename
+  such a parameter to the positional `pN` an unnamed one already gets, and
+  drop result names, which no generated body assigns; auto-stubs, whose
+  bodies never read a parameter, declare types only. Parameter names are not
+  part of a method's type, so callers see no change.
 
 - **The deploy preflight checks a referenced Secret or ConfigMap where its pod
   reads it.** The manifest-driven check recorded references by name only and

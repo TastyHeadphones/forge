@@ -55,9 +55,17 @@ type LocalInterface struct {
 type InterfaceMethod struct {
 	// Name is the method name as declared (e.g. "GetByID").
 	Name string
-	// Params is the rendered parameter list including names + types,
-	// e.g. "ctx context.Context, id string". Empty when the method
-	// takes no parameters.
+	// Params is the rendered parameter list, TYPES ONLY, e.g.
+	// "context.Context, string". Empty when the method takes no
+	// parameters.
+	//
+	// A stub's body never reads its parameters, so it does not name them.
+	// Keeping the interface's names put them in one scope with everything
+	// the body spells: an interface method has no body, so a parameter
+	// there may be called `testkit`, `new`, a local type's name, or the
+	// package its result type comes from — legal in the interface, a
+	// build failure in the stub (`func (s) Get(user string) (user.Profile,
+	// error) { return *new(user.Profile), nil }`).
 	Params string
 	// Results is the rendered result list with parens when there are
 	// multiple, e.g. "(*db.User, error)". Empty when the method
@@ -319,24 +327,21 @@ func isIdentPart(c byte) bool {
 func buildInterfaceMethod(fset *token.FileSet, name string, ft *ast.FuncType, localIfaceNames map[string]bool) InterfaceMethod {
 	m := InterfaceMethod{Name: name}
 
-	// Params: render each field's name(s) + type. We keep the names
-	// where present (so the stub signature reads naturally) and
-	// synthesize "_" placeholders only for unnamed params, since Go
-	// requires either all-named or all-unnamed in a single field
-	// list — but cross-field-mixing is fine, so we choose per-field.
+	// Params: types only, one per parameter. The stub's body never reads a
+	// parameter, and a name could only collide with something the body
+	// does spell — testkit, a result type's package qualifier, a local
+	// type's composite literal, `new` (see InterfaceMethod.Params).
 	if ft.Params != nil && len(ft.Params.List) > 0 {
 		var parts []string
 		for _, field := range ft.Params.List {
 			tStr := printType(fset, field.Type)
-			if len(field.Names) == 0 {
+			n := len(field.Names)
+			if n == 0 {
+				n = 1
+			}
+			for i := 0; i < n; i++ {
 				parts = append(parts, tStr)
-				continue
 			}
-			var names []string
-			for _, n := range field.Names {
-				names = append(names, n.Name)
-			}
-			parts = append(parts, strings.Join(names, ", ")+" "+tStr)
 		}
 		m.Params = strings.Join(parts, ", ")
 	}

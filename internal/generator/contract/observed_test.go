@@ -330,10 +330,12 @@ type Service interface {
 //
 // An interface method may name its results — `(mediaType string, body []byte,
 // err error)` is ordinary Go and reads better than three bare types. The
-// decorator's template re-emits that result list verbatim on the wrapper
-// method, so `err` becomes a NAMED RESULT of the wrapper, already declared in
-// its scope. The body then opened with `err := o.chain.Run(...)`, which is a
-// redeclaration: "no new variables on left side of :=".
+// decorator's template used to re-emit that result list verbatim on the
+// wrapper method, so `err` became a NAMED RESULT of the wrapper, already
+// declared in its scope. The body then opened with `err := o.chain.Run(...)`,
+// which is a redeclaration: "no new variables on left side of :=". The
+// wrapper now drops result names: no body assigns one, so a name could only
+// collide.
 //
 // Nothing upstream catches it. gofmt is happy, the template is happy, and the
 // generator reports success — the failure surfaces as a build error in the
@@ -370,20 +372,25 @@ type Service interface {
 		t.Fatalf("the generated decorator does not parse as Go: %v\n\n%s", err, got)
 	}
 
-	// And the specific repair: the error must be ASSIGNED into the named
-	// result, never redeclared beside it.
-	if strings.Contains(got, "err := o.chain.Run") {
-		t.Errorf("the decorator redeclares a named `err` result with `:=`, which does "+
-			"not compile:\n%s", got)
+	// And the repair: the wrapper declares its results by type alone, so no
+	// named `err` is in scope for the body's `err :=` to redeclare. (The
+	// compile proof, with every other collision, is
+	// TestGenerate_ParamsNamedLikeBodyIdentifiers.)
+	for _, want := range []string{
+		"GetManifest(ctx context.Context, repo string) (string, []byte, error) {",
+		"Describe(ctx context.Context) (string, int64) {",
+		"Head(ctx context.Context, repo string) (string, error) {",
+		"Ping(ctx context.Context) error {",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the wrapper must declare its results unnamed; missing %q:\n%s", want, got)
+		}
 	}
 }
 
 // TestObservedDecorator_UnnamedResultsStillCompile pins the far more common
 // shape against the same standard. An unnamed result list declares nothing in
-// the wrapper's scope, so the decorator has to introduce `err` itself — the
-// fix declares it with `var` rather than `:=` so that ONE code path serves
-// both shapes, and this is the half that proves the unnamed case did not
-// regress.
+// the wrapper's scope, so the decorator introduces `err` itself with `:=`.
 func TestObservedDecorator_UnnamedResultsStillCompile(t *testing.T) {
 	dir := writeContract(t, `package reader
 
