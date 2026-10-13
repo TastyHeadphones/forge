@@ -57,6 +57,33 @@ func TestShape_ObservabilityPolicyAllOff(t *testing.T) {
 	}
 }
 
+func TestShape_ObservabilityPolicyOptIn(t *testing.T) {
+	in := Shape{Kind: EnvSelfManaged, ObservabilityPolicy: &ShapeObservabilityPolicy{Enabled: true, OptIn: []string{ObsOptInReplay}}}
+	b, err := in.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"opt_in":["replay"]`) {
+		t.Errorf("opt_in not encoded: %s", b)
+	}
+	if !in.ObservabilityPolicy.OptedIn(ObsOptInReplay) || in.ObservabilityPolicy.OptedIn("nonsense") {
+		t.Error("OptedIn wrong")
+	}
+	// An env that disabled everything is never opted in.
+	off := &ShapeObservabilityPolicy{Enabled: false, Disabled: ObsCategories, OptIn: []string{ObsOptInReplay}}
+	if off.OptedIn(ObsOptInReplay) {
+		t.Error("a fully disabled env must not count as opted in")
+	}
+	for name, p := range map[string]*ShapeObservabilityPolicy{
+		"unknown opt-in": {Enabled: true, OptIn: []string{"audio"}},
+		"duplicate":      {Enabled: true, OptIn: []string{"replay", "replay"}},
+	} {
+		if err := (Shape{Kind: EnvLocal, ObservabilityPolicy: p}).Canonical().Validate(); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: want ErrInvalid, got %v", name, err)
+		}
+	}
+}
+
 func TestShape_ObservabilityPolicyRefusals(t *testing.T) {
 	for name, p := range map[string]*ShapeObservabilityPolicy{
 		"unknown category":       {Enabled: true, Disabled: []string{"infra"}},

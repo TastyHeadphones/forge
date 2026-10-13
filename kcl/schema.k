@@ -3573,6 +3573,11 @@ schema ObservabilitySignals:
     # The browser SDK (frontends). `False` renders OTEL_ENDPOINT=off into every
     # frontend's runtime config and the platform's /_otel ingest drops it.
     browser: bool = True
+    # Session replay is OPT-IN (the only category that defaults off). The browser
+    # SDK records DOM events only when the frontend is built with
+    # {NEXT_PUBLIC_,VITE_}OTEL_REPLAY; the platform drops those events (browser
+    # logs of instrumentation scope `rum.rr-web`) unless this is True.
+    replay: bool = False
 
 schema ObservabilitySampling:
     """Trace sampling. The ratio is HEAD sampling in the SDK: every workload

@@ -518,6 +518,30 @@ var ObsCategories = []string{
 type ShapeObservabilityPolicy struct {
 	Enabled  bool     `json:"enabled"`
 	Disabled []string `json:"disabled,omitempty"`
+	// OptIn lists the categories the env turned ON that default off (only
+	// [ObsOptInReplay] today). Absent = none opted in.
+	OptIn []string `json:"opt_in,omitempty"`
+}
+
+// ObsOptInReplay is session replay: the browser SDK's recorded DOM events,
+// dropped by the platform unless the env opts in.
+const ObsOptInReplay = "replay"
+
+// ObsOptIns is every opt-in category, sorted.
+var ObsOptIns = []string{ObsOptInReplay}
+
+// OptedIn reports whether the env turned an opt-in category on. Everything
+// disabled is never opted in.
+func (p *ShapeObservabilityPolicy) OptedIn(category string) bool {
+	if p == nil || !p.Enabled {
+		return false
+	}
+	for _, c := range p.OptIn {
+		if c == category {
+			return true
+		}
+	}
+	return false
 }
 
 // Off reports whether category is opted out under this policy.
@@ -663,6 +687,20 @@ func (s Shape) Validate() error {
 			}
 			seen[d] = true
 		}
+		optIns := map[string]bool{}
+		for _, c := range ObsOptIns {
+			optIns[c] = true
+		}
+		seenIn := map[string]bool{}
+		for _, c := range p.OptIn {
+			if !optIns[c] {
+				return fmt.Errorf("%w: shape observability_policy opts in to %q (expected one of %s)", ErrInvalid, c, strings.Join(ObsOptIns, ", "))
+			}
+			if seenIn[c] {
+				return fmt.Errorf("%w: shape observability_policy opts in to %q twice", ErrInvalid, c)
+			}
+			seenIn[c] = true
+		}
 		if !p.Enabled && len(p.Disabled) != len(ObsCategories) {
 			return fmt.Errorf("%w: shape observability_policy is disabled as a whole and must list every category", ErrInvalid)
 		}
@@ -774,6 +812,7 @@ func (s Shape) Canonical() Shape {
 	if s.ObservabilityPolicy != nil {
 		pol := *s.ObservabilityPolicy
 		pol.Disabled = sortedStrings(pol.Disabled)
+		pol.OptIn = sortedStrings(pol.OptIn)
 		out.ObservabilityPolicy = &pol
 	}
 	// Alerts sort by name. Routes do NOT sort: first match wins, so their order

@@ -1180,11 +1180,13 @@ _render_observability = lambda b: Bundle -> any {
             "profiles": _obs_profiles_on(b)
             "metadata": _o.signals.metadata
             "browser": _o.signals.browser
+            "replay": _o.signals.replay
         }
-        # The opt-out, resolved: recorded in the release shape.
+        # The opt-out (and the one opt-in), resolved: recorded in the release shape.
         "policy": {
             "enabled": _o.enabled
             "disabled": _obs_disabled(b)
+            "opt_in": ["replay"] if _o.enabled and _o.signals.replay else []
         }
         "sampling": {
             "traces_ratio": _o.sampling.traces_ratio

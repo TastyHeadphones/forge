@@ -1202,6 +1202,7 @@ type ObservabilitySignalsEntity struct {
 	Profiles bool `json:"profiles"`
 	Metadata bool `json:"metadata"`
 	Browser  bool `json:"browser"`
+	Replay   bool `json:"replay"`
 }
 
 // ObservabilityPolicyEntity is Observability's resolved opt-out: Disabled
@@ -1210,6 +1211,8 @@ type ObservabilitySignalsEntity struct {
 type ObservabilityPolicyEntity struct {
 	Enabled  bool     `json:"enabled"`
 	Disabled []string `json:"disabled,omitempty"`
+	// OptIn names the default-off categories the env turned on (replay).
+	OptIn []string `json:"opt_in,omitempty"`
 }
 
 // kclRenderRaw is the JSON shape of `output` (P2 map §9.1). Workloads are

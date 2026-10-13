@@ -177,6 +177,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The resolved policy is recorded in the release shape as `observability_policy`
   (`{enabled, disabled[]}`, omitted when nothing is opted out), so the platform
   enforces it at the source. Disabled data is never collected, stored or billed.
+  **`signals.replay` is the one opt-IN category** (default `False`): the platform
+  drops browser session-replay events unless the env opts in (`opt_in` in the
+  policy).
 
 - **`pkg/alerting`: a SQL alert-rule evaluator in the Prometheus shape.** A
   rule's `expr` is one ClickHouse SELECT; every row it returns is a firing

@@ -541,10 +541,10 @@ func shapeObservabilityPolicyOf(e *KCLEntities) *release.ShapeObservabilityPolic
 		return nil
 	}
 	p := e.Observability.Policy
-	if p.Enabled && len(p.Disabled) == 0 {
+	if p.Enabled && len(p.Disabled) == 0 && len(p.OptIn) == 0 {
 		return nil
 	}
-	return &release.ShapeObservabilityPolicy{Enabled: p.Enabled, Disabled: p.Disabled}
+	return &release.ShapeObservabilityPolicy{Enabled: p.Enabled, Disabled: p.Disabled, OptIn: p.OptIn}
 }
 
 // shapeApplierOf projects the env's declared applier. Only a DECLARATION is

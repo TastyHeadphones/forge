@@ -20,3 +20,5 @@ assert_policy_enabled = output.observability.policy.enabled == True
 # profiles are off in a cluster unless set (existing default), so they are excluded.
 assert_no_none_exporters = len([k for k, _v in _env if k.endswith("_EXPORTER") and k != "OTEL_PROFILES_EXPORTER"]) == 0
 assert_sdk_on = "OTEL_SDK_DISABLED" not in _env
+# replay is the one opt-IN category: off unless asked for.
+assert_replay_off_by_default = output.observability.signals.replay == False and output.observability.policy.opt_in == []

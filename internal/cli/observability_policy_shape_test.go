@@ -21,6 +21,8 @@ func TestShapeObservabilityPolicyOf(t *testing.T) {
 		{"opts out of nothing", entities(&ObservabilityPolicyEntity{Enabled: true}), nil},
 		{"per category", entities(&ObservabilityPolicyEntity{Enabled: true, Disabled: []string{"logs", "metadata"}}),
 			&release.ShapeObservabilityPolicy{Enabled: true, Disabled: []string{"logs", "metadata"}}},
+		{"replay only", entities(&ObservabilityPolicyEntity{Enabled: true, OptIn: []string{"replay"}}),
+			&release.ShapeObservabilityPolicy{Enabled: true, OptIn: []string{"replay"}}},
 		{"everything", entities(&ObservabilityPolicyEntity{Enabled: false, Disabled: release.ObsCategories}),
 			&release.ShapeObservabilityPolicy{Enabled: false, Disabled: release.ObsCategories}},
 	}
