@@ -191,13 +191,13 @@ func GenerateMock(svc ServiceDef, projectDir, mockDir string, cs *checksums.File
 	// Renamed <svc>_mock.go → <svc>_mock_gen.go so the name states the tier.
 	// The old spelling read like a hand-written test double, which is exactly
 	// the file a developer would reach for and edit.
-	relPath := filepath.ToSlash(filepath.Join("internal", "handlers", "mocks", naming.ServicePackage(svc.Name)+"_mock_gen.go"))
+	relPath := MockRelPath(svc)
 	if projectDir != "" {
 		RetireRenamedGenerated(projectDir, filepath.Join("internal", "handlers", "mocks", naming.ServicePackage(svc.Name)+"_mock.go"), cs)
 		return checksums.WriteGeneratedFile(projectDir, relPath, buf.Bytes(), cs, true)
 	}
 
-	mockFile := filepath.Join(mockDir, naming.ServicePackage(svc.Name)+"_mock_gen.go")
+	mockFile := filepath.Join(mockDir, filepath.Base(relPath))
 	if err := os.MkdirAll(filepath.Dir(mockFile), 0o755); err != nil {
 		return false, err
 	}
@@ -205,6 +205,14 @@ func GenerateMock(svc ServiceDef, projectDir, mockDir string, cs *checksums.File
 		return false, err
 	}
 	return true, nil
+}
+
+// MockRelPath is the project-relative path of svc's generated mock — the
+// one name both GenerateMock's write and generate's progress line use, so
+// the log can never name a file the run did not write (it said
+// <svc>_mock.go after the file became <svc>_mock_gen.go).
+func MockRelPath(svc ServiceDef) string {
+	return filepath.ToSlash(filepath.Join("internal", "handlers", "mocks", naming.ServicePackage(svc.Name)+"_mock_gen.go"))
 }
 
 // ServiceRowPrefix is the name prefix of the generated per-service row

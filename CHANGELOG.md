@@ -234,6 +234,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer listed by the stale-artifact sweep. Every `--steps` preset that
   keeps the guard keeps the new step, and the driver appends it to a plan
   that does not.
+- **Scaffolded names and streaming tests.** Three things every reliant P3b
+  lane hit:
+  - An auto-stub no longer carries the package name at all: it is
+    `Stub<Field>` (`StubRepo`), so a handler package `tool_call` no longer
+    produces `stubTool_callRepo`.
+  - A server- or client-streaming rpc's scaffolded test is a real test. It
+    drives the stub through `NewTest<Svc>Server`'s typed client (a stream
+    cannot be called in process) and asserts `tdd.AssertScaffoldStub`, so it
+    passes as written and goes red when the rpc is implemented. It used to be
+    a TODO under the unary test's `tdd.RunRPCCases` header. A bidi rpc's file
+    has its own header saying why forge writes no case: the harness serves
+    HTTP/1.1, and connect-go carries a bidi stream only over HTTP/2.
+  - `forge generate`'s progress line names
+    `internal/handlers/mocks/<svc>_mock_gen.go`, the file it writes, not
+    `<svc>_mock.go`. Both now read `codegen.MockRelPath`.
 - **A failed `forge generate` that changed no Go file no longer builds the
   project to report on its rollback.** After reverting a failed run, generate
   ran `go build ./...` over the restored tree to say whether it compiles. It
