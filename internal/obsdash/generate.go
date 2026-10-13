@@ -31,6 +31,14 @@ const (
 // genSuffix marks the files forge owns and rewrites.
 const genSuffix = "_gen.json"
 
+// hostedOnly reports whether d is a dashboard with nothing to draw in the local
+// stack, and so no HyperDX file: Workloads reads what a node agent delivers
+// and Releases reads the release ledger, and neither exists under
+// `forge env up`. They are also constant text, independent of the project's
+// services, so writing them would put library code in the project's tree
+// behind a do-not-edit banner. They ship in the spec and in the release bundle.
+func hostedOnly(d Dashboard) bool { return d.ID == WorkloadsID || d.ID == ReleasesID }
+
 // OverridePath is the file that, when present, replaces the generated
 // dashboard d: forge neither writes nor refreshes its _gen twin. The file is
 // the project's, and forge never touches it.
@@ -65,6 +73,9 @@ func Write(projectDir string, in Input, cs *checksums.FileChecksums) ([]string, 
 
 	for _, f := range files {
 		d := byFile[f.File]
+		if hostedOnly(d) {
+			continue
+		}
 		rel := DashboardsDir + "/" + f.File
 		if _, err := os.Stat(filepath.Join(projectDir, OverridePath(sp.Project, d))); err == nil {
 			if err := retireGenerated(projectDir, rel, cs); err != nil {

@@ -288,6 +288,8 @@ func numberFormat(u Unit) *HyperDXNumFormat {
 		return &HyperDXNumFormat{Output: "number", Mantissa: &zero, ThousandSeparated: true}
 	case UnitMillis:
 		return &HyperDXNumFormat{Output: "number", Mantissa: &one, ThousandSeparated: true, Unit: "ms"}
+	case UnitSeconds:
+		return &HyperDXNumFormat{Output: "number", Mantissa: &one, ThousandSeparated: true, Unit: "s"}
 	case UnitBytes:
 		return &HyperDXNumFormat{Output: "byte", Mantissa: &one}
 	case UnitPercent:

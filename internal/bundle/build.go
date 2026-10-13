@@ -56,6 +56,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -124,6 +125,53 @@ type BuildInput struct {
 	// CreatedAt is the bundle's creation time. Required, and the caller's:
 	// see the determinism note at the top of this file.
 	CreatedAt time.Time
+	// Observability is the dashboards and the metrics schema the bundle
+	// carries beside its manifests (see [release.BundleObservabilityPrefix]).
+	// Nothing applies them, so they neither enter the shape nor the config
+	// digest; they do enter the layer, and so the bundle's digest.
+	Observability []ObservabilityFile
+}
+
+// ObservabilityFile is one file under the bundle's observability/ directory.
+type ObservabilityFile struct {
+	// Path is slash-separated and under [release.BundleObservabilityPrefix].
+	Path string
+	Data []byte
+}
+
+const (
+	// maxObservabilityFileBytes and maxObservabilityBytes bound what a project
+	// can put in a bundle. They sit far under the control plane's 8 MiB layer
+	// bound so a bundle forge builds is one the platform records.
+	maxObservabilityFileBytes = 1 << 20
+	maxObservabilityBytes     = 4 << 20
+)
+
+// observabilityEntries validates the files and turns them into layer entries.
+func observabilityEntries(files []ObservabilityFile) ([]tarEntry, error) {
+	var out []tarEntry
+	seen := map[string]bool{}
+	total := 0
+	for _, f := range files {
+		clean := path.Clean(f.Path)
+		switch {
+		case clean != f.Path || strings.HasPrefix(clean, "/") || strings.Contains(clean, ".."):
+			return nil, fmt.Errorf("%w: observability path %q is not a clean relative path", release.ErrInvalid, f.Path)
+		case !strings.HasPrefix(clean, release.BundleObservabilityPrefix+"/"):
+			return nil, fmt.Errorf("%w: observability path %q is not under %s/", release.ErrInvalid, f.Path, release.BundleObservabilityPrefix)
+		case seen[clean]:
+			return nil, fmt.Errorf("%w: observability path %q appears twice", release.ErrInvalid, f.Path)
+		case len(f.Data) > maxObservabilityFileBytes:
+			return nil, fmt.Errorf("%w: %s is %d bytes, over the %d-byte bound for one observability file", release.ErrInvalid, f.Path, len(f.Data), maxObservabilityFileBytes)
+		}
+		seen[clean] = true
+		total += len(f.Data)
+		out = append(out, tarEntry{name: clean, data: f.Data})
+	}
+	if total > maxObservabilityBytes {
+		return nil, fmt.Errorf("%w: the observability files total %d bytes, over the %d-byte bound", release.ErrInvalid, total, maxObservabilityBytes)
+	}
+	return out, nil
 }
 
 // Bundle is a built bundle, in memory: its identity, its document, and the
@@ -245,7 +293,11 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)
 	}
 
-	manifestsLayer, trees, err := packManifests(docs)
+	extra, err := observabilityEntries(in.Observability)
+	if err != nil {
+		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)
+	}
+	manifestsLayer, trees, err := packManifests(docs, extra...)
 	if err != nil {
 		return Bundle{}, fmt.Errorf("bundle %s/%s: pack manifests: %w", in.Project, in.Env, err)
 	}
@@ -382,7 +434,7 @@ func pathSegment(s string) string { return release.BundlePathSegment(s) }
 // than from the env's declared cluster list: a declared cluster with no
 // documents routed to it must not get a Kustomization, because an empty path
 // reconciles green over an env nothing applied.
-func packManifests(docs []parsedDoc) ([]byte, []release.BundleClusterTree, error) {
+func packManifests(docs []parsedDoc, extra ...tarEntry) ([]byte, []release.BundleClusterTree, error) {
 	type entry struct {
 		name    string
 		cluster string
@@ -424,6 +476,10 @@ func packManifests(docs []parsedDoc) ([]byte, []release.BundleClusterTree, error
 		}
 		counts[e.cluster]++
 	}
+	// The observability files ride in the same layer but are not documents:
+	// they are not counted in any cluster tree and no Kustomization path
+	// reaches them.
+	files = append(files, extra...)
 	layer, err := writeTarGz(files)
 	if err != nil {
 		return nil, nil, err

@@ -53,6 +53,30 @@ const BundleManifestsPrefix = "manifests"
 // survives sanitization, and an empty one is not a cluster.
 const bundleUnclusteredSegment = "_"
 
+// The observability files a bundle carries beside its manifests (console v2
+// contract K4), in the SAME layer, under a top-level directory the reconciler
+// never applies.
+//
+// WHY THE SAME LAYER AND NOT A SECOND ONE. A Flux layerSelector selects exactly
+// one layer, so a second layer is invisible to the reconciler — which is right
+// for data nothing applies, but it would also change what a bundle IS (one
+// manifest, one config, one layer) for every reader that counts on that, and
+// Fetch refuses a layer it does not know. A Kustomization's spec.path is always
+// [BundleClusterPath], under [BundleManifestsPrefix], so a sibling directory in
+// the extracted artifact is never reached by anything that applies.
+//
+//	observability/dashboards/<name>.json   one renderer-neutral dashboard each
+//	observability/metrics-schema.json      the metrics schema (forge.metrics/v1)
+//
+// A dashboard file is named <name>_gen.json when forge generated it and
+// <name>.json when the project owns it; a project's file wins over the
+// generated one of the same name, so a name never appears twice.
+const (
+	BundleObservabilityPrefix = "observability"
+	BundleDashboardsPath      = BundleObservabilityPrefix + "/dashboards"
+	BundleMetricsSchemaPath   = BundleObservabilityPrefix + "/metrics-schema.json"
+)
+
 // BundleClusterPath is the path, within the extracted manifests layer, that
 // holds the documents a deploy routes to one cluster. It is what the control
 // plane sets as `Kustomization.spec.path` for that cluster.

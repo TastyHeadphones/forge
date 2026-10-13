@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Dashboards ship in the release.** A release bundle now carries every
+  dashboard the project declares at `observability/dashboards/`, beside the
+  metrics schema at `observability/metrics-schema.json`, inside the same
+  manifests layer (a Flux `layerSelector` still selects exactly one layer, and
+  nothing a Kustomization `spec.path` reaches is touched). Generated dashboards
+  come from `dashboard-spec_gen.json` plus the Custom metrics dashboard drawn
+  from the built binary's schema; a renderer-neutral file you own in
+  `deploy/observability/dashboards/` (a `"panels"` array) ships as is, and one
+  named like a generated dashboard (`shop-overview.json` for
+  `shop-overview_gen.json`) replaces it. A HyperDX-format file (`"tiles"`)
+  stays local. Every file is validated when the release is cut: a bad file fails
+  `forge env build <env> --release` with `file:line:col: path: message`
+  errors before a release is left behind without its bundle; a deploy that
+  builds nothing only warns. `forge observe dashboards check` runs the same
+  validation and lists what would ship.
+- **Two best-practice dashboards.** _Workloads_ draws the customer metadata the
+  node agent delivers (CPU and memory against requests and limits, restarts and
+  the last exit reason, CPU and memory by image tag, Kubernetes events and
+  container terminations). _Releases_ splits requests, error rate and latency
+  by `service.version` and adds a per-version comparison table. Neither has a
+  heatmap. They draw nothing on a local `forge env up` (no node agent, no
+  releases).
+- **`annotations` on a dashboard spec.** `{"source": "releases"}` declares that
+  a dashboard's time-series panels carry deploy markers, drawn by the console
+  from the release ledger. Every generated dashboard with a line panel declares
+  it. HyperDX has no such concept and the HyperDX renderer ignores it. A `"s"`
+  (seconds) unit joins the display units.
+
 ### Fixed
 
 - **`forge project migrate import --from goose` splits a NO TRANSACTION file

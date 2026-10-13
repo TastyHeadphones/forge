@@ -1512,6 +1512,13 @@ func finishReleaseArtifacts(ctx context.Context, opts buildOptions, entities *KC
 		return err
 	}
 	if opts.release != "" {
+		// Before the cut: a dashboard that does not validate must not leave a
+		// release behind that has no bundle to carry it.
+		if opts.env != "" && !opts.plan {
+			if _, err := collectObservabilityFiles(projectDirForKCL(), opts.outputDir); err != nil {
+				return fmt.Errorf("--release %s: %w", opts.release, err)
+			}
+		}
 		if err := writeReleaseLedger(ctx, opts, entities); err != nil {
 			return err
 		}
@@ -1546,6 +1553,9 @@ func writeBuildBundle(ctx context.Context, opts buildOptions) error {
 		Run:     run,
 		Pushed:  opts.push || opts.pushIfDeclared,
 		Now:     time.Now().UTC().Truncate(time.Second),
+
+		OutputDir:           opts.outputDir,
+		StrictObservability: true,
 	})
 	printBundleWrites(os.Stdout, written)
 	noteRecordedBundles(opts.release, written)

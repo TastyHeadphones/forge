@@ -60,7 +60,7 @@ func BuildCustomMetrics(project string, schema metrics.Schema) (Dashboard, bool)
 			}
 		}
 	}
-	return d, len(d.Panels) > 0
+	return withReleaseMarkers(d), len(d.Panels) > 0
 }
 
 // isCallMetric matches the per-component <package>.calls/.errors/.duration
@@ -130,8 +130,9 @@ func panelID(s string) string {
 	return strings.NewReplacer(".", "-", "_", "-").Replace(s)
 }
 
-// unitFor maps a UCUM unit onto the display units a panel formats. A counted
-// thing ("{order}") shows as a plain count. "1" and "%" are left unformatted:
+// unitFor maps a UCUM unit onto the display units a panel formats: "ms", "s"
+// and "By" are formatted as such. A counted thing ("{order}") shows as a plain
+// count. "1" and "%" are left unformatted:
 // UnitPercent formats a fraction in [0,1], and a dimensionless metric need not
 // be one.
 func unitFor(ucum string) Unit {
@@ -140,6 +141,8 @@ func unitFor(ucum string) Unit {
 		return UnitMillis
 	case "By":
 		return UnitBytes
+	case "s":
+		return UnitSeconds
 	}
 	if strings.HasPrefix(ucum, "{") {
 		return UnitCount
