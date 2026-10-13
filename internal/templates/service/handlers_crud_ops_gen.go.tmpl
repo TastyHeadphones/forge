@@ -159,6 +159,11 @@ func (s *Service) crud{{.MethodName}}Op() crud.ListOp[pb.{{.InputType}}, pb.{{.O
 			if req.{{.GoName}} != nil {
 {{- if eq .FilterType "search"}}
 				opts = append(opts, orm.WhereILikeAny([]string{ {{- range $i, $c := .SearchColumns}}{{if $i}}, {{end}}"{{$c}}"{{- end}} }, "%"+*req.{{.GoName}}+"%"))
+{{- else if .EnumNumber}}
+				// Integer column stores the proto WIRE NUMBER, so bind the
+				// number. A provided value always applies — UNSPECIFIED (0)
+				// matches rows storing 0; nil is the no-filter path.
+				opts = append(opts, orm.WhereEq("{{.ColumnName}}", int32(*req.{{.GoName}})))
 {{- else if .IsEnum}}
 				// Enum column stores the proto VALUE NAMES (TEXT + CHECK), so
 				// bind the name, never the wire number. A provided value always
@@ -174,6 +179,11 @@ func (s *Service) crud{{.MethodName}}Op() crud.ListOp[pb.{{.InputType}}, pb.{{.O
 			if req.{{.GoName}} != "" {
 				opts = append(opts, orm.WhereILikeAny([]string{ {{- range $i, $c := .SearchColumns}}{{if $i}}, {{end}}"{{$c}}"{{- end}} }, "%"+req.{{.GoName}}+"%"))
 			}
+{{- else if and (eq .FilterType "exact") .EnumNumber}}
+			// Integer column stores the proto WIRE NUMBER, so bind the number.
+			// Always applied — filtering by UNSPECIFIED (0) matches rows storing
+			// 0; declare the request field `optional` to express "no filter".
+			opts = append(opts, orm.WhereEq("{{.ColumnName}}", int32(req.{{.GoName}})))
 {{- else if and (eq .FilterType "exact") .IsEnum}}
 			// Enum column stores the proto VALUE NAMES (TEXT + CHECK), so bind
 			// the name, never the wire number. Always applied — filtering by

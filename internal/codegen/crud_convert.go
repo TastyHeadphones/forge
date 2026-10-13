@@ -625,19 +625,31 @@ func assignToDB(dst, src string, wf EntityField, col EntityColumn) (string, stri
 		return fmt.Sprintf("%s%s = %s", guard, d, expr), ""
 
 	case wf.Kind == FieldKindEnum:
-		// Enum columns store the proto enum VALUE NAMES as TEXT (the
-		// CHECK (col IN (...)) vocabulary birth emitted), so the entity
-		// side takes String() — the declared name. An out-of-range wire
-		// number renders numerically and is rejected by the CHECK: loud,
-		// never silently stored as ''.
 		_, repeated, optional, resolved := enumWireShape(wf)
-		if !resolved || col.Type != "string" || repeated != col.IsArray {
+		if !resolved || repeated != col.IsArray {
 			break
 		}
-		if repeated {
-			return fmt.Sprintf("for _, v := range %s {\n\t\t%s = append(%s, v.String())\n\t}", s, d, d), ""
+		switch col.Type {
+		case "string":
+			// Enum columns forge BIRTHS store the proto enum VALUE NAMES
+			// as TEXT (the CHECK (col IN (...)) vocabulary birth emitted),
+			// so the entity side takes String() — the declared name. An
+			// out-of-range wire number renders numerically and is rejected
+			// by the CHECK: loud, never silently stored as ''.
+			if repeated {
+				return fmt.Sprintf("for _, v := range %s {\n\t\t%s = append(%s, v.String())\n\t}", s, d, d), ""
+			}
+			return enumSingularAssign(d, s, optional, nullable, col), ""
+		case "int64":
+			// An integer column (any width: the canonical type is int64)
+			// stores the WIRE NUMBER — the schema the author declared,
+			// e.g. a project that kept its enums as integers. int32 →
+			// int64 widens, so nothing can be lost on the way in.
+			if repeated {
+				return fmt.Sprintf("for _, v := range %s {\n\t\t%s = append(%s, int64(v))\n\t}", s, d, d), ""
+			}
+			return enumNumberAssign(d, s, optional, nullable, col), ""
 		}
-		return enumSingularAssign(d, s, optional, nullable, col), ""
 	}
 	return "", fmt.Sprintf("no conversion between wire kind %s and column type %s", wf.Kind, col.DeclType)
 }
@@ -690,6 +702,56 @@ func enumSingularAssign(d, s string, optional, nullable bool, col EntityColumn) 
 		return fmt.Sprintf("%s = %s.String()", d, s)
 	}
 	return fmt.Sprintf("%s = %s // %s: an unset enum stores the column DEFAULT\n%s", d, lit, col.Name, store)
+}
+
+// enumNumberAssign is enumSingularAssign for an INTEGER column, which stores
+// the wire number rather than the value name. The unset (zero) routing is the
+// same and for the same reasons: a NOT NULL column with a literal DEFAULT
+// takes the DEFAULT, a nullable column stores NULL, and a column that
+// declares neither gets the value as sent — with no CHECK vocabulary to
+// refuse the zero, it stores 0, which is what the schema allowed.
+func enumNumberAssign(d, s string, optional, nullable bool, col EntityColumn) string {
+	set, val := s+" != 0", "int64("+s+")"
+	if optional {
+		set, val = s+" != nil && *"+s+" != 0", "int64(*"+s+")"
+	}
+	if nullable {
+		return fmt.Sprintf("if %s {\n\t\tv := %s\n\t\t%s = &v\n\t}", set, val, d)
+	}
+	store := fmt.Sprintf("if %s {\n\t\t%s = %s\n\t}", set, d, val)
+	lit, ok := pgDefaultGoLiteral(col)
+	if !ok {
+		if optional {
+			return store
+		}
+		return fmt.Sprintf("%s = %s", d, val)
+	}
+	return fmt.Sprintf("%s = %s // %s: an unset enum stores the column DEFAULT\n%s", d, lit, col.Name, store)
+}
+
+// enumFromNumberAssign is enumFromDBAssign for an INTEGER column: the stored
+// number IS the wire value, so the read is a cast, not a lookup. A number the
+// enum does not declare is not corruption here — proto3 enums are open, and
+// the wire carries an unknown number through unchanged, exactly as a client
+// sending one would — but a number outside int32, which no wire value can
+// be, is refused with numericGuardStmt's error (a row written by a
+// migration, an import or another service).
+func enumFromNumberAssign(d, s, pbType, field string, col EntityColumn, repeated, optional, nullable bool) string {
+	guard := func(expr string) string { return numericGuardStmt(expr, "int64", "int32", field, col, false) }
+	switch {
+	case repeated:
+		return fmt.Sprintf("for _, v := range %s {\n\t\t%s%s = append(%s, %s(v))\n\t}",
+			s, indentBlock(guard("v")), d, d, pbType)
+	case optional && nullable:
+		return fmt.Sprintf("if %s != nil {\n\t\t%sev := %s(*%s)\n\t\t%s = &ev\n\t}",
+			s, indentBlock(guard("*"+s)), pbType, s, d)
+	case optional:
+		return fmt.Sprintf("%s{\n\t\tev := %s(%s)\n\t\t%s = &ev\n\t}", stmtPrefix(guard(s)), pbType, s, d)
+	case nullable:
+		return fmt.Sprintf("if %s != nil {\n\t\t%s%s = %s(*%s)\n\t}", s, indentBlock(guard("*"+s)), d, pbType, s)
+	default:
+		return fmt.Sprintf("%s%s = %s(%s)", stmtPrefix(guard(s)), d, pbType, s)
+	}
 }
 
 // assignToProto emits "dst.<X> = ..." converting an entity struct field
@@ -782,10 +844,15 @@ func assignToProto(dst, src string, wf EntityField, col EntityColumn) (string, s
 		// with no error and no log. The read path therefore returns an
 		// error (the ToProto helper's signature is (*pb.<Entity>, error)).
 		pbType, repeated, optional, resolved := enumWireShape(wf)
-		if !resolved || col.Type != "string" || repeated != col.IsArray {
+		if !resolved || repeated != col.IsArray {
 			break
 		}
-		return enumFromDBAssign(d, s, pbType, col.Name, repeated, optional, nullable), ""
+		switch col.Type {
+		case "string":
+			return enumFromDBAssign(d, s, pbType, col.Name, repeated, optional, nullable), ""
+		case "int64": // an integer column stores the wire number — see enumFromNumberAssign
+			return enumFromNumberAssign(d, s, pbType, wf.Name, col, repeated, optional, nullable), ""
+		}
 	}
 	return "", fmt.Sprintf("no conversion between wire kind %s and column type %s", wf.Kind, col.DeclType)
 }
