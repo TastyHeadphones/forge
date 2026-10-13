@@ -359,6 +359,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   On re-pin, the first generate in a checkout compiles every package's test
   variant once (about 200s on reliant when the non-test build is already
   cached); every later run, and the next `go test`, reuses them.
+- **`FORGE_NO_GIT_HOOKS` is the name for opting out of forge's git hooks, and
+  `forge generate` says which hooks it ran.** `FORGE_NO_HOOKS=1` stops forge
+  setting `core.hooksPath=.githooks` and its merge driver in a clone. Agents
+  kept setting it expecting `forge generate` to skip forge.yaml's
+  `generate.hooks` (reliant's `make sqlc`), and it never did. It is now
+  spelled `FORGE_NO_GIT_HOOKS`; `FORGE_NO_HOOKS` is still honoured as the same
+  git-only opt-out, so a clone opted out under it stays opted out. Generate
+  hooks still always run: a skipped hook leaves output that still compiles but
+  is stale, and `make sqlc` measured 3s of reliant's generate, so there is no
+  skip flag. The generate output names every hook before they run and confirms
+  each one (`✓ generate hook "sqlc" ran (3.2s)`); with either git-hooks
+  variable set, the step says that it does not skip these. A run narrowed with
+  `--steps` or `--templates-only` that leaves the hooks out now prints
+  `⏩ generate hooks NOT run (...)` naming them and the paths they write.
+  `forge generate --help` has a Hooks section saying all of this, and so do
+  the forge-managed `.githooks/pre-commit` comment and the `architecture`
+  skill. On re-pin, `forge generate` rewrites `.githooks/pre-commit` (the
+  comment only); rename `FORGE_NO_HOOKS` to `FORGE_NO_GIT_HOOKS` where you set
+  it.
 - **A config env var set to `""` is unset, for every field type.**
   `pkg/config`'s env layer read an empty variable as a value for strings, bytes
   and lists, and as unset for numbers, bools and durations. So `TEMPORAL_HOST=`

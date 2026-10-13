@@ -617,7 +617,8 @@ func (g *ProjectGenerator) generateGitHooks() error {
 #
 # Activated via ` + "`core.hooksPath=.githooks`" + ` (relative, so it works in
 # every git worktree). Bypass one commit with ` + "`git commit --no-verify`" + `;
-# disable forge touching hook activation with FORGE_NO_HOOKS=1.
+# stop forge activating git hooks in a clone with FORGE_NO_GIT_HOOKS=1 (it does
+# not affect the forge.yaml generate.hooks that ` + "`forge generate`" + ` runs).
 if command -v pre-commit >/dev/null 2>&1 && [ -f .pre-commit-config.yaml ]; then
 	exec pre-commit run --hook-stage pre-commit
 fi

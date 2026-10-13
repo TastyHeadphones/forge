@@ -219,7 +219,7 @@ func newMergeGeneratedCmd() *cobra.Command {
 // config when the project's .gitattributes names it. Best-effort and silent,
 // like ensureGitHooksActivated: a merge without it is today's merge.
 func ensureGeneratedMergeDriver(root string) {
-	if os.Getenv("FORGE_NO_HOOKS") != "" {
+	if gitHooksOptOut() != "" {
 		return
 	}
 	attrs, err := os.ReadFile(filepath.Join(root, ".gitattributes"))

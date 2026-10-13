@@ -118,3 +118,99 @@ func TestWritesGenerateHooks(t *testing.T) {
 		t.Error("a project with no hooks must skip the step")
 	}
 }
+
+// The output names every hook before any runs, and confirms each one that
+// ran — "which hooks ran" is answered by the log, not by inference.
+func TestRunGenerateHooks_ReportsWhatRan(t *testing.T) {
+	t.Setenv("FORGE_GENERATE_HOOK_HELPER", "1")
+	t.Setenv(gitHooksOptOutEnv, "")
+	t.Setenv(legacyGitHooksOptOutEnv, "")
+	hooks := []config.GenerateHook{
+		helperHook("sqlc", "", "write", "a.txt"),
+		helperHook("docs", "", "write", "b.txt"),
+	}
+	var out bytes.Buffer
+	if err := runGenerateHooks(t.TempDir(), hooks, &out, &out); err != nil {
+		t.Fatalf("runGenerateHooks: %v\n%s", err, out.String())
+	}
+	for _, want := range []string{
+		"Running 2 generate hook(s) from forge.yaml generate.hooks: sqlc, docs",
+		`✓ generate hook "sqlc" ran`,
+		`✓ generate hook "docs" ran`,
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output must contain %q, got:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "does not skip these") {
+		t.Errorf("no git-hooks variable is set, so nothing should be said about one:\n%s", out.String())
+	}
+}
+
+// FORGE_NO_HOOKS read as "skip forge.yaml's hooks" to the agents who set it,
+// and it never did. Under either git-hooks variable the hooks still run, and
+// the step says so where the agent is looking.
+func TestRunGenerateHooks_GitHooksOptOutDoesNotSkipThem(t *testing.T) {
+	for _, env := range []string{gitHooksOptOutEnv, legacyGitHooksOptOutEnv} {
+		t.Run(env, func(t *testing.T) {
+			t.Setenv("FORGE_GENERATE_HOOK_HELPER", "1")
+			t.Setenv(gitHooksOptOutEnv, "")
+			t.Setenv(legacyGitHooksOptOutEnv, "")
+			t.Setenv(env, "1")
+			root := t.TempDir()
+			var out bytes.Buffer
+			if err := runGenerateHooks(root, []config.GenerateHook{helperHook("sqlc", "", "write", "a.txt")}, &out, &out); err != nil {
+				t.Fatalf("runGenerateHooks: %v\n%s", err, out.String())
+			}
+			if _, err := os.Stat(filepath.Join(root, "a.txt")); err != nil {
+				t.Errorf("%s=1 must not skip a generate hook: %v", env, err)
+			}
+			if want := env + " is set: it stops forge configuring git hooks in this clone and does not skip these"; !strings.Contains(out.String(), want) {
+				t.Errorf("output must explain %s, want %q in:\n%s", env, want, out.String())
+			}
+		})
+	}
+}
+
+// A narrowed run that leaves the hooks out says so, naming them and what
+// they write; a run that includes the step, or a project without hooks, says
+// nothing.
+func TestReportGenerateHooksNotRun(t *testing.T) {
+	ctx := &pipelineContext{Cfg: &config.ProjectConfig{Generate: config.GenerateConfig{Hooks: []config.GenerateHook{
+		{Name: "sqlc", Command: []string{"make", "sqlc"}, Writes: []string{"internal/db/postgres/generated"}},
+	}}}}
+	withHooks := []GenStep{{Name: "load project config"}, {Name: generateHooksStep}}
+	withoutHooks := []GenStep{{Name: "load project config"}}
+
+	var out bytes.Buffer
+	reportGenerateHooksNotRun(&out, ctx, withoutHooks, pipelineFlags{TemplatesOnly: true})
+	want := "⏩ generate hooks NOT run (--templates-only): sqlc — their output (internal/db/postgres/generated) was not refreshed"
+	if !strings.Contains(out.String(), want) {
+		t.Errorf("want %q, got:\n%s", want, out.String())
+	}
+
+	for name, tc := range map[string]struct {
+		ctx   *pipelineContext
+		steps []GenStep
+	}{
+		"the step ran":        {ctx, withHooks},
+		"no hooks declared":   {&pipelineContext{Cfg: &config.ProjectConfig{}}, withoutHooks},
+		"config never loaded": {&pipelineContext{}, withoutHooks},
+	} {
+		out.Reset()
+		reportGenerateHooksNotRun(&out, tc.ctx, tc.steps, pipelineFlags{Steps: "mocks"})
+		if out.Len() != 0 {
+			t.Errorf("%s: expected no report, got:\n%s", name, out.String())
+		}
+	}
+}
+
+// The hooks step is pinned to the name presets and the plan use.
+func TestGenerateHooksStepIsInThePipeline(t *testing.T) {
+	for _, s := range generateSteps() {
+		if s.Name == generateHooksStep {
+			return
+		}
+	}
+	t.Fatalf("no pipeline step is named %q", generateHooksStep)
+}
