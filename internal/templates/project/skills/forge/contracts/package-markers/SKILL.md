@@ -62,6 +62,8 @@ A marker that draws both refusals needs one allowance per rule, stacked. Each co
 
 By default every `internal/<pkg>/contract.go` package is a **server component**: `internal/app/compose.go` constructs it, and `forge generate` must resolve every `Deps` field from another component or from `*Infra` (`internal/app/providers.go`), or it fails with `<Pkg>.Deps.<Field> (<type>) has no provider`.
 
+Constructing it means calling `pkg.New(pkg.Deps{…})`, so a composed package needs a `type Deps struct` and a constructor `func New(Deps) T` or `func New(Deps) (T, error)` (any name, with `// forge:constructor`). A composed package without one — an interface catalogue, a constants package that grew a `contract.go`, a `New` that takes something other than `Deps` — fails `forge generate` before `compose.go` is written, naming the package and what is wrong with it. Give it the constructor, or mark it with whichever marker below is true.
+
 That is wrong for a package only the CLI, a daemon or another binary uses — a browser login flow, an on-disk credential store. Its `Deps` (a credentials directory, an `OpenURL func(string) error`, an HTTP doer) are things the server neither has nor should have, and putting them on the server's `Infra` to satisfy the generator is the wrong design. Mark the package instead, with who builds it:
 
 ```go

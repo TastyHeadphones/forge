@@ -143,6 +143,21 @@ github.com/reliant-labs/forge/cmd/forge@<pin> <same args>` that needs no
 
 ### Fixed
 
+- **`forge generate` no longer composes a package it cannot construct, and no
+  longer calls `compose.go` hand-written.** The pre-codegen contract check
+  stays silent on a `contract.go` with no interface and on an interface
+  catalogue with no `Deps` and no constructor, but composition composed both
+  anyway: it wrote `pkg.New(pkg.Deps{})` calls that could not compile, and the
+  validate build then told the author that `internal/app/compose.go`, which
+  forge had just written, was "hand-written, not generated". Composition now
+  refuses before writing `compose.go`, naming each package and exactly what is
+  wrong (no `type Deps struct`, no constructor, `` `New` is `func(x int) *Impl` ``
+  …) and the markers that make the tree truthful (`//forge:external-component`,
+  `//forge:not-a-component`, `//forge:exclude-contract`). It is not silently
+  left out: membership stays declared, never inferred. A compile error in a
+  reconciled file (`compose.go`, `lifecycle.go`) now says forge may have
+  injected the failing line instead of blaming the author.
+
 - **`forge env deploy <env> --dry-run` now predicts the real run's release
   decision, and a nested git checkout is no longer "dirt".** A bare
   `forge env deploy prod` cut and built a whole new release because an

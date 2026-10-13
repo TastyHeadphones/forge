@@ -889,8 +889,8 @@ func goBuildValidateFailure(projectDir, errOutput string, runErr error) *validat
 		}
 		cause = errors.New(quoted)
 	}
-	fix := goBuildValidateFixHint(errOutput, func(rel string) bool {
-		return isGeneratedGoSource(filepath.Join(projectDir, rel))
+	fix := goBuildValidateFixHint(errOutput, func(rel string) goSourceOrigin {
+		return goSourceOriginOf(filepath.Join(projectDir, rel))
 	})
 	return &validateBuildError{
 		Output: errOutput,
@@ -922,16 +922,39 @@ func compilerErrorLines(output string) []string {
 // (https://go.dev/s/generatedcode), which buf's stubs follow too.
 var goGeneratedHeader = regexp.MustCompile(`(?m)^// Code generated .* DO NOT EDIT\.$`)
 
-// isGeneratedGoSource reports whether path is generated code — forge's own
-// (a forge:hash marker) or any tool's that follows Go's convention. It
-// decides which remediation the validate failure offers: edit the file, or
-// fix what it was generated from. Unreadable reads as hand-written.
-func isGeneratedGoSource(path string) bool {
+// reconciledHeader marks a file the author owns but forge keeps a projection
+// in sync inside (internal/app/compose.go, internal/app/lifecycle.go).
+var reconciledHeader = regexp.MustCompile(`forge-scaffold \(USER-OWNED, (?:ADDITIVELY )?RECONCILED\)`)
+
+// goSourceOrigin is who wrote a Go file, as far as the validate failure's
+// remediation is concerned.
+type goSourceOrigin int
+
+const (
+	// originHandWritten: fix it where it stands.
+	originHandWritten goSourceOrigin = iota
+	// originGenerated: never edit it; fix what it was generated from.
+	originGenerated
+	// originReconciled: the author's file, but forge injects lines into it on
+	// every generate, so the failing line may be forge's.
+	originReconciled
+)
+
+// goSourceOriginOf classifies path: generated (a forge:hash marker, or Go's
+// generated-code convention), reconciled (forge's owned-but-reconciled
+// header), or hand-written. Unreadable reads as hand-written.
+func goSourceOriginOf(path string) goSourceOrigin {
 	content, err := os.ReadFile(path)
 	if err != nil {
-		return false
+		return originHandWritten
 	}
-	return checksums.Verify(content) != checksums.NoMarker || goGeneratedHeader.Match(content)
+	switch {
+	case checksums.Verify(content) != checksums.NoMarker || goGeneratedHeader.Match(content):
+		return originGenerated
+	case reconciledHeader.Match(content):
+		return originReconciled
+	}
+	return originHandWritten
 }
 
 // validateTestFilesTypecheck closes the hole `go build ./...` leaves:
@@ -1096,9 +1119,10 @@ func isForgeOwnedFile(path string) bool {
 //     proto/config/ likely has no annotated config fields yet.
 //
 //  3. Any other error with a coordinate — name the first one and who owns
-//     the file it cites. isGenerated(rel) answers that for a
+//     the file it cites. originOf(rel) answers that for a
 //     project-relative path: generated code is fixed at its inputs, a
-//     hand-written file is fixed where it stands. Guessing a remedy from
+//     hand-written file is fixed where it stands, and a reconciled file
+//     (compose.go) may hold a line forge injected. Guessing a remedy from
 //     the message ("ensure all referenced types are imported") is what
 //     this replaced: it was wrong for the usual case, a hand-written file
 //     calling something this generate did not emit.
@@ -1107,7 +1131,7 @@ func isForgeOwnedFile(path string) bool {
 //
 // Extracted from runGoBuildValidate so unit tests can pin the hint
 // selection without spinning up a tmpdir project + a real go build.
-func goBuildValidateFixHint(errOutput string, isGenerated func(rel string) bool) string {
+func goBuildValidateFixHint(errOutput string, originOf func(rel string) goSourceOrigin) string {
 	if errOutput == "" {
 		return "ensure all referenced types are imported and re-run 'forge generate'"
 	}
@@ -1130,10 +1154,23 @@ func goBuildValidateFixHint(errOutput string, isGenerated func(rel string) bool)
 	}
 	if errs := compilerErrorLines(errOutput); len(errs) > 0 {
 		file := errorLineFile(errs[0])
-		if isGenerated != nil && isGenerated(file) {
+		origin := originHandWritten
+		if originOf != nil {
+			origin = originOf(file)
+		}
+		switch origin {
+		case originGenerated:
 			return file + " is generated — do not edit it. Fix what it was generated from (proto, migrations, " +
 				"or the hand-written code it references) and re-run 'forge generate'; if those are correct, " +
 				"this is a forge bug worth reporting"
+		case originReconciled:
+			// Calling compose.go "hand-written" blamed the author for a line
+			// forge had injected into it moments earlier.
+			return file + " is yours, but forge reconciles it on every generate, so the failing line may be one " +
+				"forge injected (a component's construction, an import, a Deps key). If it is, fix what that line " +
+				"was derived from (the component's Deps and constructor, or internal/app/providers.go) and re-run " +
+				"'forge generate'; if those are correct, this is a forge bug worth reporting. If the line is your " +
+				"own, fix it in place"
 		}
 		return file + " is hand-written, not generated: fix the compiler error quoted above in it, " +
 			"then re-run 'forge generate'"
