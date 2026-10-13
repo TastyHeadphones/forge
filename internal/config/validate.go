@@ -325,15 +325,14 @@ var refusedSchemaKeys = map[string]string{
 		"each env's KCL — `registry = \"<registry>\"` on the env's forge.ClusterTarget (or " +
 		"forge.ControlPlane for a hosted env) in deploy/kcl/<env>/main.k.",
 
-	// features: is gone. Every feature is derived from the repo, and a stale
-	// `orm: false` that merely stopped being read would start generating an ORM
-	// over a hand-written DB layer — so the key is refused, not warned about.
-	"features": "delete the block — features are derived from what exists in the repo, not configured. " +
-		"If you set `orm: false` because the DB layer is hand-written, put `//forge:no-orm: <why>` in the " +
-		"doc comment of the internal/db package instead (beside the code it affects). " +
-		"`ingress` derives from a forge.Gateway declared in deploy/kcl, `operators` from internal/operators/<name>/, " +
-		"`frontend` from a frontend existing, `deploy`/`build`/`ci`/`codegen` from the project kind. " +
-		"`forge project features` shows what each one resolved to and why.",
+	// features.orm: the ORM's switch is `//forge:no-orm` in internal/db, beside
+	// the code it affects. Every other feature can be pinned in `features:`.
+	// A stale `orm: false` that merely went unread would start generating an
+	// ORM over a hand-written DB layer — so the key is refused, not warned
+	// about.
+	"features.orm": "delete the key — the ORM is switched off by `//forge:no-orm: <why>` in the doc comment of " +
+		"the internal/db package, beside the code it affects. The other features can be pinned here " +
+		"(`observability: false`, `hot_reload: false`, ...); `forge project features` shows each one and why.",
 	"stack": "delete the block — the frontend inventory is derived from frontends/<name> on disk and from the " +
 		"KCL forge.Frontend declarations; there is no framework setting.",
 	"frontends": "delete the block — frontends are derived: a directory under frontends/ is detected by its own " +
@@ -419,9 +418,10 @@ var removedSchemaKeys = map[string]string{
 	"version": "delete the key — stamp the binary version from a KCL " +
 		"GoBuild.ldflags `-X` entry in deploy/kcl/<env>/main.k, which is where " +
 		"per-environment build facts live.",
-	// hot_reload lived at the top level AND under features:. Neither exists
-	// any more: hot reload derives from the project being a service.
-	"hot_reload": "delete the key — hot reload is derived (on for a service project).",
+	// hot_reload lived at the top level AND under features:. The top-level
+	// spelling is gone; features.hot_reload pins it.
+	"hot_reload": "delete the key — hot reload derives from a server's sources; pin it with " +
+		"`features: {hot_reload: false}` instead.",
 	// ci.go_version was written into the workflow template data and read by
 	// no template: every setup-go step pins with `go-version-file: go.mod`,
 	// so the key changed nothing and a project that set it got a CI Go
@@ -469,7 +469,8 @@ var removedSchemaKeys = map[string]string{
 	// service handlers, and cmd/ binaries. There is no manifest.
 	"kind": "delete the key — project kind derives from the real sources: the KCL deploy " +
 		"tree (deploy/kcl/), the service registry (pkg/app/services.go), the service handlers " +
-		"(internal/handlers/), or a cmd/ binary.",
+		"(internal/handlers/), or a cmd/ binary. To keep a feature that shape turns on off " +
+		"(observability, hot_reload, ...), pin it in a `features:` block.",
 	// components/services/binaries: forge.yaml is GLOBAL-only. Per-service
 	// components are DISCOVERED from real sources (proto descriptor for
 	// services, owned code for workers/operators/binaries), never a manifest.

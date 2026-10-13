@@ -2,7 +2,8 @@
 //
 // Features (see config.FeaturesConfig) gate major subsystems — deploy, build,
 // frontend, ci, observability, ... — and are DERIVED from what exists in the
-// repo, not configured. Two modes are supported:
+// repo, unless forge.yaml's `features:` block pins one. Two modes are
+// supported:
 //
 //   - requireFeature is the strict gate: a direct cobra subcommand
 //     (e.g. `forge env deploy`, `forge build`) returns

@@ -320,3 +320,28 @@ func TestWriteProjectConfig_AdoptedForgePinWins(t *testing.T) {
 		t.Errorf("go.mod templates would require forge %q, want the adopted pin %q", got, pin)
 	}
 }
+
+// `forge project new --disable observability` pins the feature off in the
+// forge.yaml it writes, so the first internal/handlers/ (which derives
+// observability on) does not bring it back. Only pins serialize: the
+// scaffold's own per-kind derived state stays out of the file.
+func TestWriteProjectConfig_PersistsDisabledFeaturesAsPins(t *testing.T) {
+	tmp := t.TempDir()
+	g := NewProjectGenerator("pins", tmp, "example.com/pins")
+	g.ApplyKindFeatureDefaults(config.ProjectKindCLI)
+	g.Features = g.Features.With(config.FeatureObservability, false)
+	g.Features, _ = g.Features.Pin(config.FeatureObservability, false)
+	if err := g.writeProjectConfig(); err != nil {
+		t.Fatalf("writeProjectConfig: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(tmp, "forge.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "features:\n    observability: false\n") {
+		t.Fatalf("forge.yaml must pin observability off:\n%s", data)
+	}
+	if strings.Contains(string(data), "codegen") || strings.Contains(string(data), "hot_reload") {
+		t.Errorf("the CLI kind's derived defaults must not be written as pins:\n%s", data)
+	}
+}

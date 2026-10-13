@@ -185,8 +185,10 @@ type ProjectConfig struct {
 	// routed through KCL. An `auth:` key is reported with a migration hint
 	// (see removedSchemaKeys).
 	// Features is DERIVED from what exists in the repo (see
-	// DeriveFeatureDefaults); there is no `features:` key.
-	Features FeaturesConfig `yaml:"-"`
+	// DeriveFeatureDefaults). The optional `features:` block pins a feature
+	// on or off whatever the tree says — the switch for a project whose
+	// shape implies a feature it does not want (see FeaturesConfig).
+	Features FeaturesConfig `yaml:"features,omitempty"`
 	// Observability seeds the OWNED per-package observe_chain.go seam that a
 	// generated component decorator routes through. The values are read at
 	// `forge scaffold` time to stamp the initial chain (log level, etc.);
@@ -1436,19 +1438,127 @@ func (c ContractsConfig) IsExcluded(pkgPath string) bool {
 // FeaturesConfig is the resolved on/off state of each forge subsystem
 // (codegen, orm, deploy, ...).
 //
-// There is NO `features:` key in forge.yaml. Every feature is DERIVED from
-// what exists in the repository — the project kind, whether db/migrations
-// exists, whether a frontend exists, whether deploy/kcl declares a gateway,
-// whether internal/operators exists, whether internal/db carries a
-// `//forge:no-orm` marker. See DeriveFeatureDefaults for the rule per feature.
+// Every feature DERIVES from what exists in the repository — whether
+// db/migrations exists, whether a frontend exists, whether deploy/kcl
+// declares a gateway, whether internal/operators exists, whether internal/db
+// carries a `//forge:no-orm` marker. See DeriveFeatureDefaults for the rule
+// per feature.
+//
+// A derived default is still only a default. The `features:` block pins one
+// on or off whatever the tree says:
+//
+//	features:
+//	  observability: false   # no generated dashboards, even with internal/handlers/
+//	  hot_reload: false
+//
+// That is the switch a structural change needs. Creating internal/handlers/
+// makes a CLI-shaped project server-shaped, and observability follows the
+// server's sources; a project that adopts forge's handler model without
+// wanting forge's dashboards says so here, once, and no later change to the
+// tree turns them back on. A pinned value is never normalized away on write,
+// even when it matches what the tree derives today: matching today is not
+// the same as meaning it tomorrow. A derived feature whose requirement is
+// pinned off follows it off (ingress with deploy, orm with codegen); a
+// pinned feature whose requirement is off is a load error.
+//
+// The ORM is the one feature with no key: its switch is `//forge:no-orm` in
+// internal/db's doc comment, beside the code it affects, and a second
+// spelling here would be a second source of truth.
 //
 // A FeaturesConfig not produced by the config loader (the zero value, or one
 // hand-built in a test) resolves every feature to "enabled" except the
 // default-off ones; With overrides a single feature on such a value.
 type FeaturesConfig struct {
+	Codegen       *bool `yaml:"codegen,omitempty"`
+	Migrations    *bool `yaml:"migrations,omitempty"`
+	CI            *bool `yaml:"ci,omitempty"`
+	Build         *bool `yaml:"build,omitempty"`
+	Contracts     *bool `yaml:"contracts,omitempty"`
+	Frontend      *bool `yaml:"frontend,omitempty"`
+	Observability *bool `yaml:"observability,omitempty"`
+	HotReload     *bool `yaml:"hot_reload,omitempty"`
+	Deploy        *bool `yaml:"deploy,omitempty"`
+	Ingress       *bool `yaml:"ingress,omitempty"`
+	Operators     *bool `yaml:"operators,omitempty"`
+
 	// derived is the loader-resolved state of every feature. nil (zero value)
 	// falls back to the historical "absent = enabled" semantics.
 	derived map[FeatureName]bool
+}
+
+// pinned returns the forge.yaml `features:` value for name, and whether the
+// block sets it at all.
+func (f FeaturesConfig) pinned(name FeatureName) (on, ok bool) {
+	var p *bool
+	switch name {
+	case FeatureCodegen:
+		p = f.Codegen
+	case FeatureMigrations:
+		p = f.Migrations
+	case FeatureCI:
+		p = f.CI
+	case FeatureBuild:
+		p = f.Build
+	case FeatureContracts:
+		p = f.Contracts
+	case FeatureFrontend:
+		p = f.Frontend
+	case FeatureObservability:
+		p = f.Observability
+	case FeatureHotReload:
+		p = f.HotReload
+	case FeatureDeploy:
+		p = f.Deploy
+	case FeatureIngress:
+		p = f.Ingress
+	case FeatureOperators:
+		p = f.Operators
+	}
+	if p == nil {
+		return false, false
+	}
+	return *p, true
+}
+
+// Pin returns a copy with name pinned on or off, as a `features:` entry in
+// forge.yaml would. ok is false for a feature with no key (orm, whose switch
+// is //forge:no-orm) or an unknown name; the copy is then unchanged.
+func (f FeaturesConfig) Pin(name FeatureName, on bool) (_ FeaturesConfig, ok bool) {
+	v := on
+	switch name {
+	case FeatureCodegen:
+		f.Codegen = &v
+	case FeatureMigrations:
+		f.Migrations = &v
+	case FeatureCI:
+		f.CI = &v
+	case FeatureBuild:
+		f.Build = &v
+	case FeatureContracts:
+		f.Contracts = &v
+	case FeatureFrontend:
+		f.Frontend = &v
+	case FeatureObservability:
+		f.Observability = &v
+	case FeatureHotReload:
+		f.HotReload = &v
+	case FeatureDeploy:
+		f.Deploy = &v
+	case FeatureIngress:
+		f.Ingress = &v
+	case FeatureOperators:
+		f.Operators = &v
+	default:
+		return f, false
+	}
+	return f, true
+}
+
+// Pinned reports whether forge.yaml's `features:` block sets name, rather
+// than the tree deriving it.
+func (f FeaturesConfig) Pinned(name FeatureName) bool {
+	_, ok := f.pinned(name)
+	return ok
 }
 
 // With returns a copy with one feature forced on or off. The scaffold uses it
@@ -1479,6 +1589,9 @@ func (f FeaturesConfig) With(name FeatureName, on bool) FeaturesConfig {
 // FeaturesConfig, hand-constructed in tests, no forge.yaml context). All
 // public XxxEnabled() accessors are thin wrappers over this.
 func (f FeaturesConfig) resolve(name FeatureName) bool {
+	if on, ok := f.pinned(name); ok {
+		return on
+	}
 	if f.derived == nil {
 		// No derivation context: fall back to "absent = enabled", except for
 		// the features that are default-off by construction. ingress and
@@ -1604,7 +1717,7 @@ type errDisabledFeature struct {
 }
 
 func (e errDisabledFeature) Error() string {
-	return "feature '" + e.name + "' is off for this project. Features are derived from the repository, not configured — `forge project features` shows why each one is on or off."
+	return "feature '" + e.name + "' is off for this project. Features are derived from the repository unless forge.yaml's `features:` block pins them — `forge project features` shows why each one is on or off."
 }
 
 // FeatureName is the canonical feature key. Stays a string alias so the
