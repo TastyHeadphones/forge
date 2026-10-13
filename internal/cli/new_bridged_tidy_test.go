@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
@@ -66,6 +67,16 @@ func TestRunNew_BridgedScaffoldIsTidyWithoutGenerate(t *testing.T) {
 		cmd.Env = append(os.Environ(), "GOWORK=off")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			rel, _ := filepath.Rel(parent, moduleDir)
+			// A GOWORK=off tidy resolves forge from the PUBLISHED module, so a
+			// scaffold that imports a forge package the last release does not
+			// have yet cannot be checked this way. That is the case the bridge
+			// exists for, and tidyBridgedModule already treats it as "warn and
+			// leave go.mod alone" (the go.work-aware build gates correctness).
+			// Only that signature is excused; a stale go.mod/go.sum still fails.
+			if strings.Contains(string(out), "does not contain package github.com/reliant-labs/forge/") {
+				t.Logf("%s: tidy cannot be checked until the forge packages it imports are published (%s)", rel, strings.TrimSpace(string(out)))
+				continue
+			}
 			t.Errorf("%s is not tidy right after `project new` (GOWORK=off go mod tidy -diff: %v):\n%s", rel, err, out)
 		}
 	}
