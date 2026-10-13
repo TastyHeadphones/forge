@@ -3,6 +3,7 @@ package migratekit
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -170,61 +171,83 @@ func validateAdoption(source sourceSet) error {
 //
 // CONCURRENCY. Both callers already hold the run lock (runlock.go), so
 // replicas of a release adopt one at a time, through either entry point. On
-// top of that, the check-and-record takes appliedLockKey and RE-READS the state
-// under it. That is what keeps it correct against a binary that predates the
-// run lock, and it serializes adoption with bootstrapApplied, which decides
-// the applied record's first rows just as adoption does. A replica that waited
-// finds the version recorded and does nothing. The version is written through
-// golang-migrate itself (Force, under its own lock and into whatever table it
-// is configured with) while this transaction still holds appliedLockKey, so
-// no replica can observe a half-adopted database.
+// top of that, the check-and-record holds appliedLockKey and RE-READS the
+// state under it. That is what keeps it correct against a binary that
+// predates the run lock, and it serializes adoption with bootstrapApplied,
+// which decides the applied record's first rows just as adoption does. A
+// replica that waited finds the version recorded and does nothing. The
+// version is written through golang-migrate itself (Force, under its own lock
+// and into whatever table it is configured with) while appliedLockKey is
+// still held, so no replica can observe a half-adopted database.
 //
-// CRASH SAFETY. The applied row is written in this transaction and the
-// version by Force before it commits. A crash before Force leaves nothing; a
-// crash between Force and commit leaves the version recorded without the
-// row, which the next run's bootstrapApplied fills in as it would for any
-// database that predates the record.
-func adopt(ctx context.Context, db *sql.DB, m *migrate.Migrate, source sourceSet, state State) (State, *Adopted, error) {
+// appliedLockKey is held at SESSION level, not inside the record's
+// transaction, because at boot golang-migrate's Force runs on this same
+// session and opens a transaction of its own (runlock.go, ONE SESSION).
+//
+// CRASH SAFETY. The applied row is committed first, then Force writes the
+// version. A crash before the commit leaves nothing; a crash between the two
+// leaves the row without the version, so the database still reads as
+// unadopted and the next run adopts it again — the row's insert is a no-op
+// the second time.
+func adopt(ctx context.Context, conn *sql.Conn, m *migrate.Migrate, source sourceSet, state State) (State, *Adopted, error) {
 	baseline, ok := source.adopter()
 	if !ok || state.Applied {
 		return state, nil, nil
 	}
 	tool := baseline.Adopts.Tool
-	fail := func(err error) (State, *Adopted, error) {
-		return state, nil, fmt.Errorf("adopt %s-migrated database: %w", tool, err)
+	var adopted *Adopted
+	err := withSessionLock(ctx, conn, appliedLockKey, func() error {
+		// Another replica may have adopted (and even applied more) while
+		// this one waited for the lock.
+		var err error
+		if state, err = stateOf(m); err != nil || state.Applied {
+			return err
+		}
+		found, err := recordAdoption(ctx, conn, baseline)
+		if err != nil || !found {
+			// Not found: a fresh database, where the baseline applies
+			// as SQL.
+			return err
+		}
+		if err := m.Force(int(baseline.Version)); err != nil {
+			return fmt.Errorf("record %s as applied: %w", baseline.Name, err)
+		}
+		if state, err = stateOf(m); err != nil {
+			return err
+		}
+		adopted = &Adopted{Tool: tool, Version: baseline.Version, Name: baseline.Name, Versions: len(baseline.Adopts.Versions)}
+		return nil
+	})
+	var adoptErr *AdoptionError
+	if err != nil && !errors.As(err, &adoptErr) {
+		err = fmt.Errorf("adopt %s-migrated database: %w", tool, err)
 	}
-
-	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return fail(err)
+		return state, nil, err
+	}
+	return state, adopted, nil
+}
+
+// recordAdoption records baseline as applied when the database's goose
+// history is exactly the one it declares, and refuses with *AdoptionError
+// when it is not. found is false for a database goose never touched. The
+// transaction is committed before it returns, so the Force that follows runs
+// on a session with none open.
+func recordAdoption(ctx context.Context, conn *sql.Conn, baseline compat.Migration) (found bool, err error) {
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf("SELECT pg_advisory_xact_lock(%d)", int64(appliedLockKey))); err != nil {
-		return fail(err)
-	}
-
-	// Another replica may have adopted (and even applied more) while this
-	// one waited for the lock.
-	state, err = stateOf(m)
-	if err != nil {
-		return fail(err)
-	}
-	if state.Applied {
-		return state, nil, nil
-	}
 
 	applied, found, err := readGooseApplied(ctx, tx)
-	if err != nil {
-		return fail(err)
-	}
-	if !found {
-		// A fresh database: the baseline applies as SQL.
-		return state, nil, nil
+	if err != nil || !found {
+		return found, err
 	}
 	missing, unexpected := diffAdoption(baseline.Adopts.Versions, applied)
 	if len(missing) > 0 || len(unexpected) > 0 {
-		return state, nil, &AdoptionError{
-			Tool: tool, Table: gooseTable, Baseline: baseline.Name, Declared: len(baseline.Adopts.Versions),
+		return true, &AdoptionError{
+			Tool: baseline.Adopts.Tool, Table: gooseTable, Baseline: baseline.Name, Declared: len(baseline.Adopts.Versions),
 			Missing: missing, Unexpected: unexpected,
 		}
 	}
@@ -240,20 +263,10 @@ func adopt(ctx context.Context, db *sql.DB, m *migrate.Migrate, source sourceSet
 	}
 	for _, s := range stmts {
 		if _, err := tx.ExecContext(ctx, s); err != nil {
-			return fail(err)
+			return true, err
 		}
 	}
-	if err := m.Force(int(baseline.Version)); err != nil {
-		return fail(fmt.Errorf("record %s as applied: %w", baseline.Name, err))
-	}
-	if err := tx.Commit(); err != nil {
-		return fail(err)
-	}
-	after, err := stateOf(m)
-	if err != nil {
-		return fail(err)
-	}
-	return after, &Adopted{Tool: tool, Version: baseline.Version, Name: baseline.Name, Versions: len(baseline.Adopts.Versions)}, nil
+	return true, tx.Commit()
 }
 
 // readGooseApplied returns the set of versions goose considers applied, and

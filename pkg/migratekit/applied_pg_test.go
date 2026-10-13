@@ -32,6 +32,19 @@ func openRecordDB(t *testing.T, dsn string) *sql.DB {
 	return db
 }
 
+// onSession runs a record helper on one connection checked out of db, then
+// gives the connection back. The helpers take a run's session, never a pool
+// (runlock.go, ONE SESSION).
+func onSession[T any](t *testing.T, db *sql.DB, read func(context.Context, *sql.Conn) (T, error)) (T, error) {
+	t.Helper()
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	return read(context.Background(), conn)
+}
+
 // TestUpRefusesAVersionAppliedFromADifferentFile is the renumbered-branch
 // collision: the database is "at 3", but its 3 is the branch's byo_clusters,
 // not main's retire_plans. golang-migrate alone sees 3 == 3, applies only 4,
@@ -87,7 +100,7 @@ func TestUpProceedsOnceTheRecordIsReconciled(t *testing.T) {
 	if !res.Changed || res.After.Version != 4 {
 		t.Fatalf("up after reconciling = %+v; want 4 applied", res)
 	}
-	got, err := readApplied(context.Background(), db)
+	got, err := onSession(t, db, readApplied)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +155,7 @@ func TestUpDoesNotCheckVersionsWithNoRecord(t *testing.T) {
 	if res.After.Version != 4 {
 		t.Errorf("up over an unrecorded database = %+v; want 4 applied", res)
 	}
-	got, err := readApplied(context.Background(), db)
+	got, err := onSession(t, db, readApplied)
 	if err != nil {
 		t.Fatal(err)
 	}

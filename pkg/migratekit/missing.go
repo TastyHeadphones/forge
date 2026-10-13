@@ -140,8 +140,8 @@ func findMissing(records map[uint]string, source sourceSet, state State) *Missin
 // makes that boundary a fact in the database rather than a heuristic. A
 // backfill that ran on every startup would re-absolve every missing migration
 // forever and silently disable the check.
-func bootstrapApplied(ctx context.Context, db *sql.DB, source sourceSet, state State) error {
-	tx, err := db.BeginTx(ctx, nil)
+func bootstrapApplied(ctx context.Context, conn *sql.Conn, source sourceSet, state State) error {
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("bootstrap applied-migration record: %w", err)
 	}
@@ -205,11 +205,11 @@ func bootstrapApplied(ctx context.Context, db *sql.DB, source sourceSet, state S
 // to re-version — and mismatch is checked first: it means the recorded
 // versions do not describe this schema at all, which makes every other
 // conclusion drawn from them unreliable.
-func checkApplied(ctx context.Context, db *sql.DB, source sourceSet, state State) error {
-	if err := bootstrapApplied(ctx, db, source, state); err != nil {
+func checkApplied(ctx context.Context, conn *sql.Conn, source sourceSet, state State) error {
+	if err := bootstrapApplied(ctx, conn, source, state); err != nil {
 		return err
 	}
-	records, err := readApplied(ctx, db)
+	records, err := readApplied(ctx, conn)
 	if err != nil {
 		return err
 	}

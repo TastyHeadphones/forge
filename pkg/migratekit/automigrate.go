@@ -86,7 +86,10 @@ func autoMigrate(fsys fs.FS, dir string, db *sql.DB, logger *slog.Logger) error 
 
 	// The migrator runs on ONE connection borrowed from the pool the caller
 	// already opened (see the signature note above), and gives it back when
-	// it is done.
+	// it is done. That one connection is the whole run: the run lock,
+	// golang-migrate's driver and every record below all use it, and nothing
+	// asks the pool for a second, so a pool capped at one connection works.
+	// See runlock.go, ONE SESSION.
 	//
 	// Not postgres.WithInstance, although it also takes the pool: it checks
 	// out a dedicated *sql.Conn and releases it only in Close, and its Close
@@ -150,7 +153,7 @@ func autoMigrate(fsys fs.FS, dir string, db *sql.DB, logger *slog.Logger) error 
 	// the migrations after it apply below as usual. A history that is not
 	// the declared one refuses to start. See adopt.go. The state is taken
 	// from adopt because a replica booting alongside may have just moved it.
-	before, adopted, err := adopt(context.Background(), db, m, source, before)
+	before, adopted, err := adopt(ctx, conn, m, source, before)
 	if err != nil {
 		return fmt.Errorf("running migrations: %w", err)
 	}
@@ -180,10 +183,10 @@ func autoMigrate(fsys fs.FS, dir string, db *sql.DB, logger *slog.Logger) error 
 	// describe the schema (applied.go). A version the schema has already
 	// passed with no applied row can never run (missing.go). Either refuses
 	// before anything is applied.
-	if err := checkApplied(context.Background(), db, source, before); err != nil {
+	if err := checkApplied(ctx, conn, source, before); err != nil {
 		return fmt.Errorf("running migrations: %w", err)
 	}
-	ahead, err := classifyAhead(context.Background(), db, source, before)
+	ahead, err := classifyAhead(ctx, conn, source, before)
 	if err != nil {
 		return fmt.Errorf("running migrations: %w", err)
 	}
@@ -192,12 +195,12 @@ func autoMigrate(fsys fs.FS, dir string, db *sql.DB, logger *slog.Logger) error 
 			"schema_version", ahead.Version, "binary_latest", ahead.Latest, "unknown_versions", joinVersions(ahead.Versions))
 		return nil
 	}
-	if err := recordCompat(context.Background(), db, source); err != nil {
+	if err := recordCompat(ctx, conn, source); err != nil {
 		return err
 	}
 
 	if _, err := foldNoChange(m.Up()); err != nil {
-		if recErr := recordFailedRun(context.Background(), db, m, source, before); recErr != nil {
+		if recErr := recordFailedRun(ctx, conn, m, source, before); recErr != nil {
 			err = errors.Join(err, recErr)
 		}
 		return fmt.Errorf("running migrations: %w", err)
@@ -207,7 +210,7 @@ func autoMigrate(fsys fs.FS, dir string, db *sql.DB, logger *slog.Logger) error 
 	if err != nil {
 		return fmt.Errorf("after apply: %w", err)
 	}
-	if err := recordApplied(context.Background(), db, source, before, after); err != nil {
+	if err := recordApplied(ctx, conn, source, before, after); err != nil {
 		return err
 	}
 	if after.Version != before.Version {

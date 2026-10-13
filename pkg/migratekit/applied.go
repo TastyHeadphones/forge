@@ -120,16 +120,16 @@ func verifyApplied(records map[uint]string, source sourceSet, state State) error
 
 // readApplied returns version → descriptor from appliedTable. An absent table
 // is an empty record: every database migrated before it existed has none.
-func readApplied(ctx context.Context, db *sql.DB) (map[uint]string, error) {
+func readApplied(ctx context.Context, conn *sql.Conn) (map[uint]string, error) {
 	var exists bool
-	if err := db.QueryRowContext(ctx, "SELECT to_regclass('"+appliedTable+"') IS NOT NULL").Scan(&exists); err != nil {
+	if err := conn.QueryRowContext(ctx, "SELECT to_regclass('"+appliedTable+"') IS NOT NULL").Scan(&exists); err != nil {
 		return nil, fmt.Errorf("read applied-migration record: %w", err)
 	}
 	out := map[uint]string{}
 	if !exists {
 		return out, nil
 	}
-	rows, err := db.QueryContext(ctx, "SELECT version, name FROM "+appliedTable)
+	rows, err := conn.QueryContext(ctx, "SELECT version, name FROM "+appliedTable)
 	if err != nil {
 		return nil, fmt.Errorf("read applied-migration record: %w", err)
 	}
@@ -161,12 +161,12 @@ func readApplied(ctx context.Context, db *sql.DB) (map[uint]string, error) {
 // Those rows mean "applied, by a migrator that did not record which file",
 // and this binary's filename is not evidence of what that database ran — so
 // an upgrade must leave them empty rather than fill them in with a guess.
-func recordApplied(ctx context.Context, db *sql.DB, source sourceSet, before, after State) error {
+func recordApplied(ctx context.Context, conn *sql.Conn, source sourceSet, before, after State) error {
 	values := appliedRows(source, before, after)
 	if len(values) == 0 {
 		return nil
 	}
-	tx, err := db.BeginTx(ctx, nil)
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("record applied migrations: %w", err)
 	}
@@ -219,16 +219,16 @@ func appliedRows(source sourceSet, before, after State) []string {
 // failed version, run Up — was refused, naming every one of them as MISSING
 // (missing.go). The failed version itself is recorded only when a Force
 // asserts it (see Migrator.Force).
-func recordFailedRun(ctx context.Context, db *sql.DB, m *migrate.Migrate, source sourceSet, before State) error {
+func recordFailedRun(ctx context.Context, conn *sql.Conn, m *migrate.Migrate, source sourceSet, before State) error {
 	after, err := stateOf(m)
 	if err != nil {
 		return fmt.Errorf("record the migrations applied before the failure: %w", err)
 	}
-	return recordApplied(ctx, db, source, before, after.settled())
+	return recordApplied(ctx, conn, source, before, after.settled())
 }
 
-// forceApplied makes the applied record agree with a forced version, in tx
-// (which holds appliedLockKey). See Migrator.Force.
+// forceApplied makes the applied record agree with a forced version, in tx,
+// on a session that holds appliedLockKey. See Migrator.Force.
 //
 // A row above version is deleted: the schema no longer claims it, and a later
 // file under that number would otherwise trip as a mismatch. Every embedded

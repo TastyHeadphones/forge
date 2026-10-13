@@ -1,7 +1,6 @@
 package migratekit
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"strings"
@@ -262,7 +261,7 @@ func TestUpRecordsEveryEmbeddedDeclaration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
-	got, err := readCompat(context.Background(), db)
+	got, err := onSession(t, db, readCompat)
 	if err != nil {
 		t.Fatal(err)
 	}

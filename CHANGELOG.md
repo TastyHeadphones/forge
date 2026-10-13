@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`migratekit.AutoMigrate` works on a pool capped at one connection.** It
+  held one pool connection (the run lock and golang-migrate's driver) and then
+  asked the same pool for another for every record it keeps — applied,
+  compatibility, goose adoption — so at `MaxOpenConns=1`, which a desktop or
+  monolith build on embedded postgres may set, boot waited forever for the
+  connection it was holding. A run now does all of its own work on the one
+  connection that holds the run lock, through `AutoMigrate` and `Migrator.Up`
+  / `Force` alike; the record helpers take a `*sql.Conn`, so a pool cannot be
+  handed to them. Adoption and `Force` hold `appliedLockKey` at session level
+  and commit the record before golang-migrate writes the version, since at
+  boot golang-migrate shares the session and its transaction would otherwise
+  commit migratekit's early. That also makes `Force` safe to re-run after a
+  crash between the two writes; the old order left the forced version with no
+  record, refused as missing.
 - **The typed-config guardrail checks env reads, or says it cannot.** The
   advisory lane runs forbidigo with whatever the project's golangci-lint config
   gives it. A `.golangci.yml` with no forbidigo `forbid` list (a hand-owned
