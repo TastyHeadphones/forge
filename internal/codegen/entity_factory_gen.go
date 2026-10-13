@@ -669,10 +669,7 @@ func groupFactorySpecsByService(projectDir string, services []ServiceDef, specs 
 func ownedFactorySpecs(svc ServiceDef, specs []entityFactorySpec) []entityFactorySpec {
 	claimed := map[string]bool{}
 	for _, m := range svc.Methods {
-		if m.ClientStreaming || m.ServerStreaming {
-			continue // CRUD is unary only, same as MatchCRUDMethods
-		}
-		op, entityName := parseCRUDOperation(m.Name)
+		op, entityName := CRUDShape(m) // unary, not forge:custom — same as MatchCRUDMethods
 		if op == "" {
 			continue
 		}

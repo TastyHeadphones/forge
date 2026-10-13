@@ -156,6 +156,40 @@ const (
 	// birth scanner alone.
 	ProtoMarkerMutation = "forge:mutation"
 
+	// ProtoMarkerCustom declares that ONE rpc is a custom rpc, whatever its
+	// name. An rpc is otherwise CRUD when it is unary, named exactly
+	// Create<E>/Get<E>/Update<E>/Delete<E>/List<Es>, and <E> has both a table
+	// and a wire message — a rule about NAMES, which cannot see that
+	// CreateTask also wires the task's dependencies, or that ListTasks reads a
+	// join. Marked, the rpc is custom on both sides of the wire: it gets a
+	// pb-through stub and a scaffold test row, no CRUD shim or op, no entity
+	// page, its hook invalidates at service scope, and it makes no entity — so
+	// when every CRUD-named rpc of an entity carries it, there is no entity
+	// at all (no ORM struct, no page, no seed root), which is the per-entity
+	// opt-out, spelled one rpc at a time.
+	//
+	// It exists because the alternative the framework guide forbids —
+	// renaming the rpc to dodge detection — was the only way to say this. A
+	// project adopting forge with rpcs that are CRUD in name only (reliant had
+	// 52) could not adopt a service without forge wiring generic CRUD over
+	// its business logic.
+	//
+	// A comment marker rather than a (forge.v1.method) option, for the reason
+	// ProtoMarkerUnmanaged gives: auth_required and errors are facts about
+	// the API CONTRACT, which every client reads off the descriptor; whether
+	// forge or the author implements the handler is not, and must not cost a
+	// project the forge.proto import to declare.
+	//
+	// Read by the descriptor path (Method.Custom) from the rpc's leading
+	// comment blocks — the attached one and any detached one between it and
+	// the previous declaration — and by the raw scanner (RawProtoRPC.Custom)
+	// from every comment line above the rpc. Never from a trailing comment:
+	// protobuf hands a block written under one rpc for the next to the one
+	// above it, or drops it, so generate refuses a trailing marker and a
+	// marker the source shows but the descriptor lost. A near-miss spelling
+	// on an rpc, or the marker on a service or message, fails generate too.
+	ProtoMarkerCustom = "forge:custom"
+
 	// ProtoMarkerUnmanaged takes a whole SERVICE out of forge's service
 	// model: buf still generates its Go/TS wire code and its descriptor
 	// entry, but forge scaffolds and generates nothing service-scoped for
@@ -198,7 +232,41 @@ var KnownProtoMarkers = []string{
 	ProtoMarkerSecret,
 	ProtoMarkerGuards,
 	ProtoMarkerMutation,
+	ProtoMarkerCustom,
 	ProtoMarkerUnmanaged,
+}
+
+// customCommentRE recognizes ProtoMarkerCustom in comment text buf has already
+// stripped the `//` from. Stricter than ProtoMarkerCommentRE: a hyphen also
+// ends the match, so `forge:custom-read-shape` (a Go-source marker with a
+// different meaning) never reads as this one.
+var customCommentRE = regexp.MustCompile(`(?m)^\s*` + regexp.QuoteMeta(ProtoMarkerCustom) + `(?:[^\w-]|$)`)
+
+// CommentMarksCustom reports whether an rpc's comment text (slashes already
+// stripped, the descriptor path's shape) carries ProtoMarkerCustom.
+func CommentMarksCustom(comment string) bool {
+	return customCommentRE.MatchString(comment)
+}
+
+// CustomMarkerNearMiss returns the first `forge:*` token in an rpc's comment
+// that is a misspelling of ProtoMarkerCustom (`forge:cusotm`,
+// `forge:custom-rpc`), or "" when there is none. Refused for the reason
+// UnmanagedMarkerNearMiss gives: a misspelled forge:custom leaves the rpc
+// CRUD, and the next generate wires generic CRUD over the logic the marker
+// was written to protect.
+func CustomMarkerNearMiss(comment string) string {
+	if CommentMarksCustom(comment) {
+		return ""
+	}
+	for _, tok := range forgeTokenRE.FindAllString(comment, -1) {
+		if tok == ProtoMarkerCustom || IsKnownProtoMarker(tok) {
+			continue
+		}
+		if ClosestFrom(tok, []string{ProtoMarkerCustom}) != "" {
+			return tok
+		}
+	}
+	return ""
 }
 
 // unmanagedCommentRE recognizes ProtoMarkerUnmanaged in comment text buf has

@@ -13,20 +13,138 @@ import (
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
-// collectCRUDMethodNames returns the set of RPC method names that will be implemented
-// by CRUD handlers. The stub generator uses this to avoid generating stubs for them.
-func collectCRUDMethodNames(services []codegen.ServiceDef, projectDir string) map[string]bool {
+// crudMethodSet is, per service (keyed by svc.Name), the rpc names the CRUD
+// handler step will implement.
+type crudMethodSet map[string]map[string]bool
+
+// collectCRUDMethodNames returns, per service, the RPC method names the CRUD
+// handler step will implement. The stub generator skips exactly these, so the
+// two steps must agree on BOTH halves of the answer or an rpc vanishes —
+// skipped by the stub step and never implemented by the CRUD step, serving
+// Unimplemented through the embedded handler with no stub saying so:
+//
+//   - crudProjected is the CRUD step's own gate (gateCRUDProjection). Under
+//     `//forge:no-orm` the CRUD step never runs, so no rpc is CRUD and every
+//     one gets a stub. Before this the stub step skipped a CRUD-named rpc
+//     anyway, and the rpc got neither.
+//   - the set is per service. A flat name set let one service's CRUD
+//     CreateTask suppress another service's custom CreateTask stub.
+func collectCRUDMethodNames(services []codegen.ServiceDef, projectDir string, crudProjected bool) crudMethodSet {
+	if !crudProjected {
+		return nil
+	}
 	entities, err := codegen.ParseEntityProtos(projectDir)
 	if err != nil || len(entities) == 0 {
 		return nil
 	}
-	names := make(map[string]bool)
+	return crudMethodsByService(services, entities)
+}
+
+// crudMethodsByService is collectCRUDMethodNames' join, with the entity set
+// already resolved.
+func crudMethodsByService(services []codegen.ServiceDef, entities []codegen.EntityDef) crudMethodSet {
+	names := crudMethodSet{}
 	for _, svc := range services {
 		for _, cm := range codegen.MatchCRUDMethods(svc, entities) {
-			names[cm.Method.Name] = true
+			if names[svc.Name] == nil {
+				names[svc.Name] = map[string]bool{}
+			}
+			names[svc.Name][cm.Method.Name] = true
 		}
 	}
 	return names
+}
+
+// checkCustomRPCsDelegate refuses a `// forge:custom` rpc whose handler
+// package still uses what forge generated while it was CRUD: its op, or (for
+// a Create) the create-request factory the scaffolded lifecycle test calls.
+//
+// Marking an rpc custom stops forge generating both, but the code using them
+// is the author's and stays. Left alone, generate would run to its validate
+// build, fail on `s.crudCreateTaskOp undefined`, and revert everything it
+// wrote — or pass, and leave `go test` failing on the factory. This gives the
+// one-line answer before anything is written.
+func checkCustomRPCsDelegate(services []codegen.ServiceDef, projectDir string) error {
+	var problems []string
+	for _, svc := range services {
+		var custom []codegen.Method
+		for _, m := range svc.Methods {
+			if m.Custom {
+				custom = append(custom, m)
+			}
+		}
+		if len(custom) == 0 {
+			continue
+		}
+		res, err := codegen.ResolveServiceComponent(projectDir, svc.Name)
+		if err != nil {
+			return err
+		}
+		refs, err := codegen.CRUDProjectionReferences(res.Dir, custom)
+		if err != nil {
+			return fmt.Errorf("scan %s for CRUD projection references: %w", svc.Name, err)
+		}
+		for _, m := range custom {
+			if ref, ok := refs[m.GoName()]; ok {
+				problems = append(problems, fmt.Sprintf("%s.%s (internal/handlers/%s/%s uses %s)", svc.Name, m.Name, res.ImportLeaf, ref.At, ref.Symbol))
+			}
+		}
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	return fmt.Errorf("rpc(s) marked `// %s` are still used as CRUD: %s. Forge generates an rpc's crud<Rpc>Op, and a Create's New<Request> test factory, "+
+		"only while the rpc is CRUD. Replace the method's body with your own implementation (or delete the method and re-run generate for a pb-through stub), "+
+		"and build the test's request yourself; or remove the marker to keep the rpc CRUD",
+		codegen.ProtoMarkerCustom, strings.Join(problems, "; "))
+}
+
+// checkCustomMarkerPlacement refuses a `// forge:custom` the author wrote above
+// an rpc that the compiled descriptor did not attach to it.
+//
+// The descriptor is the authority, but protobuf's comment attribution is not
+// where-you-wrote-it: a block directly under one rpc and followed by a blank
+// line becomes THAT rpc's trailing comment (refused at extraction, see
+// checkCustomMarkers), and when that rpc already carries a same-line comment
+// the block is dropped altogether. Dropped, the marker leaves no trace in the
+// descriptor, so the rpc it was written for would quietly stay CRUD. Only the
+// source shows it, so this reads the source: every rpc whose raw comment
+// blocks carry the marker must be custom in the descriptor too. A proto file
+// not under proto/ (an unusual layout) is skipped rather than guessed at.
+func checkCustomMarkerPlacement(services []codegen.ServiceDef, projectDir string) error {
+	scans := map[string]*codegen.RawProtoScan{}
+	var problems []string
+	for _, svc := range services {
+		path := filepath.Join(projectDir, "proto", filepath.FromSlash(svc.ProtoFile))
+		scan, seen := scans[path]
+		if !seen {
+			if _, err := os.Stat(path); err == nil {
+				scan, _ = codegen.ScanRawProtoFiles([]string{path})
+			}
+			scans[path] = scan
+		}
+		if scan == nil {
+			continue
+		}
+		written := map[string]bool{}
+		for _, r := range scan.RPCs {
+			if r.Service == svc.Name && r.Custom {
+				written[r.Name] = true
+			}
+		}
+		for _, m := range svc.Methods {
+			if written[m.Name] && !m.Custom {
+				problems = append(problems, fmt.Sprintf("%s.%s (proto/%s)", svc.Name, m.Name, svc.ProtoFile))
+			}
+		}
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	return fmt.Errorf("the `// %s` written above %s does not reach the compiled descriptor: protobuf gives a comment block that directly follows an rpc, "+
+		"and is followed by a blank line, to the rpc ABOVE it (or drops it when that rpc already has a same-line comment). "+
+		"Put the marker directly above the rpc it describes, with no blank line between",
+		codegen.ProtoMarkerCustom, strings.Join(problems, ", "))
 }
 
 // webhookOnlyServiceNames returns the set of service Go-names (e.g.
@@ -50,7 +168,7 @@ func collectCRUDMethodNames(services []codegen.ServiceDef, projectDir string) ma
 //
 // The return is keyed by the service's Go name (svc.Name) — the same
 // key used elsewhere in the stub-generation pass.
-func webhookOnlyServiceNames(services []codegen.ServiceDef, projectDir string, crudMethodNames map[string]bool) map[string]bool {
+func webhookOnlyServiceNames(services []codegen.ServiceDef, projectDir string, crudMethodNames crudMethodSet) map[string]bool {
 	out := make(map[string]bool)
 	for _, svc := range services {
 		// Webhooks are discovered from the webhook_<name>.go files in the
@@ -82,18 +200,19 @@ func webhookOnlyServiceNames(services []codegen.ServiceDef, projectDir string, c
 		}
 		allOrphan := true
 		for _, m := range svc.Methods {
-			if crudMethodNames[m.Name] {
+			if crudMethodNames[svc.Name][m.Name] {
 				allOrphan = false
 				break
 			}
-			if bareCRUD[m.Name] {
+			if bareCRUD[m.Name] && !m.Custom {
 				continue
 			}
-			op, _ := codegen.ParseCRUDOperation(m.Name)
+			op, _ := codegen.CRUDShape(m)
 			if op == "" {
 				// Non-CRUD-shaped RPC (e.g. webhook receiver helpers,
-				// search endpoints). The service has real RPC surface;
-				// keep emitting stubs so the user has something to fill in.
+				// search endpoints), or one declared `// forge:custom`.
+				// The service has real RPC surface; keep emitting stubs
+				// so the user has something to fill in.
 				allOrphan = false
 				break
 			}
@@ -115,7 +234,7 @@ func webhookOnlyServiceNames(services []codegen.ServiceDef, projectDir string, c
 // suppressed entirely — their proto's Create/Get/Update/Delete/List RPCs are
 // the leftover scaffolding from `forge project new --service`, never the real handler
 // surface. See FORGE_REVIEW_REBUILD.md §3.5 (admin_server CRUD-stub leak).
-func generateServiceStubs(cfg *config.ProjectConfig, services []codegen.ServiceDef, projectDir string, crudMethodNames map[string]bool, cs *generator.FileChecksums) error {
+func generateServiceStubs(cfg *config.ProjectConfig, services []codegen.ServiceDef, projectDir string, crudMethodNames crudMethodSet, cs *generator.FileChecksums) error {
 	fmt.Println("\n🔧 Generating service stubs...")
 
 	if len(services) == 0 {
@@ -146,12 +265,9 @@ func generateServiceStubs(cfg *config.ProjectConfig, services []codegen.ServiceD
 		// matched an entity (already there from crudMethodNames) PLUS
 		// every RPC of a webhook-only service. The stub scaffolder's
 		// filter drops exactly the methods listed here.
-		skipNames := crudMethodNames
+		skipNames := crudMethodNames[svc.Name]
 		if webhookOnly[svc.Name] {
-			skipNames = make(map[string]bool, len(crudMethodNames)+len(svc.Methods))
-			for k, v := range crudMethodNames {
-				skipNames[k] = v
-			}
+			skipNames = make(map[string]bool, len(svc.Methods))
 			for _, m := range svc.Methods {
 				skipNames[m.Name] = true
 			}

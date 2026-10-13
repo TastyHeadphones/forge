@@ -105,6 +105,7 @@ var auditCategoryOrder = []string{
 	"unscoped_auth",
 	"file_sizes",
 	"orphan_stubs",
+	"unhandled_rpcs",
 	"deps",
 }
 
@@ -224,6 +225,7 @@ func buildAuditReport(f *factory.Factory, projectDir string) (*Report, error) {
 	report.Categories["unscoped_auth"] = auditUnscopedAuth(cfg, abs)
 	report.Categories["file_sizes"] = auditFileSizes(abs)
 	report.Categories["orphan_stubs"] = auditOrphanStubs(f, cfg, abs)
+	report.Categories["unhandled_rpcs"] = auditUnhandledRPCs(f, abs)
 	report.Categories["deps"] = auditDeps(abs)
 
 	report.OverallStatus = rollupStatus(report.Categories)
@@ -483,6 +485,9 @@ func auditShape(f *factory.Factory, cfg *config.ProjectConfig, projectDir string
 		// Streaming is "", "client", "server", or "bidi"; omitted
 		// for unary RPCs.
 		Streaming string `json:"streaming,omitempty"`
+		// Custom reports a `// forge:custom` marker: the rpc is custom
+		// whatever its name, so forge stubs it rather than wiring CRUD.
+		Custom bool `json:"custom,omitempty"`
 	}
 	type svcInfo struct {
 		Name     string `json:"name"`
@@ -543,6 +548,7 @@ func auditShape(f *factory.Factory, cfg *config.ProjectConfig, projectDir string
 					rpcs = append(rpcs, rpcInfo{
 						Name:      m.Name,
 						Streaming: mode,
+						Custom:    m.Custom,
 					})
 				}
 				rpcByService[d.Name] = rpcs

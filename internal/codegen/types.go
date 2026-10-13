@@ -107,6 +107,11 @@ type Method struct {
 	// generated code so handler authors see the typed error contract at
 	// a glance. Informational at runtime — no enforcement (yet).
 	Errors []string
+	// Custom reports a `// forge:custom` marker on the rpc
+	// (ProtoMarkerCustom): its semantics are the author's, so it is a custom
+	// rpc whatever its name — CRUDShape answers "" for it, and nothing CRUD
+	// is projected from it. Absent on descriptors written before the marker.
+	Custom bool `json:",omitempty"`
 	// InputTypeFQ / OutputTypeFQ are the fully-qualified names of the
 	// request/response messages (e.g. "shop.v1.CreateOrderRequest",
 	// "google.protobuf.Empty"). They key into ServiceDef.Schemas for

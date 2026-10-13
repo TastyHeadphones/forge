@@ -258,7 +258,7 @@ func ServiceDefToHookData(svc ServiceDef) FrontendHookTemplateData {
 			InputType:      m.InputType,
 			OutputType:     m.OutputType,
 			IsQuery:        isQuery,
-			EntityScope:    methodEntityScope(svc, m.Name),
+			EntityScope:    methodEntityScope(svc, m),
 			inputPath:      ProtoFileToTSImportPath(inPath),
 			outputPath:     ProtoFileToTSImportPath(outPath),
 			InputSchemaRef: m.InputType + "Schema",
@@ -304,10 +304,10 @@ func ServiceDefToHookData(svc ServiceDef) FrontendHookTemplateData {
 // methodEntityScope derives the camelCase singular entity name from a CRUD
 // RPC: "ListTasks" → "task", "CreateTask" → "task". Returns "" for a custom
 // RPC — including one whose name merely starts with a CRUD verb, like
-// "UpdateTaskStatus" (see crudEntity) — and those key/invalidate at the
-// service scope.
-func methodEntityScope(svc ServiceDef, methodName string) string {
-	_, entity := crudEntity(svc, methodName)
+// "UpdateTaskStatus" (see crudEntity), or one marked `// forge:custom` — and
+// those key/invalidate at the service scope.
+func methodEntityScope(svc ServiceDef, m Method) string {
+	_, entity := crudEntity(svc, m)
 	if entity == "" {
 		return ""
 	}

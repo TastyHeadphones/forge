@@ -962,7 +962,7 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData { //nolint:gocognit,
 		// crudEntity singularizes a List's plural and refuses a name that
 		// merely starts with a CRUD verb (ListJobsByCrew) — the server
 		// projection's rule, so a custom rpc births no page.
-		op, entityName := crudEntity(svc, m.Name)
+		op, entityName := crudEntity(svc, m)
 		if op == "" {
 			continue
 		}

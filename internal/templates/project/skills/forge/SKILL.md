@@ -120,7 +120,16 @@ proto message of that name, gets the CRUD wiring. Anything else is custom:
 `UpdateJobStatus`, `CreateInvoiceFromEstimate` and `ListJobsByCrew` get a stub
 and no page, and a custom mutation's hook invalidates every query on its
 service (a CRUD mutation's, only its entity's). Name rpcs for the domain; never
-rename one to dodge CRUD detection.
+rename one to dodge CRUD detection. An rpc that is CRUD in name only says so:
+
+```protobuf
+// forge:custom — creating a task also wires its dependencies.
+rpc CreateTask(CreateTaskRequest) returns (CreateTaskResponse);
+```
+
+It is then custom everywhere (stub, test row, no shim, no page). Mark every
+CRUD-named rpc of a table and the table is no entity: no ORM struct in
+`internal/db`, no page, no seed root.
 
 Every rpc is closed to unauthenticated callers unless it carries
 `auth_required: false` (`proto`, `auth`).

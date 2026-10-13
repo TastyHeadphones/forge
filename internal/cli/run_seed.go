@@ -443,10 +443,7 @@ func crudEntityTables(services []codegen.ServiceDef) []string {
 	out := []string{}
 	for _, svc := range services {
 		for _, m := range svc.Methods {
-			if m.ClientStreaming || m.ServerStreaming {
-				continue
-			}
-			op, name := codegen.ParseCRUDOperation(m.Name)
+			op, name := codegen.CRUDShape(m) // unary, not forge:custom
 			if op == "" {
 				continue
 			}

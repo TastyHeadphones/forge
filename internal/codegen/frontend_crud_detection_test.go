@@ -108,7 +108,7 @@ func TestCRUDEntity_FollowsTheServerRule(t *testing.T) {
 		{"ChangeJobStatus", "", ""},           // no CRUD verb at all
 	}
 	for _, c := range cases {
-		op, entity := crudEntity(svc, c.method)
+		op, entity := crudEntity(svc, Method{Name: c.method})
 		if op != c.op || entity != c.entity {
 			t.Errorf("crudEntity(%s) = (%q, %q), want (%q, %q)", c.method, op, entity, c.op, c.entity)
 		}
@@ -118,7 +118,50 @@ func TestCRUDEntity_FollowsTheServerRule(t *testing.T) {
 	// existed) keeps the name-only answer, as declaresWireMessage does: a
 	// gate with no evidence must not drop every entity in the project.
 	legacy := ServiceDef{Name: "JobsService", Methods: svc.Methods}
-	if op, entity := crudEntity(legacy, "UpdateJob"); op != "update" || entity != "Job" {
+	if op, entity := crudEntity(legacy, Method{Name: "UpdateJob"}); op != "update" || entity != "Job" {
 		t.Errorf("legacy descriptor: crudEntity(UpdateJob) = (%q, %q), want (update, Job)", op, entity)
+	}
+
+	// `// forge:custom` overrides the name on both inventories.
+	for _, s := range []ServiceDef{svc, legacy} {
+		if op, entity := crudEntity(s, Method{Name: "UpdateJob", Custom: true}); op != "" || entity != "" {
+			t.Errorf("forge:custom UpdateJob: crudEntity = (%q, %q), want custom", op, entity)
+		}
+	}
+}
+
+// TestForgeCustomRPC_IsCustomOnTheFrontend pins the frontend half of the
+// marker: a `// forge:custom` CRUD-named rpc births no page and keys and
+// invalidates at the service scope, while its unmarked siblings stay CRUD.
+func TestForgeCustomRPC_IsCustomOnTheFrontend(t *testing.T) {
+	svc := jobsServiceWithCustomRPCs()
+	for i, m := range svc.Methods {
+		if m.Name == "CreateJob" || m.Name == "UpdateJob" {
+			svc.Methods[i].Custom = true
+		}
+	}
+	for _, p := range ExtractCRUDEntities(svc) {
+		if p.EntityName != "Job" {
+			continue
+		}
+		if p.HasCreate || p.HasUpdate {
+			t.Errorf("Job page: HasCreate=%v HasUpdate=%v, want both false — forge:custom rpcs are not the page's to call", p.HasCreate, p.HasUpdate)
+		}
+		if !p.HasList || !p.HasGet {
+			t.Errorf("Job page: HasList=%v HasGet=%v, want true — the unmarked rpcs stay CRUD", p.HasList, p.HasGet)
+		}
+	}
+	data := ServiceDefToHookData(svc)
+	for _, m := range data.Methods {
+		switch m.Name {
+		case "CreateJob", "UpdateJob":
+			if m.EntityScope != "" {
+				t.Errorf("%s: EntityScope = %q, want service scope for a forge:custom rpc", m.Name, m.EntityScope)
+			}
+		case "ListJobs", "GetJob":
+			if m.EntityScope != "job" {
+				t.Errorf("%s: EntityScope = %q, want job", m.Name, m.EntityScope)
+			}
+		}
 	}
 }

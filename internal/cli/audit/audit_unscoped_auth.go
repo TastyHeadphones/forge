@@ -600,17 +600,17 @@ func ownerScopedTablesIn(sql string) map[string]string {
 // table it operates on, returning empty strings when the RPC is not CRUD
 // or its table declares no owner column.
 //
-// The derivation is codegen.ParseCRUDOperation plus naming, which is
-// EXACTLY how BuildSchemaEntities joins protos to tables — including the
-// singularize-then-pluralize step a List RPC needs. Reusing that
-// derivation rather than re-inventing one is what keeps the gate's idea
-// of "which table does this RPC touch" from drifting away from the
-// generator's.
-func ownerEntityFor(method string, ownerTables map[string]string) (entity, table, column string) {
+// The derivation is codegen.CRUDShape plus naming, which is EXACTLY how
+// BuildSchemaEntities joins protos to tables — including the
+// singularize-then-pluralize step a List RPC needs, and a `// forge:custom`
+// rpc mapping to no entity. Reusing that derivation rather than
+// re-inventing one is what keeps the gate's idea of "which table does this
+// RPC touch" from drifting away from the generator's.
+func ownerEntityFor(method codegen.Method, ownerTables map[string]string) (entity, table, column string) {
 	if len(ownerTables) == 0 {
 		return "", "", ""
 	}
-	op, name := codegen.ParseCRUDOperation(method)
+	op, name := codegen.CRUDShape(method)
 	if op == "" {
 		return "", "", ""
 	}
@@ -634,7 +634,7 @@ func ownerEntityFor(method string, ownerTables map[string]string) (entity, table
 // finding carrying one without the other is the failure this whole
 // change exists to fix.
 func newUnscopedFinding(service string, method codegen.Method, file string, delegating bool, ownerTables map[string]string) unscopedRPC {
-	entity, table, column := ownerEntityFor(method.Name, ownerTables)
+	entity, table, column := ownerEntityFor(method, ownerTables)
 	return unscopedRPC{
 		Service:     service,
 		Method:      method.Name,
