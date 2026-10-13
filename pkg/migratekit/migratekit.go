@@ -226,6 +226,20 @@ type State struct {
 	Applied bool
 }
 
+// settled is the state the applied record vouches for. A dirty version was
+// attempted and did not finish, so until a Force asserts it, it is not
+// applied — every version below it is. Versions are integers, so "below the
+// dirty one" is "at or below one less".
+func (s State) settled() State {
+	if !s.Dirty {
+		return s
+	}
+	if s.Version == 0 {
+		return State{}
+	}
+	return State{Version: s.Version - 1, Applied: true}
+}
+
 // State reads the current schema state, folding golang-migrate's
 // ErrNilVersion sentinel into State.Applied=false. A returned error
 // therefore always means the version table is genuinely unreadable.
@@ -324,7 +338,10 @@ func (mg *Migrator) up() (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	if err := checkApplied(ctx, mg.db, mg.source, before); err != nil {
+	// Settled: a schema left dirty is checked as of the last version that
+	// finished, so it reaches golang-migrate's dirty refusal instead of
+	// reporting the half-applied version as missing.
+	if err := checkApplied(ctx, mg.db, mg.source, before.settled()); err != nil {
 		return Result{}, err
 	}
 	if ahead, err := classifyAhead(ctx, mg.db, mg.source, before); err != nil || ahead != nil {
@@ -338,6 +355,9 @@ func (mg *Migrator) up() (Result, error) {
 	}
 	res, err := mg.apply(mg.m.Up)
 	if err != nil {
+		if recErr := recordFailedRun(ctx, mg.db, mg.m, mg.source, before); recErr != nil {
+			return Result{}, errors.Join(err, recErr)
+		}
 		return Result{}, err
 	}
 	if err := recordApplied(ctx, mg.db, mg.source, res.Before, res.After); err != nil {
@@ -355,11 +375,50 @@ func (mg *Migrator) up() (Result, error) {
 // project imports golang-migrate directly and this package stops being the
 // boundary. It does not make forcing safe: the schema is whatever the failed
 // migration left behind, and asserting a version does not change that.
+//
+// It keeps the applied record (applied.go) saying what the version now says:
+// the versions the force newly asserts are recorded under this binary's files,
+// and rows above the forced version are dropped (forceApplied). Without that,
+// the recovery Force exists for — repair a migration that failed part-way,
+// force its version, run Up — was refused, because Up found the forced version
+// passed and never recorded, and reported it MISSING.
+//
+// It runs under the run lock, so it never interleaves with a replica's Up or a
+// server's AutoMigrate. The version is written while the record's transaction
+// still holds appliedLockKey, as adopt does, so no reader sees the two
+// disagree.
 func (mg *Migrator) Force(version int) error {
-	if err := mg.m.Force(version); err != nil {
+	err := withRunLock(context.Background(), mg.db, func() error {
+		return mg.force(version)
+	})
+	if err != nil {
 		return fmt.Errorf("force migration version %d: %w", version, err)
 	}
 	return nil
+}
+
+// force is Force's body, run under the run lock.
+func (mg *Migrator) force(version int) error {
+	ctx := context.Background()
+	before, err := mg.State()
+	if err != nil {
+		return err
+	}
+	tx, err := mg.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf("SELECT pg_advisory_xact_lock(%d)", int64(appliedLockKey))); err != nil {
+		return err
+	}
+	if err := forceApplied(ctx, tx, mg.source, before, version); err != nil {
+		return err
+	}
+	if err := mg.m.Force(version); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // apply is the ceremony behind Up: read state, run, fold

@@ -55,10 +55,6 @@ func TestDBSquash_BaselineAndTheNextMigrationApplyInOneMigratekitRun(t *testing.
 	if err := exec.Command("docker", "info").Run(); err != nil {
 		t.Skipf("no docker daemon: %v", err)
 	}
-	if _, err := exec.LookPath("migrate"); err != nil {
-		t.Skip("golang-migrate CLI not on PATH")
-	}
-
 	history := t.TempDir()
 	for name, body := range squashHistory {
 		if err := os.WriteFile(filepath.Join(history, name), []byte(body), 0o644); err != nil {

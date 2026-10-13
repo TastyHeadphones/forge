@@ -20,7 +20,6 @@ import (
 	"context"
 	"database/sql"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -180,9 +179,6 @@ func TestDBSeedApply_DashCReadsEveryInputFromTheProject(t *testing.T) {
 func TestDBMigrateUp_DashCReadsTheProjectMigrations(t *testing.T) {
 	if testing.Short() {
 		t.Skip("needs a real postgres server")
-	}
-	if _, err := exec.LookPath("migrate"); err != nil {
-		t.Skip("golang-migrate CLI not on PATH")
 	}
 	dsn := scratchDatabase(t)
 	proj := seedTestProject(t, dsn, "")

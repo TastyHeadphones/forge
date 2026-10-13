@@ -258,7 +258,7 @@ func runDBReset(ctx context.Context, opts resetOptions) error {
 	// 5. Migrate to head. A freshly created database has no dirty flag and
 	//    no rows, so this is the one path on which `migrate up` cannot be
 	//    refused by state left behind.
-	if err := runMigrateCommand(ctx, "up", dsn, opts.migDir); err != nil {
+	if err := runMigrateUp(os.Stdout, dsn, opts.migDir); err != nil {
 		return fmt.Errorf("reset: recreated %s but could not migrate it: %w", name, err)
 	}
 

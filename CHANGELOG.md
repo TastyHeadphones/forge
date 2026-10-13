@@ -232,6 +232,27 @@ tag resolution: exit status 128`; it tags images `uncommitted`.
   - `forge env up` no longer needs `air` on PATH: it installs its pinned air
     (v1.67.4) into forge's tool cache, and runs the API under `go-run` with a
     one-line notice if it cannot.
+- **`forge db migrate` runs forge's migrator, not the `migrate` CLI.** `up`,
+  `status`, `version` and `force` shelled out to golang-migrate's CLI, which
+  skipped everything `pkg/migratekit` adds: the run lock shared with
+  `AutoMigrate`, the applied record and its mismatch/missing refusals,
+  `-- forge:adopts` goose adoption (the CLI ran the baseline's SQL over goose's
+  schema and left the database dirty), and the schema-ahead verdict. A version
+  the CLI applied also got no record row, so a server's next `AutoMigrate`
+  refused it as missing. All four now open `migratekit` over the project's
+  migrations directory (same `--dsn` / `DATABASE_URL` / `--dir`), and so do
+  `forge db reset` and `forge db squash`; nothing needs `migrate` on PATH any
+  more. `up` prints what the scaffolded `<binary> db migrate up` prints
+  (`ADOPTED …`, `no pending migrations`, `migrations applied: A -> B`) and an
+  empty directory is "nothing to apply"; `status` reports version, latest and
+  pending. `migratekit` keeps its record in step with the dirty-schema
+  recovery: a run that fails records the versions it applied before the
+  failure, `Migrator.Force` records the versions it asserts (and drops rows
+  above them), and `Up` on a dirty schema returns golang-migrate's dirty error
+  instead of reporting the half-applied version missing. Before, repair →
+  `force` → `up` was refused with every version of the failed run "missing".
+  A database the old CLI migrated after `AutoMigrate` created the record still
+  refuses those versions; the error prints the `INSERT` that records them.
 
 ### Added
 

@@ -37,7 +37,8 @@ func newDBCmd() *cobra.Command {
 
 Forge uses a migration-first database model:
 - Checked-in SQL migrations in db/migrations/ are the source of truth
-- golang-migrate is the canonical migration runner
+- forge's migrator (pkg/migratekit, on golang-migrate) applies them, from
+  'forge db migrate' and from the project's own binary alike
 - Entity types are projections of the applied schema (forge generate)
 
 When something is wedged:
@@ -135,9 +136,11 @@ historical migrations into a checkpoint. Paths resolve against the project
 root (-C, or the project the current directory is in).
 
 Requires:
-  - docker (for the ephemeral postgres)
-  - migrate (golang-migrate CLI) on PATH
-  - pg_dump on PATH (matching the postgres image major version)
+  - docker (for the ephemeral postgres; pg_dump runs inside it, so its major
+    version matches the server's)
+
+The migrations are applied by forge's migrator, the same one
+'forge db migrate up' runs.
 
 Examples:
   forge db squash
@@ -185,9 +188,6 @@ type squashOptions struct {
 // careful to tear the container down even on error paths so a failed
 // squash doesn't leak a hanging container into `docker ps`.
 func runDBSquash(ctx context.Context, opts squashOptions) error {
-	if err := requireMigrate(); err != nil {
-		return err
-	}
 	if _, err := exec.LookPath("docker"); err != nil {
 		return fmt.Errorf("docker not found on PATH (required for `forge db squash` ephemeral postgres)")
 	}
@@ -210,6 +210,11 @@ func runDBSquash(ctx context.Context, opts squashOptions) error {
 	}
 	if !info.IsDir() {
 		return fmt.Errorf("--from-dir %q is not a directory", opts.FromDir)
+	}
+	if ms, err := projectMigrations(absFrom); err != nil {
+		return fmt.Errorf("--from-dir %q: %w", opts.FromDir, err)
+	} else if len(ms) == 0 {
+		return fmt.Errorf("--from-dir %q holds no migrations to squash", opts.FromDir)
 	}
 
 	outDir := opts.OutDir
@@ -264,12 +269,11 @@ func runDBSquash(ctx context.Context, opts squashOptions) error {
 		return fmt.Errorf("postgres did not become ready: %w", err)
 	}
 
+	// Applied by forge's migrator, as every database the baseline replaces
+	// was: its bookkeeping tables are excluded from the dump below.
 	_, _ = fmt.Fprintln(os.Stdout, "Applying migrations...")
-	upCmd := exec.CommandContext(ctx, "migrate", "-path", absFrom, "-database", dsn, "up")
-	upCmd.Stdout = os.Stdout
-	upCmd.Stderr = os.Stderr
-	if err := upCmd.Run(); err != nil {
-		return fmt.Errorf("migrate up failed: %w", err)
+	if err := runMigrateUp(os.Stdout, dsn, absFrom); err != nil {
+		return err
 	}
 
 	_, _ = fmt.Fprintln(os.Stdout, "Dumping schema + seed data via pg_dump...")
@@ -318,7 +322,7 @@ func runDBSquash(ctx context.Context, opts squashOptions) error {
 	_, _ = fmt.Fprintln(os.Stdout, "\nNext steps:")
 	_, _ = fmt.Fprintln(os.Stdout, "  1. Review the baseline; ensure no app-state INSERTs leaked into seed data.")
 	_, _ = fmt.Fprintln(os.Stdout, "  2. Move existing migrations out of --from-dir into an archive (or keep & adopt the new ID).")
-	_, _ = fmt.Fprintln(os.Stdout, "  3. `migrate force <id>` against any pre-existing databases so they accept the new baseline.")
+	_, _ = fmt.Fprintln(os.Stdout, "  3. `forge db migrate force <id>` against any pre-existing databases so they accept the new baseline.")
 
 	return nil
 }
@@ -558,14 +562,25 @@ func resolveMigrationFileArg(migDir, arg string) string {
 func newDBMigrateCommand() *cobra.Command {
 	migrateCmd := &cobra.Command{
 		Use:   "migrate",
-		Short: "Run migration lifecycle commands with golang-migrate",
-		Long: `Apply, inspect, and repair migration state using golang-migrate.
+		Short: "Apply, inspect and repair migration state with forge's migrator",
+		Long: `Apply, inspect, and repair migration state with forge's migrator
+(forge/pkg/migratekit, built on golang-migrate) — the same one the project's
+own '<binary> db migrate up' and a server's AUTO_MIGRATE run, so every path
+takes the same run lock, keeps the same applied record, and reaches the same
+verdicts:
+
+  - a version applied from a different file, or one the schema passed without
+    applying, is refused before anything runs;
+  - a database goose migrated is ADOPTED when the first migration declares
+    its history ('-- forge:adopts goose ...');
+  - a schema AHEAD of the directory is reported, and refused unless every
+    newer version was declared '-- forge:backward-compatible'.
 
 There is no "down": forge rolls forward only. A bad migration is repaired by a
 new forward migration written against the state the database is actually in.
 
-Migrations are stored in db/migrations/ by default.
-Install golang-migrate from https://github.com/golang-migrate/migrate/tree/master/cmd/migrate.
+Migrations are read from db/migrations/ by default. Nothing else needs to be
+installed.
 
 The connection string can be provided via --dsn or, if the flag is omitted,
 the DATABASE_URL environment variable.
@@ -604,7 +619,7 @@ func newDBMigrateUpCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runMigrateCommand(cmd.Context(), "up", resolved, dir)
+			return runMigrateUp(cmd.OutOrStdout(), resolved, dir)
 		},
 	}
 
@@ -632,7 +647,7 @@ func newDBMigrateStatusCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runMigrateStatus(cmd.Context(), resolved, dir)
+			return runMigrateStatus(cmd.OutOrStdout(), resolved, dir)
 		},
 	}
 
@@ -660,7 +675,7 @@ func newDBMigrateVersionCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runMigrateVersion(cmd.Context(), resolved, dir)
+			return runMigrateVersion(cmd.OutOrStdout(), resolved, dir)
 		},
 	}
 
@@ -693,6 +708,10 @@ and force only once the database matches what that version intended. Forcing
 past a migration whose SQL never ran leaves the schema permanently behind what
 forge believes is applied.
 
+The applied record (schema_migrations_applied) follows the version: the
+versions a force asserts are recorded as this directory's files, and rows above
+the forced version are dropped, so the next 'up' accepts the database.
+
 Examples:
   forge db introspect                    # see what actually landed
   forge db migrate force 20240102150405  # then clear the flag
@@ -707,7 +726,7 @@ Examples:
 			if err != nil {
 				return err
 			}
-			return runMigrateCommand(cmd.Context(), "force", resolved, dir, args[0])
+			return runMigrateForce(cmd.OutOrStdout(), resolved, dir, args[0])
 		},
 	}
 
@@ -777,74 +796,6 @@ func runDBIntrospect(ctx context.Context, dsn, tableFilter, format string) error
 		fmt.Println(out)
 	default:
 		fmt.Print(database.FormatSchemaText(tables))
-	}
-
-	return nil
-}
-
-func requireMigrate() error {
-	if _, err := exec.LookPath("migrate"); err != nil {
-		return fmt.Errorf("golang-migrate CLI not found. Install it from https://github.com/golang-migrate/migrate/tree/master/cmd/migrate")
-	}
-	return nil
-}
-
-func runMigrateCommand(ctx context.Context, action, dsn, migDir string, extraArgs ...string) error {
-	if err := requireMigrate(); err != nil {
-		return err
-	}
-
-	// Check for an already-dirty database BEFORE running anything. golang-migrate
-	// refuses on a dirty version with "Dirty database version N. Fix and force
-	// version." — prose that names no forge command and does not say that forcing
-	// runs no SQL. Checking first also distinguishes "already wedged" from "the
-	// migration I just ran wedged it"; only the former should be pointed at
-	// `migrate force`. `force` itself is exempt: it is the way out.
-	if action != "force" {
-		if block := dirtyMigrationBlock(ctx, dsn, migDir); block != nil {
-			return fmt.Errorf("%s", dirtyMigrationMessage(block, action))
-		}
-	}
-
-	args := []string{"-path", migDir, "-database", dsn}
-	args = append(args, action)
-	args = append(args, extraArgs...)
-
-	cmd := exec.CommandContext(ctx, "migrate", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("migrate %s failed: %w", action, err)
-	}
-
-	return nil
-}
-
-func runMigrateVersion(ctx context.Context, dsn, migDir string) error {
-	if err := requireMigrate(); err != nil {
-		return err
-	}
-
-	cmd := exec.CommandContext(ctx, "migrate", "-path", migDir, "-database", dsn, "version")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("migrate version failed: %w", err)
-	}
-
-	return nil
-}
-
-func runMigrateStatus(ctx context.Context, dsn, migDir string) error {
-	if err := requireMigrate(); err != nil {
-		return err
-	}
-
-	if err := runMigrateVersion(ctx, dsn, migDir); err != nil {
-		fmt.Println("Migration version check returned an error; this can happen when no migrations have been applied yet.")
-		return err
 	}
 
 	return nil
