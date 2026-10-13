@@ -118,7 +118,7 @@ If the source uses goose (one-file migrations with `-- +goose Up` / `-- +goose D
 
 1. Keep the `-- +goose Up` section as `<N>_<name>.up.sql` and **discard** the `-- +goose Down` section (recovery is a new forward migration, never a reverse).
 2. Drop `-- +goose StatementBegin` / `-- +goose StatementEnd` markers (they wrap single statements; golang-migrate handles that natively).
-3. Files declaring `-- +goose NO TRANSACTION` translate to a golang-migrate `x-no-tx-wrap` header on that file.
+3. Split a file declaring `-- +goose NO TRANSACTION` into one migration per statement, cut where goose cuts them (a line ending in `;`, or a `StatementBegin`/`StatementEnd` block). goose ran each of those statements on its own. golang-migrate has no no-transaction mode: it sends a file as one multi-statement query, which postgres runs as one implicit transaction. Kept whole, a file with two `CREATE INDEX CONCURRENTLY` statements fails with SQLSTATE 25001 and leaves the schema dirty, and so does an `ALTER TYPE … ADD VALUE` followed by a row using the value (55P04). The import names each piece `<name>_part<N>`.
 4. Renumber files starting from the next-available index AFTER any pack-installed migrations (e.g. audit-log occupies 00002, api-key occupies 00003, so source migrations start at 00004).
 
 If source migrations have foreign-key dependencies on tables that pack migrations create (or vice versa), reorder carefully. Pack migrations are not negotiable; renumber yours.

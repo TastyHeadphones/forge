@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`forge project migrate import --from goose` splits a NO TRANSACTION file
+  into one migration per statement.** It used to write the file whole under an
+  `-- x-no-tx-wrap: true` header, which nothing reads: golang-migrate has no
+  no-transaction mode and sends a file as one multi-statement query, which
+  postgres runs as one implicit transaction. So reliant's goose files holding
+  several `CREATE INDEX CONCURRENTLY` statements failed `migrate up` with
+  SQLSTATE 25001 and left the schema dirty, as would an `ALTER TYPE … ADD
+  VALUE` followed by a row using the value (55P04). Each statement now becomes
+  its own migration (`<name>_part1`, `_part2`, …), cut where goose cuts them —
+  a line ending in `;`, or a `StatementBegin`/`StatementEnd` block — so each
+  runs exactly as goose ran it, and a failure part-way leaves only that
+  statement to repair. A one-statement NO TRANSACTION file stays one file. The
+  header is gone. A re-import meets a file an older forge imported whole under
+  its old name: refused without `--force`, replaced with it. On re-pin,
+  re-import such files with `--force` on a database you can rebuild (or split
+  them by hand, one statement per file).
 - **The `observability` skill loads whole again.** It had grown to 24,390
   bytes, over the 24,000-byte load cap, so a loader truncated its tail (the
   sub-skill pointers and the rules). The DB-persisted audit-trail recipe on

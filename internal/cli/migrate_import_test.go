@@ -187,7 +187,10 @@ DROP TABLE memberships;
 	}
 }
 
-func TestMigrateImportNoTransactionHeader(t *testing.T) {
+// A NO TRANSACTION file of ONE statement stays one migration: golang-migrate
+// sends a single statement as a single query, which postgres runs outside a
+// transaction block, so CONCURRENTLY works there as it did under goose.
+func TestMigrateImportNoTransactionSingleStatement(t *testing.T) {
 	src := writeGooseSrc(t, []gooseFile{
 		{
 			Name: "20240501_create_index.sql",
@@ -211,13 +214,205 @@ DROP INDEX CONCURRENTLY idx_users_email;
 		t.Fatalf("runMigrateImport: %v", err)
 	}
 
-	up := readMigrateImportFile(t, migrationWithStem(t, dest, "create_index"))
-
-	if !strings.Contains(up, "x-no-tx-wrap: true") {
-		t.Errorf("up missing x-no-tx-wrap header: %q", up)
+	if got := stemsInOrder(t, dest); !slices.Equal(got, []string{"create_index"}) {
+		t.Fatalf("a one-statement NO TRANSACTION file must stay one migration, got %v", got)
 	}
-	if strings.Contains(up, "+goose NO TRANSACTION") {
-		t.Errorf("up still contains goose NO TRANSACTION marker: %q", up)
+	up := readMigrateImportFile(t, migrationWithStem(t, dest, "create_index"))
+	if up != "CREATE INDEX CONCURRENTLY idx_users_email ON users(email);\n" {
+		t.Errorf("up = %q, want the statement alone", up)
+	}
+	if strings.Contains(buf.String(), "Split -- +goose NO TRANSACTION") {
+		t.Errorf("nothing was split, but the import reported a split:\n%s", buf.String())
+	}
+}
+
+// The P5a regression: a NO TRANSACTION file holding several statements was
+// written as ONE migration under an `-- x-no-tx-wrap: true` header that
+// nothing reads. golang-migrate sent it as one multi-statement query, postgres
+// ran that as one implicit transaction, and the first CREATE INDEX
+// CONCURRENTLY failed with SQLSTATE 25001, leaving the schema dirty. It now
+// becomes one migration per goose statement, split where goose split it.
+func TestMigrateImportSplitsNoTransactionFile(t *testing.T) {
+	src := writeGooseSrc(t, []gooseFile{
+		{
+			Name: "20240501_add_users.sql",
+			Content: `-- +goose Up
+CREATE TABLE users (id INT PRIMARY KEY, email TEXT, org_id INT);
+-- +goose Down
+DROP TABLE users;
+`,
+		},
+		{
+			Name: "20240502_index_users.sql",
+			Content: `-- +goose NO TRANSACTION
+-- +goose Up
+-- Lookups by email.
+CREATE INDEX CONCURRENTLY idx_users_email
+    ON users (email);
+
+CREATE INDEX CONCURRENTLY idx_users_org ON users (org_id); -- by org
+-- +goose StatementBegin
+DO $$
+BEGIN
+  RAISE NOTICE 'indexed;';
+END;
+$$;
+-- +goose StatementEnd
+-- trailing note
+-- +goose Down
+DROP INDEX CONCURRENTLY idx_users_org;
+DROP INDEX CONCURRENTLY idx_users_email;
+`,
+		},
+		{
+			Name: "20240503_add_orgs.sql",
+			Content: `-- +goose Up
+CREATE TABLE orgs (id INT PRIMARY KEY);
+`,
+		},
+	})
+	dest := t.TempDir()
+
+	var buf bytes.Buffer
+	if err := runMigrateImport(migrateImportOptions{
+		From:    "goose",
+		SrcDir:  src,
+		DestDir: dest,
+		Stdout:  &buf,
+	}); err != nil {
+		t.Fatalf("runMigrateImport: %v", err)
+	}
+
+	want := []string{"add_users", "index_users_part1", "index_users_part2", "index_users_part3", "add_orgs"}
+	if got := stemsInOrder(t, dest); !slices.Equal(got, want) {
+		t.Fatalf("migrations in version order = %v, want %v", got, want)
+	}
+	assertTimestampVersioned(t, dest)
+
+	header := func(part int) string {
+		return "-- Statement " + string(rune('0'+part)) + " of 3 of goose migration 20240502_index_users.sql, which declared NO TRANSACTION.\n"
+	}
+	parts := map[string]string{
+		"index_users_part1": "-- Lookups by email.\nCREATE INDEX CONCURRENTLY idx_users_email\n    ON users (email);\n",
+		"index_users_part2": "CREATE INDEX CONCURRENTLY idx_users_org ON users (org_id); -- by org\n",
+		"index_users_part3": "DO $$\nBEGIN\n  RAISE NOTICE 'indexed;';\nEND;\n$$;\n\n-- trailing note\n",
+	}
+	for i, stem := range []string{"index_users_part1", "index_users_part2", "index_users_part3"} {
+		up := readMigrateImportFile(t, migrationWithStem(t, dest, stem))
+		if !strings.HasPrefix(up, header(i+1)) {
+			t.Errorf("%s does not open with its provenance comment:\n%s", stem, up)
+		}
+		if !strings.HasSuffix(up, "\n\n"+parts[stem]) {
+			t.Errorf("%s body:\n%s\nwant it to end with:\n%s", stem, up, parts[stem])
+		}
+		for _, banned := range []string{"x-no-tx-wrap", "+goose", "DROP INDEX"} {
+			if strings.Contains(up, banned) {
+				t.Errorf("%s carries %q:\n%s", stem, banned, up)
+			}
+		}
+	}
+
+	out := buf.String()
+	for _, w := range []string{
+		"Split -- +goose NO TRANSACTION files into one migration per statement",
+		"20240502_index_users.sql → 3 migrations, index_users_part1 … index_users_part3",
+	} {
+		if !strings.Contains(out, w) {
+			t.Errorf("import output lacks %q:\n%s", w, out)
+		}
+	}
+	if n := strings.Count(out, "20240502_index_users.sql\n"); n != 1 {
+		t.Errorf("the dropped Down section of the split file is reported %d times, want once:\n%s", n, out)
+	}
+}
+
+// gooseStatements reproduces where goose itself ends a statement, because a
+// split file must run each statement as goose ran it: what goose sent as one
+// query stays one migration.
+func TestGooseStatements(t *testing.T) {
+	cases := []struct {
+		name string
+		up   string
+		want []string
+	}{
+		{
+			name: "one statement per terminated line",
+			up:   "CREATE INDEX CONCURRENTLY a ON t (x);\nCREATE INDEX CONCURRENTLY b ON t (y);\n",
+			want: []string{"CREATE INDEX CONCURRENTLY a ON t (x);\n", "CREATE INDEX CONCURRENTLY b ON t (y);\n"},
+		},
+		{
+			name: "a statement spans lines until one ends in a semicolon",
+			up:   "CREATE INDEX CONCURRENTLY a\n  ON t (x)\n  WHERE x > 0;\nVACUUM t;\n",
+			want: []string{"CREATE INDEX CONCURRENTLY a\n  ON t (x)\n  WHERE x > 0;\n", "VACUUM t;\n"},
+		},
+		{
+			name: "a trailing comment does not hide the semicolon",
+			up:   "ALTER TYPE s ADD VALUE 'b'; -- new state\nUPDATE t SET s = 'b';\n",
+			want: []string{"ALTER TYPE s ADD VALUE 'b'; -- new state\n", "UPDATE t SET s = 'b';\n"},
+		},
+		{
+			name: "a semicolon only inside a comment does not end a statement",
+			up:   "CREATE INDEX CONCURRENTLY a -- not here;\n  ON t (x);\nVACUUM t;\n",
+			want: []string{"CREATE INDEX CONCURRENTLY a -- not here;\n  ON t (x);\n", "VACUUM t;\n"},
+		},
+		{
+			name: "two statements goose sent as one query stay together",
+			up:   "UPDATE t SET x = 1; UPDATE t SET y = 2;\nVACUUM t;\n",
+			want: []string{"UPDATE t SET x = 1; UPDATE t SET y = 2;\n", "VACUUM t;\n"},
+		},
+		{
+			name: "a StatementBegin block is one statement whatever it holds",
+			up:   "-- +goose StatementBegin\nCREATE FUNCTION f() RETURNS void AS $$\nBEGIN\n  PERFORM 1;\nEND;\n$$ LANGUAGE plpgsql;\n-- +goose StatementEnd\nVACUUM t;\n",
+			want: []string{"CREATE FUNCTION f() RETURNS void AS $$\nBEGIN\n  PERFORM 1;\nEND;\n$$ LANGUAGE plpgsql;\n", "VACUUM t;\n"},
+		},
+		{
+			name: "leading comments travel with the statement, trailing ones with the last",
+			up:   "\n-- first\n\nVACUUM a;\n-- second\nVACUUM b;\n\n-- the end\n",
+			want: []string{"-- first\n\nVACUUM a;\n", "-- second\nVACUUM b;\n\n-- the end\n"},
+		},
+		{
+			name: "an unterminated tail is kept, not dropped",
+			up:   "VACUUM a;\nVACUUM b\n",
+			want: []string{"VACUUM a;\n", "VACUUM b\n"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := gooseStatements(strings.Split(strings.TrimSuffix(tc.up, "\n"), "\n"))
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("gooseStatements:\n got %q\nwant %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// A re-import of a file an older forge imported whole meets that file under
+// its unsplit stem: refused without --force, replaced with it.
+func TestMigrateImportSplitReplacesAWholeImportOfTheSameFile(t *testing.T) {
+	dest := t.TempDir()
+	old := filepath.Join(dest, "20240101000000_index_users.up.sql")
+	if err := os.WriteFile(old, []byte("-- x-no-tx-wrap: true\nCREATE INDEX CONCURRENTLY a ON t (x);\nCREATE INDEX CONCURRENTLY b ON t (y);\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	src := writeGooseSrc(t, []gooseFile{{
+		Name:    "20240502_index_users.sql",
+		Content: "-- +goose NO TRANSACTION\n-- +goose Up\nCREATE INDEX CONCURRENTLY a ON t (x);\nCREATE INDEX CONCURRENTLY b ON t (y);\n",
+	}})
+
+	var buf bytes.Buffer
+	err := runMigrateImport(migrateImportOptions{From: "goose", SrcDir: src, DestDir: dest, Stdout: &buf})
+	if err == nil || !strings.Contains(err.Error(), `stem "index_users" already exists`) {
+		t.Fatalf("re-import without --force: err = %v, want the unsplit stem refused", err)
+	}
+
+	if err := runMigrateImport(migrateImportOptions{From: "goose", SrcDir: src, DestDir: dest, Force: true, Stdout: &buf}); err != nil {
+		t.Fatalf("re-import with --force: %v", err)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Errorf("--force left the whole-file import in place (stat err %v): its statements would run twice", err)
+	}
+	if got := stemsInOrder(t, dest); !slices.Equal(got, []string{"index_users_part1", "index_users_part2"}) {
+		t.Errorf("after --force: %v", got)
 	}
 }
 
