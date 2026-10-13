@@ -502,6 +502,9 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		steps = filtered
 	}
 
+	// A plan that keeps the stomp guard keeps its fresh-render check.
+	steps = withDriftAdjudication(steps)
+
 	// onlyReadOnlyRan stays true while every step that has RUN is declared
 	// ReadOnly. Together with an empty journal it is the evidence behind a
 	// failure's "No files were changed" — see rollbackGeneratedTree.

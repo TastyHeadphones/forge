@@ -81,8 +81,12 @@ func cleanupStaleArtifacts(ctx *pipelineContext) (candidates []string, handEdite
 	sort.Strings(rels)
 
 	for _, rel := range rels {
-		// This run wrote this path — definitely not stale.
-		if checksums.WasWrittenThisRun(rel) {
+		// This run wrote this path — definitely not stale. Nor is one an
+		// emitter targeted but did not write: the stomp guard parks a
+		// drifted file's render aside until the fresh-render check settles
+		// it (generate_drift_rescue.go), and that file is current output,
+		// not an artifact no emitter produces any more.
+		if checksums.WasWrittenThisRun(rel) || checksums.IsTier1Target(rel) {
 			continue
 		}
 		// Disowned: user-owned by recorded intent (markers are stripped

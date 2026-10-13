@@ -108,6 +108,10 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"cleanup stale codegen",
 		"retire obsolete disowns",
 		"rehash tracked files",
+		// After every emitter parked its fresh render, before validation:
+		// the drift the guard quarantined is settled here. See
+		// generate_drift_rescue.go.
+		"Tier-1 file-stomp guard: compare drift with fresh renders",
 		"post-gen validation",
 		"detect renamed Tier-1 exports",
 		"check disowned-sibling dangling refs",
@@ -276,6 +280,7 @@ func TestTemplatesOnlyExcludesCleanupAndValidate(t *testing.T) {
 		"rehash tracked files",
 		// Drift / Tier-1 guards.
 		"check Tier-1 file-stomp guard",
+		"Tier-1 file-stomp guard: compare drift with fresh renders",
 		"snapshot Tier-1 exports",
 		"detect renamed Tier-1 exports",
 		"check disowned-sibling dangling refs",

@@ -59,7 +59,7 @@ func TestStepCheckTier1Drift_FirstLineNamesFilesAndRemedies(t *testing.T) {
 	}
 
 	ctx := &pipelineContext{ProjectDir: dir, AbsPath: dir, Checksums: cs}
-	err := stepCheckTier1Drift(ctx)
+	err := checkTier1DriftAndAdjudicate(t, ctx)
 	if err == nil {
 		t.Fatal("stepCheckTier1Drift = nil; want the Tier-1 stomp-guard error")
 	}

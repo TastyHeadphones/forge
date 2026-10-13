@@ -215,6 +215,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - a construction failure appends which of those fields are still nil, and
     both remedies: `With<Svc>Deps(Deps{...})`, or `WithPlaceholderDeps()`
     (`testkit.UnfilledDepsHint`). Optional deps are never touched.
+- **Forge's own outputs under a stale record no longer block the next
+  `forge generate`.** A generate killed during "Validating generated code"
+  had already rewritten three observability dashboards, but saves
+  `.forge/hashes.json` only at the end of a run, so the next generate
+  refused all three as hand-edited Tier-1 files. A merge that takes one
+  side's generated file and the other side's ledger (or merges a stamped
+  file's body under one side's marker) did the same. The stomp guard now
+  quarantines the drift it finds instead of failing: each drifted file's
+  write goes to a side render, the emitters run, and a new step, "Tier-1
+  file-stomp guard: compare drift with fresh renders", runs after them and
+  before validation. A file whose bytes are this run's render (modulo the
+  marker, and canonical formatting for Go) is re-recorded silently — a
+  stamped file restamped, a JSON output's `hashes.json` entry rewritten.
+  Anything else is a hand-edit, reported as before (mid-merge wording
+  included), and the run's writes roll back. A run with a genuine hand-edit
+  now renders before it reports. A path an emitter targeted this run is no
+  longer listed by the stale-artifact sweep. Every `--steps` preset that
+  keeps the guard keeps the new step, and the driver appends it to a plan
+  that does not.
 - **A failed `forge generate` that changed no Go file no longer builds the
   project to report on its rollback.** After reverting a failed run, generate
   ran `go build ./...` over the restored tree to say whether it compiles. It

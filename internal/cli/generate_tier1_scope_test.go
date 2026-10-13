@@ -175,7 +175,7 @@ func TestStepCheckTier1Drift_PopulatesPresenceBeforeScoping(t *testing.T) {
 		// Deliberately NOT setting HasServices — the step must derive
 		// it from disk itself.
 	}
-	err := stepCheckTier1Drift(ctx)
+	err := checkTier1DriftAndAdjudicate(t, ctx)
 	if err == nil {
 		t.Fatalf("stepCheckTier1Drift = nil; want the Tier-1 stomp-guard error (drifted %s on a project with services)", rel)
 	}
