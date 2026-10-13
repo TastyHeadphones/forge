@@ -324,7 +324,9 @@ func lintMigrationFile(file, content string, cfg RuleConfig) []Finding {
 			}
 		}
 	}
-	return findings
+	// The file-as-one-transaction rules read the original content: they
+	// lex comments and strings themselves (see lex.go).
+	return append(findings, lintTransactionBlock(file, content)...)
 }
 
 type statement struct {
@@ -540,6 +542,7 @@ func Allowances(content string) []Allowance {
 	}{
 		{"forge:allow-destructive", allowDestructivePragmaRe, []string{"destructive-change"}},
 		{"forge:allow-unsafe-not-null", allowUnsafeNotNullPragmaRe, []string{"unsafe-add-not-null-column", "set-not-null-without-backfill"}},
+		{"forge:allow-in-transaction", allowInTransactionPragmaRe, []string{RuleNonTransactionalStatement, RuleEnumValueUsedBeforeCommit}},
 	} {
 		for _, loc := range p.re.FindAllStringIndex(content, -1) {
 			// The regex's leading \s* can span blank lines; the pragma's
@@ -587,6 +590,10 @@ func RemediationFor(rule string) string {
 		return VersionBelowMergedHeadRemediation
 	case RuleInvalidAdoption:
 		return InvalidAdoptionRemediation
+	case RuleNonTransactionalStatement:
+		return NonTransactionalStatementRemediation
+	case RuleEnumValueUsedBeforeCommit:
+		return EnumValueUsedBeforeCommitRemediation
 	default:
 		return DestructiveChangeRemediation
 	}
