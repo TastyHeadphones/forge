@@ -23,11 +23,14 @@ func runDescriptorGenerate(projectDir string) error {
 		return nil // Nothing to extract
 	}
 
-	// Vendor buf/validate/validate.proto if any proto imports it, so the
-	// descriptor buf run resolves the buf.validate rules the extractor
-	// reads (fieldConstraintsFromDescriptor).
-	if err := ensureValidateProtoVendored(projectDir); err != nil {
-		return fmt.Errorf("vendor buf/validate/validate.proto: %w", err)
+	// Vendor forge/v1/forge.proto and buf/validate/validate.proto if any
+	// proto imports them, so the descriptor buf run resolves the forge
+	// annotations and buf.validate rules the extractor reads (config
+	// options, fieldConstraintsFromDescriptor). This is the first buf run of
+	// a generate, so it is where an adopted project's first config proto
+	// gets its forge.proto.
+	if err := ensureVendoredProtos(projectDir); err != nil {
+		return fmt.Errorf("vendor annotation protos: %w", err)
 	}
 
 	// Remove stale descriptor + any leftover staging fragments so the

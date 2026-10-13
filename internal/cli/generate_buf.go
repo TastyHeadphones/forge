@@ -14,10 +14,10 @@ import (
 
 // runBufGenerateGo runs buf generate using the project's buf.gen.yaml for Go stubs.
 func runBufGenerateGo(projectDir string) error {
-	// Vendor buf/validate/validate.proto if the project's protos import it,
-	// so buf can resolve the buf.validate field rules offline.
-	if err := ensureValidateProtoVendored(projectDir); err != nil {
-		return fmt.Errorf("vendor buf/validate/validate.proto: %w", err)
+	// Vendor forge/v1/forge.proto and buf/validate/validate.proto if the
+	// project's protos import them, so buf resolves the annotations offline.
+	if err := ensureVendoredProtos(projectDir); err != nil {
+		return fmt.Errorf("vendor annotation protos: %w", err)
 	}
 
 	// Create a default buf.gen.yaml only if one doesn't exist
@@ -26,6 +26,13 @@ func runBufGenerateGo(projectDir string) error {
 			return fmt.Errorf("failed to create buf.gen.yaml: %w", err)
 		}
 		fmt.Println("📝 Generated default buf.gen.yaml")
+	}
+
+	// The vendored annotation protos are imports only; a project's own
+	// template that would compile them to Go is refused before buf writes a
+	// second registration of their descriptors.
+	if err := checkGoTemplateSkipsVendoredProtos(projectDir, "buf.gen.yaml", nil); err != nil {
+		return err
 	}
 
 	cmd := exec.Command("buf", "generate")
@@ -50,6 +57,22 @@ func runBufGenerateGo(projectDir string) error {
 	return nil
 }
 
+// bufGenGoInputs is the `inputs:` block of every Go buf template forge
+// writes: all of proto/, except the vendored annotation protos, which are
+// COMPILE inputs only. Their Go ships with forge/pkg/forgepb and the
+// protovalidate runtime; a local copy would register the descriptor twice and
+// panic every binary at init (checkGoTemplateSkipsVendoredProtos refuses a
+// template that would). internal/templates/project/buf.gen.yaml spells the
+// same block.
+const bufGenGoInputs = `inputs:
+  - directory: proto
+    exclude_paths:
+      # Vendored annotation protos are COMPILE inputs only — never
+      # code-generated (a local copy would double-register the descriptor).
+      - proto/forge/v1
+      - proto/buf/validate
+`
+
 // writeDefaultBufGenYaml writes a standard buf.gen.yaml with Go plugins.
 // Defaults to `local:` plugins (resolved from $PATH) so anonymous users
 // can `forge generate` without `buf registry login`. Users who want
@@ -69,14 +92,7 @@ func writeDefaultBufGenYaml(projectDir string) error {
 # protoc-gen-connect-openapi via a synthesized template; you do NOT
 # need to add it here. Install with:
 #   ` + openAPIPluginInstallCmd + `
-inputs:
-  - directory: proto
-    exclude_paths:
-      # Vendored annotation protos are COMPILE inputs only — never
-      # code-generated (a local copy would double-register the descriptor).
-      - proto/forge/v1
-      - proto/buf/validate
-plugins:
+` + bufGenGoInputs + `plugins:
   - local: protoc-gen-go
     out: gen
     opt:

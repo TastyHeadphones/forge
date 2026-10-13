@@ -46,10 +46,10 @@ func writesBothTidies(*pipelineContext) []string {
 
 func writesGenGoMod(*pipelineContext) []string { return []string{"gen/go.mod"} }
 
-// writesBufGo: buf.gen.yaml (written when absent), the vendored validate
-// proto, and every plugin `out` directory the template names.
+// writesBufGo: buf.gen.yaml (written when absent), the vendored annotation
+// protos, and every plugin `out` directory the template names.
 func writesBufGo(ctx *pipelineContext) []string {
-	out := []string{"buf.gen.yaml", validateVendorDir()}
+	out := append([]string{"buf.gen.yaml"}, vendoredProtoDirs()...)
 	outs := bufTemplateOutDirs(filepath.Join(ctx.ProjectDir, "buf.gen.yaml"))
 	if len(outs) == 0 {
 		outs = []string{"gen"} // writeDefaultBufGenYaml's template
@@ -58,7 +58,7 @@ func writesBufGo(ctx *pipelineContext) []string {
 }
 
 func writesDescriptor(*pipelineContext) []string {
-	return []string{"gen/forge_descriptor.json", "gen/" + descriptorStageDir, validateVendorDir()}
+	return append([]string{"gen/forge_descriptor.json", "gen/" + descriptorStageDir}, vendoredProtoDirs()...)
 }
 
 func writesOpenAPI(*pipelineContext) []string { return []string{"openapi"} }
@@ -120,8 +120,13 @@ func writesKCLMigration(ctx *pipelineContext) []string {
 	return out
 }
 
-func validateVendorDir() string {
-	return path.Dir(filepath.ToSlash(assets.ValidateProtoVendorRelPath))
+// vendoredProtoDirs are the directories ensureVendoredProtos may write a
+// vendored annotation proto into.
+func vendoredProtoDirs() []string {
+	return []string{
+		path.Dir(filepath.ToSlash(assets.ForgeProtoVendorRelPath)),
+		path.Dir(filepath.ToSlash(assets.ValidateProtoVendorRelPath)),
+	}
 }
 
 // bufTemplateOutDirs returns the plugin `out` directories a buf.gen.yaml

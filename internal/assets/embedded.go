@@ -49,6 +49,10 @@ func GetForgeV1Proto() ([]byte, error) {
 	return EmbeddedFiles.ReadFile("proto/forge/v1/forge.proto")
 }
 
+// ForgeProtoImportPath is the import path a project's protos use to pull in
+// forge's annotations: `import "forge/v1/forge.proto";`.
+const ForgeProtoImportPath = "forge/v1/forge.proto"
+
 // ForgeProtoVendorRelPath is where the vendored forge.proto lives inside
 // a scaffolded project, relative to the project root.
 const ForgeProtoVendorRelPath = "proto/forge/v1/forge.proto"

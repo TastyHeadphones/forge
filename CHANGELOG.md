@@ -378,6 +378,23 @@ github.com/reliant-labs/forge/cmd/forge@<pin> <same args>` that needs no
   for all four drivers, and a lane a driver has no runner for is an error, not
   a silent fall-through to the full sweep. `--exported-vars` beside
   `--contract` runs the shared check once.
+- **`forge generate` vendors `forge/v1/forge.proto` on demand, and refuses a Go
+  buf template that would generate it.** Only `forge project new` wrote
+  `proto/forge/v1/forge.proto`, so a project that adopted forge in place (or
+  whose only forge-annotated protos are config protos) failed `forge generate`
+  on the import until the file was copied in by hand. Generate now vendors it
+  the way it vendors `buf/validate/validate.proto`: the first run whose protos
+  import it and that finds no copy writes forge's own (with the `forgepb`
+  `go_package`); an existing copy is never rewritten, so `forge lint
+  --vendored-protos` stays the drift guard. Because a project's own Go template
+  may target all of `proto/`, generate now refuses one whose `protoc-gen-go`
+  would compile a vendored proto — a second Go registration of a descriptor
+  `forgepb` (or protovalidate) already registers panics every binary at init —
+  naming the file and the `inputs: exclude_paths` lines to add (a module that
+  owns the file's `go_package`, i.e. forge itself, is exempt). The
+  `--buf-plugins=remote` rewrite of `buf.gen.yaml` dropped that exclusion and
+  did exactly this; it now keeps it, and the three Go templates forge writes
+  share one `inputs:` block.
 - **`forge db squash` writes a migration, not a psql script.** It kept
   pg_dump's session prelude, so the baseline ran
   `SELECT pg_catalog.set_config('search_path', '', false)` on the migrator's
