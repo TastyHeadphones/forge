@@ -70,6 +70,9 @@ type lintFlags struct {
 	// for `forge gate record` / `forge env deploy --gate`. Not a stdout
 	// mode — the human findings and the exit code are unchanged.
 	gateJSON string
+	// showSuppressed prints the inventory of every declared suppression
+	// instead of linting (lint_show_suppressed.go).
+	showSuppressed bool
 }
 
 func newCmd(_ *factory.Factory) *cobra.Command {
@@ -182,6 +185,8 @@ Examples:
                                  # last line — safe to pipe through head/tail.
                                  # Combines with any targeted flag above:
                                  #   forge lint --read-only-fields --quiet
+  forge lint --show-suppressed   # Every suppression the project declares, with
+                                 # file:line and reason. Lints nothing
   forge lint --scope internal/handlers/jobs --scope proto/services/jobs
                                  # Only findings in files under those paths.
                                  # golangci-lint/contract run on the scope's
@@ -195,32 +200,37 @@ The three advisory rules above are warnings only — they never fail the build.
 Additional maintainer/debug flags exist (forge-repo internals, wiring
 audits, suggest-* helpers); run 'forge lint --help-dev' to list them.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			var paths []string
-			if len(args) > 0 {
-				paths = args
-			} else {
-				paths = []string{"./..."}
-			}
-			if err := validateLintModeFlags(flags, len(args) > 0); err != nil {
-				return err
-			}
-
-			if flags.jsonOut {
-				return runLintJSON(cmd.Context(), flags, paths)
-			}
-			if flags.quiet || len(flags.scope) > 0 {
-				return runLintStructured(cmd.Context(), flags, paths)
-			}
-			if flags.gateJSON != "" {
-				return runLintWithGate(cmd.Context(), flags, paths, flags.gateJSON)
-			}
-			return runLint(cmd.Context(), flags, paths)
+			return runLintCommand(cmd, flags, args)
 		},
 	}
 
 	registerLintFlags(cmd, &flags)
 
 	return cmd
+}
+
+// runLintCommand picks the driver for one `forge lint` invocation: the
+// suppression inventory, JSON, the structured (--quiet / --scope) renderer,
+// a gate document, or the text driver.
+func runLintCommand(cmd *cobra.Command, flags lintFlags, args []string) error {
+	paths := []string{"./..."}
+	if len(args) > 0 {
+		paths = args
+	}
+	if err := validateLintModeFlags(flags, len(args) > 0); err != nil {
+		return err
+	}
+	switch {
+	case flags.showSuppressed:
+		return runShowSuppressed(cmd.OutOrStdout(), flags.jsonOut, flags.scope)
+	case flags.jsonOut:
+		return runLintJSON(cmd.Context(), flags, paths)
+	case flags.quiet || len(flags.scope) > 0:
+		return runLintStructured(cmd.Context(), flags, paths)
+	case flags.gateJSON != "":
+		return runLintWithGate(cmd.Context(), flags, paths, flags.gateJSON)
+	}
+	return runLint(cmd.Context(), flags, paths)
 }
 
 // registerLintFlags declares every `forge lint` flag and the visible /
@@ -282,6 +292,9 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.jsonOut, "json", false, "Output findings as JSON (see lint_json.go header for the schema; exit code matches text mode)")
 	cmd.Flags().BoolVarP(&flags.quiet, "quiet", "q", false, "Print only what failed: a one-line summary per failing linter, its error findings, and the verdict as the LAST line (a clean run is one line). Auto-fix still applies; combines with the targeted flags and --scope")
 	cmd.Flags().StringSliceVar(&flags.scope, "scope", nil, "Report only findings in files under `PATH` (repeatable or comma-separated, project-relative). Go linters run on PATH's packages only; file-anchored linters report only findings under PATH; whole-project linters (frontend lint, component-drift, config-reach) cannot be scoped, are skipped, and are named in the verdict. Auto-fix touches only files under PATH")
+	// No backticks: cobra would render the first quoted span as the flag's
+	// argument placeholder (see --optional-deps-guard).
+	cmd.Flags().BoolVar(&flags.showSuppressed, "show-suppressed", false, "List every suppression the project declares, with file:line, what it covers and the stated reason: forge.yaml lint.rules (off/warn) and contracts.exclude, //forge:exclude-contract markers, forge:lint-disable* and nolint directives, and the migration and optional-dep pragmas. Read-only: runs no linter and exits 0; combines with --json and --scope")
 	cmd.Flags().StringVar(&flags.gateJSON, "gate-json", "", "Also write this run's result to `FILE` as a gate document, for `forge gate record` or `forge env deploy --gate`. A FILE, not a stdout mode: the findings and the exit code are unchanged.")
 
 	// User-vs-maintainer surface split: the flags below are fully

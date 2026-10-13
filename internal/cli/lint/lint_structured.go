@@ -733,6 +733,10 @@ func validateLintModeFlags(flags lintFlags, explicitPaths bool) error {
 	case len(flags.scope) > 0 && flags.gateJSON != "":
 		return cliutil.UserErr("forge lint --scope", "--scope cannot be combined with --gate-json", "",
 			"a gate document records evidence about the whole project, and a scoped run proves only a slice — run the gate unscoped")
+	case flags.showSuppressed && (flags.quiet || flags.gateJSON != "" || explicitPaths ||
+		flags.suggestExcludes || flags.suggestBufExcepts || len(selectedLanes(flags)) > 0):
+		return cliutil.UserErr("forge lint --show-suppressed", "--show-suppressed lists suppressions; it runs no linter", "",
+			"run it on its own (it takes --json and --scope); run the lanes separately")
 	case (flags.quiet || len(flags.scope) > 0) && (flags.suggestExcludes || flags.suggestBufExcepts):
 		return cliutil.UserErr("forge lint", "--quiet/--scope cannot be combined with --suggest-excludes or --suggest-buf-excepts", "",
 			"run the suggest modes on their own; their output is a YAML snippet, not findings")

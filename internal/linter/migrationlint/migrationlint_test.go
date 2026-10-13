@@ -3,6 +3,7 @@ package migrationlint
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -359,4 +360,40 @@ func assertFinding(t *testing.T, result Result, rule string, severity Severity) 
 		}
 	}
 	t.Fatalf("expected finding %s/%s with line number, got %#v", rule, severity, result.Findings)
+}
+
+// Allowances lists each safety pragma with the rules it silences, the line its
+// `--` is on (not a blank line the regex's leading whitespace spanned), and
+// the text after it.
+func TestAllowancesListsEachPragma(t *testing.T) {
+	src := "\n\n-- forge:allow-destructive: dropping the legacy table\nDROP TABLE legacy;\n" +
+		"-- forge-safety: allow-unsafe-not-null\nALTER TABLE t ALTER COLUMN c SET NOT NULL;\n"
+	got := Allowances(src)
+	want := []Allowance{
+		{Pragma: "forge:allow-destructive", Rules: []string{"destructive-change"}, Line: 3, Reason: "dropping the legacy table"},
+		{Pragma: "forge:allow-unsafe-not-null", Rules: []string{"unsafe-add-not-null-column", "set-not-null-without-backfill"}, Line: 5},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Allowances:\n got %+v\nwant %+v", got, want)
+	}
+
+	// The rules each allowance names are the rules its pragma actually
+	// silences: they fire without it and not with it.
+	cfg := RuleConfig{Enabled: true, UnsafeAddColumn: "error", DestructiveChange: "error", VolatileDefault: "error"}
+	bare := "DROP TABLE legacy;\nALTER TABLE t ADD COLUMN a INT NOT NULL;\nALTER TABLE t ALTER COLUMN c SET NOT NULL;\n"
+	fired := map[string]bool{}
+	for _, f := range lintMigrationFile("m.up.sql", bare, cfg) {
+		fired[f.Rule] = true
+	}
+	for _, a := range got {
+		silenced := map[string]bool{}
+		for _, f := range lintMigrationFile("m.up.sql", "-- "+a.Pragma+"\n"+bare, cfg) {
+			silenced[f.Rule] = true
+		}
+		for _, rule := range a.Rules {
+			if !fired[rule] || silenced[rule] {
+				t.Errorf("%s claims to silence %q: fires without it=%v, fires with it=%v", a.Pragma, rule, fired[rule], silenced[rule])
+			}
+		}
+	}
 }

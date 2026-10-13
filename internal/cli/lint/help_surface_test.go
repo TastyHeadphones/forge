@@ -139,6 +139,11 @@ func TestLintHelpSurface(t *testing.T) {
 		// lint ITS slice without another agent's half-written file
 		// failing the run.
 		"scope",
+		// Visible: the audit every suppression mechanism's docs promise
+		// (contracts/package-markers names it). Each suppression is
+		// visible at its own site and nowhere together, which is how a
+		// codebase ends up disabling everything one line at a time.
+		"show-suppressed",
 		// User surface, not maintainer: it is the answer to "how do I lint
 		// the backend without paying for the Node toolchain", and it mirrors
 		// the frontend-skipping vocabulary `forge build` already uses.

@@ -518,6 +518,49 @@ func hasAllowUnsafeNotNullPragma(content string) bool {
 	return allowUnsafeNotNullPragmaRe.MatchString(content)
 }
 
+// Allowance is one in-file migration-safety pragma: the rules it silences for
+// the whole migration, where it is written, and any text after it on its line.
+// It is what `forge lint --show-suppressed` lists, read with the same regexes
+// the rules honour so the two cannot drift.
+type Allowance struct {
+	Pragma string
+	Rules  []string
+	Line   int
+	Reason string
+}
+
+// Allowances lists every safety pragma in one migration's content, in source
+// order.
+func Allowances(content string) []Allowance {
+	var out []Allowance
+	for _, p := range []struct {
+		pragma string
+		re     *regexp.Regexp
+		rules  []string
+	}{
+		{"forge:allow-destructive", allowDestructivePragmaRe, []string{"destructive-change"}},
+		{"forge:allow-unsafe-not-null", allowUnsafeNotNullPragmaRe, []string{"unsafe-add-not-null-column", "set-not-null-without-backfill"}},
+	} {
+		for _, loc := range p.re.FindAllStringIndex(content, -1) {
+			// The regex's leading \s* can span blank lines; the pragma's
+			// line is the one its `--` is on.
+			start := loc[0] + strings.Index(content[loc[0]:loc[1]], "--")
+			rest := content[loc[1]:]
+			if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
+				rest = rest[:nl]
+			}
+			out = append(out, Allowance{
+				Pragma: p.pragma,
+				Rules:  p.rules,
+				Line:   strings.Count(content[:start], "\n") + 1,
+				Reason: strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(rest), ":—–-")),
+			})
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Line < out[j].Line })
+	return out
+}
+
 // RemediationFor returns the fix text for a rule ID.
 //
 // Every migration-safety failure used to be printed with the DESTRUCTIVE
