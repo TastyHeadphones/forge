@@ -4,6 +4,7 @@ import (
 	"errors"
 	"maps"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/golang-migrate/migrate/v4"
@@ -189,6 +190,30 @@ func TestForceLeavesAnUnrecordedDatabaseToTheBootstrap(t *testing.T) {
 	got := appliedVersions(t, dsn)
 	if keys := slices.Sorted(maps.Keys(got)); !slices.Equal(keys, []uint{1, 2, 3}) {
 		t.Errorf("record versions = %v; want 1, 2 (bootstrapped) and 3 (applied)", keys)
+	}
+}
+
+// AutoMigrate's dirty refusal names commands that exist: forge's force (its
+// spelling pinned by a test in internal/cli) and the binary's own. It named
+// `migrate force N`, golang-migrate's CLI, which forge no longer uses.
+func TestAutoMigrateDirtyRefusalNamesARealForceCommand(t *testing.T) {
+	dsn := requirePG(t)
+	db := openRecordDB(t, dsn)
+	files := release(merged(olderFiles, brokenThird))
+	if err := AutoMigrate(files, "migrations")(db, nil); err == nil {
+		t.Fatal("AutoMigrate over a broken migration succeeded")
+	}
+	err := AutoMigrate(files, "migrations")(db, nil)
+	if err == nil {
+		t.Fatal("AutoMigrate booted over a dirty schema")
+	}
+	for _, want := range []string{"dirty at version 3", "`" + ForceCommand + " 3`", "`db migrate force 3`"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("dirty refusal does not carry %q:\n%v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "`migrate force") {
+		t.Errorf("dirty refusal names golang-migrate's CLI:\n%v", err)
 	}
 }
 

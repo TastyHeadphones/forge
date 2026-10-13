@@ -9,7 +9,7 @@
 //
 //	forge db migrate up    -> FK violation; the migration fails part-way,
 //	                          and the database is left DIRTY at 7
-//	forge db seed reset    -> refuses: dirty. "Clear it: migrate force 7"
+//	forge db seed reset    -> refuses: dirty. "Clear it: forge db migrate force 7"
 //	forge db migrate force 6
 //	forge db seed reset    -> refuses: applied 6 is BEHIND latest 00007
 //	forge db migrate up    -> FK violation ... which is where we came in

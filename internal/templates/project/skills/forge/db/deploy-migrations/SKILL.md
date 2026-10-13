@@ -74,11 +74,15 @@ against the Deployments at all.
 - **The schema is dirty** (a previous migration failed partway). `db migrate
   up` refuses and names the version. Applying more on top is how a
   half-applied migration becomes a corrupted one. Repair the schema, then
-  clear it deliberately: `forge db migrate force <version> --dsn ...`
-  (`Migrator.Force` in code). Forcing runs no SQL; it records the version and
-  keeps `schema_migrations_applied` in step, so the next `up` proceeds. The
-  versions a failed run applied before the one that failed are recorded as
-  it fails.
+  clear it deliberately with the release's own image:
+  `<binary> db migrate force <version>` (same `DATABASE_URL`, run as a one-off
+  — the only route to a hosted database), or
+  `forge db migrate force <version> --dsn ...` from a checkout of that
+  release. Both are `Migrator.Force`. Forcing runs no SQL; it records the
+  version and keeps `schema_migrations_applied` in step, so the next `up`
+  proceeds. The versions a failed run applied before the one that failed are
+  recorded as it fails. A binary scaffolded before `force` existed lacks the
+  subcommand; copy it from a fresh scaffold's `cmd/<binary>/cmd/db.go`.
 - **Every pod start re-runs it** (scale-up, node eviction). Intended, and
   cheap: a no-op is one connection, one lock, one version read.
 - **The schema is AHEAD of the binary** — the previous release, mid-deploy.

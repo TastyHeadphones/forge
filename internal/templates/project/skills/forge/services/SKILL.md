@@ -66,7 +66,7 @@ ordering is just a cron that fires once. Each runtime honours it:
 **The job's command must be idempotent.** The k8s lowering fans it out to one
 init container per dependent, and init containers re-run on every pod start,
 every replica and every restart. That is the same contract the deploy-time
-migration step already keeps (golang-migrate takes a postgres advisory lock),
+migration step already keeps (migratekit takes a postgres advisory lock),
 and a one-shot that is not safe to repeat is unsafe under any retrying
 orchestrator.
 

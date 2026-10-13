@@ -59,6 +59,14 @@ func TestMigratekitAndLintNameTheSameCommand(t *testing.T) {
 	}
 }
 
+// AutoMigrate's dirty refusal names forge's force command. It used to name
+// golang-migrate's CLI (`migrate force N`), which forge no longer uses.
+func TestMigratekitForceCommandExists(t *testing.T) {
+	if !resolves(t, migratekit.ForceCommand) {
+		t.Fatalf("%q does not resolve to a real command — AutoMigrate's dirty refusal tells users to run it", migratekit.ForceCommand)
+	}
+}
+
 // The refusal a user actually reads, checked as rendered text rather than as
 // a constant. The constant being right is worthless if the message is built
 // from a hardcoded copy of it, which is how this broke the first time.

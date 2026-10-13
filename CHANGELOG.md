@@ -36,6 +36,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clean run also stops reporting `typed-config guardrail — 1 warning` whose only
   detail was `0 issues.`: golangci-lint's summary and source snippets are not
   findings, only file-anchored issues are (`--quiet`, `--scope`, `--json`).
+- **A dirty schema's refusal names a force command the reader has.**
+  `migratekit.AutoMigrate` and the scaffolded `<binary> db migrate up` told the
+  operator to run `migrate force N`, golang-migrate's CLI, which forge no
+  longer uses and a production image does not carry. The scaffolded binary
+  now has its own `db migrate force <version>` (migratekit's `Force`, so the
+  applied record stays in step), and `up` names it by the binary's real
+  command path: the image is the one thing every environment that reads the
+  refusal has, and a hosted database is reachable from nowhere else.
+  `AutoMigrate`, which cannot know its binary's commands, names
+  `forge db migrate force N` from a checkout of the release (new
+  `migratekit.ForceCommand`, tested to resolve) and the binary's own `db
+  migrate force N` where it has one. The `db` and `db/deploy-migrations`
+  skills, `docs/concepts.md` and the `forge db squash` doc stop naming the
+  golang-migrate CLI or crediting its lock. `db.go` is scaffolded once, so an
+  existing project gains `force` by copying it from a fresh scaffold.
+
 ### Changed
 
 - **A config env var set to `""` is unset, for every field type.**

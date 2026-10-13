@@ -87,8 +87,9 @@ in. A relative --dir resolves against that root too.`
 
 // newDBSquashCommand creates the `forge db squash` subcommand. Squash spins
 // up an ephemeral Postgres in docker, applies every migration in --from-dir
-// against it via `migrate up`, dumps the resulting schema + INSERT-shaped
-// seed data via `pg_dump`, keeps only the statements that build the database
+// against it with migratekit (runMigrateUp, the `forge db migrate up` path),
+// dumps the resulting schema + INSERT-shaped seed data via `pg_dump`, keeps
+// only the statements that build the database
 // (squashBaseline drops pg_dump's session prelude and psql meta-commands), and
 // writes a fresh `<baseline>.up.sql` (forward only — forge writes no down migrations). The use case is the
 // "I have N golang-migrate files and want one canonical baseline" workflow
@@ -360,7 +361,7 @@ func dockerPort(ctx context.Context, container, spec string) (string, string, er
 // waitForPostgres polls until `pg_isready` (or a fallback connect) reports
 // ready, or the timeout fires. The container takes ~1-2s to accept
 // connections on first boot; we poll every 500ms and bail with a useful
-// error rather than letting `migrate up` hit a connection-refused.
+// error rather than letting the migrator hit a connection-refused.
 func waitForPostgres(ctx context.Context, dsn string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	last := error(nil)
