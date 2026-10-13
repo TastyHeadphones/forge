@@ -181,8 +181,8 @@ func validateAdoption(source sourceSet) error {
 // still held, so no replica can observe a half-adopted database.
 //
 // appliedLockKey is held at SESSION level, not inside the record's
-// transaction, because at boot golang-migrate's Force runs on this same
-// session and opens a transaction of its own (runlock.go, ONE SESSION).
+// transaction, because golang-migrate's Force runs on this same session and
+// opens a transaction of its own (runlock.go, ONE SESSION).
 //
 // CRASH SAFETY. The applied row is committed first, then Force writes the
 // version. A crash before the commit leaves nothing; a crash between the two

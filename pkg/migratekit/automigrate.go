@@ -3,7 +3,6 @@ package migratekit
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -57,21 +56,40 @@ const ForceCommand = "forge db migrate force"
 // schema_migrations table, or a schema left dirty by a half-applied migration
 // each abort startup rather than serve traffic against a database in an
 // unknown state.
+//
+// It is Apply, logged: one line per fact the run reports (an adoption and a
+// schema ahead at WARN). A caller that wants the facts as values — a `db
+// migrate up` command printing what it did — calls Apply.
 func AutoMigrate(fsys fs.FS, dir string) func(*sql.DB, *slog.Logger) error {
 	return func(db *sql.DB, logger *slog.Logger) error {
-		return autoMigrate(fsys, dir, db, logger)
+		res, err := Apply(context.Background(), db, fsys, dir)
+		logRun(logger, res, err)
+		return err
 	}
 }
 
-// autoMigrate is AutoMigrate's body, split out so the closure stays a
-// one-liner and the logic is directly testable.
-func autoMigrate(fsys fs.FS, dir string, db *sql.DB, logger *slog.Logger) error {
+// Apply is AutoMigrate's run, returning what it did: every pending migration
+// in fsys applied over ONE connection borrowed from db and given back, with
+// the run lock taken on that connection — a run waiting its turn holds it and
+// nothing else (runlock.go, ONE SESSION).
+//
+// Its policy is AutoMigrate's: a binary embedding no migrations is
+// Result.NothingEmbedded, not an error, and a schema left dirty is refused
+// before anything runs, naming the way out. Everything else is Migrator.Up's
+// run: adoption, the applied record's refusals, the schema-ahead verdict
+// (Result.Ahead, or a *SchemaAheadError), and Result.Changed folding a replica
+// that lost the race into "nothing to do". As with Up, on error the Result
+// still reports Before and any adoption that committed.
+//
+// A caller holding only a DSN — a `db migrate up` command — opens a pool,
+// caps it at one connection, and hands it here: one session, and the boot
+// path's verdicts.
+func Apply(ctx context.Context, db *sql.DB, fsys fs.FS, dir string) (Result, error) {
 	if fsys == nil {
 		// See the AutoMigrate doc comment: absent migrations are a normal
 		// state at BOOT (the project has not written its first one), unlike
 		// at the explicit `db migrate up` that Open refuses.
-		logf(logger, "no migrations embedded, skipping auto-migrate")
-		return nil
+		return Result{NothingEmbedded: true}, nil
 	}
 	if dir == "" {
 		dir = "."
@@ -82,154 +100,100 @@ func autoMigrate(fsys fs.FS, dir string, db *sql.DB, logger *slog.Logger) error 
 	// is the honest state of a project whose first migration is unwritten.
 	entries, err := fs.ReadDir(fsys, dir)
 	if err != nil {
-		return fmt.Errorf("reading embedded migrations (%s): %w", dir, err)
+		return Result{}, fmt.Errorf("reading embedded migrations (%s): %w", dir, err)
 	}
 	if !hasSQL(entries) {
-		logf(logger, "no migration files found, skipping auto-migrate")
-		return nil
+		return Result{NothingEmbedded: true}, nil
 	}
-
-	sourceDriver, err := iofs.New(fsys, dir)
+	embedded, err := scanSource(fsys, dir)
 	if err != nil {
-		return fmt.Errorf("creating migration source (%s): %w", dir, err)
+		return Result{}, err
+	}
+	src, err := iofs.New(fsys, dir)
+	if err != nil {
+		return Result{}, fmt.Errorf("creating migration source (%s): %w", dir, err)
 	}
 
 	// The migrator runs on ONE connection borrowed from the pool the caller
-	// already opened (see the signature note above), and gives it back when
-	// it is done. That one connection is the whole run: the run lock,
-	// golang-migrate's driver and every record below all use it, and nothing
-	// asks the pool for a second, so a pool capped at one connection works.
-	// See runlock.go, ONE SESSION.
+	// already opened (see the AutoMigrate doc comment), and gives it back
+	// when it is done.
 	//
-	// Not postgres.WithInstance, although it also takes the pool: it checks
-	// out a dedicated *sql.Conn and releases it only in Close, and its Close
-	// also closes the *sql.DB — the caller's live pool. So the migrator could
-	// never be closed, and that connection stayed checked out for the life of
-	// the process: one slot of MaxOpenConns gone and one idle server session
-	// held on every server that ever booted. It also stops anyone using the
-	// database as a CREATE DATABASE ... TEMPLATE (refused while a session is
-	// connected), even after the pool is closed. WithConnection binds to a
-	// connection this function owns, and m.Close then closes only that
-	// connection, which returns it to the pool.
-	ctx := context.Background()
-	conn, err := db.Conn(ctx)
+	// Not golang-migrate's postgres.WithInstance, although it also takes the
+	// pool: it checks out a dedicated *sql.Conn and releases it only in
+	// Close, and its Close also closes the *sql.DB — the caller's live pool.
+	// So the migrator could never be closed, and that connection stayed
+	// checked out for the life of the process: one slot of MaxOpenConns gone
+	// and one idle server session held on every server that ever booted. It
+	// also stops anyone using the database as a CREATE DATABASE ... TEMPLATE
+	// (refused while a session is connected), even after the pool is closed.
+	// openSession binds golang-migrate to a connection it checks out itself,
+	// and Close then closes only that connection, which returns it to the
+	// pool.
+	mg, err := openSession(ctx, db, src, embedded, &postgres.Config{})
 	if err != nil {
-		_ = sourceDriver.Close()
-		return fmt.Errorf("acquiring a migration connection: %w", err)
+		return Result{}, err
 	}
-	// The run lock `db migrate up` shares (runlock.go), taken on the
-	// migrator's own connection so a boot needs no extra pool slot. Taken
-	// before the driver is built, because building it creates
-	// schema_migrations, and released before the connection goes back to
-	// the pool, because the lock belongs to the session.
-	if err := lockRun(ctx, conn); err != nil {
-		_ = conn.Close()
-		_ = sourceDriver.Close()
+	defer func() { _ = mg.Close() }()
+
+	var res Result
+	err = withRunLock(ctx, mg.conn, func() error {
+		res, err = mg.boot(ctx)
 		return err
-	}
-	dbDriver, err := postgres.WithConnection(ctx, conn, &postgres.Config{})
-	if err != nil {
-		unlockRun(ctx, conn)
-		_ = conn.Close()
-		_ = sourceDriver.Close()
-		return fmt.Errorf("creating migration db driver: %w", err)
-	}
+	})
+	return res, err
+}
 
-	m, err := migrate.NewWithInstance("iofs", sourceDriver, "postgres", dbDriver)
+// boot is Apply's run, on mg.conn while it holds the run lock: refuse a dirty
+// schema, then the run Up makes.
+func (mg *Migrator) boot(ctx context.Context) (Result, error) {
+	before, err := mg.State()
 	if err != nil {
-		unlockRun(ctx, conn)
-		_ = dbDriver.Close()
-		return fmt.Errorf("creating migrator: %w", err)
+		return Result{}, err
 	}
-	defer func() {
-		unlockRun(ctx, conn)
-		_, _ = m.Close()
-	}()
-
-	before, err := stateOf(m)
-	if err != nil {
-		return err
-	}
-	logf(logger, "migration status", "current_version", before.Version, "dirty", before.Dirty)
-
-	source, err := scanSource(fsys, dir)
-	if err != nil {
-		return err
-	}
-
-	// A database another tool migrated (goose), meeting the baseline that
-	// replaced that tool's history, is adopted before anything else reads
-	// the record: the baseline is recorded as applied without running, and
-	// the migrations after it apply below as usual. A history that is not
-	// the declared one refuses to start. See adopt.go. The state is taken
-	// from adopt because a replica booting alongside may have just moved it.
-	before, adopted, err := adopt(ctx, conn, m, source, before)
-	if err != nil {
-		return fmt.Errorf("running migrations: %w", err)
-	}
-	if adopted != nil {
-		warnf(logger, "ADOPTED a database another migration tool migrated: its history matches the baseline exactly, so the baseline was recorded as applied WITHOUT running its SQL; the tool's own table is left in place",
-			"tool", adopted.Tool, "baseline", adopted.Name, "version", adopted.Version, "verified_versions", adopted.Versions)
-	}
-
 	// A dirty schema means a previous migration failed partway. Running more
 	// migrations (or serving traffic) against it compounds the damage — stop
 	// and make a human look. The CLI's db.go can express the other policy
 	// (force and retry) because Force is exported; boot deliberately cannot.
 	if before.Dirty {
-		return fmt.Errorf("database schema is dirty at version %d — a previous migration failed partway; "+
+		return Result{Before: before, After: before}, fmt.Errorf("database schema is dirty at version %d — a previous migration failed partway; "+
 			"inspect the database, finish or undo the partial migration, then clear the dirty flag before restarting: "+
 			"`%s %d` from a checkout of this release, or this binary's own `db migrate force %d` where it has one",
 			before.Version, ForceCommand, before.Version, before.Version)
 	}
-
-	// A schema AHEAD of this binary is the previous release booting against
-	// a database the next one already migrated — every rolling deploy does
-	// this until the old ReplicaSet is gone. It gets the same verdict
-	// `db migrate up` does — serve if every unknown version was declared
-	// backward-compatible, refuse to start if not. See ahead.go.
-	//
-	// A version applied from a different file than this binary's (a branch's
-	// migration, renumbered before merge) means the recorded version does not
-	// describe the schema (applied.go). A version the schema has already
-	// passed with no applied row can never run (missing.go). Either refuses
-	// before anything is applied.
-	if err := checkApplied(ctx, conn, source, before); err != nil {
-		return fmt.Errorf("running migrations: %w", err)
-	}
-	ahead, err := classifyAhead(ctx, conn, source, before)
+	// A database another tool migrated (goose) is adopted; a version
+	// applied from a different file than this binary's, or one the schema
+	// passed without applying, refuses; a schema AHEAD of this binary — the
+	// previous release booting against the next one's database, every
+	// rolling deploy until the old ReplicaSet is gone — serves only if every
+	// unknown version was declared backward-compatible. See Migrator.Up.
+	res, err := mg.up(ctx)
 	if err != nil {
-		return fmt.Errorf("running migrations: %w", err)
+		return res, fmt.Errorf("running migrations: %w", err)
 	}
-	if ahead != nil {
+	return res, nil
+}
+
+// logRun logs what Apply reported, for AutoMigrate.
+func logRun(logger *slog.Logger, res Result, err error) {
+	if res.NothingEmbedded {
+		logf(logger, "no migrations embedded, skipping auto-migrate")
+		return
+	}
+	if a := res.Adopted; a != nil {
+		warnf(logger, "ADOPTED a database another migration tool migrated: its history matches the baseline exactly, so the baseline was recorded as applied WITHOUT running its SQL; the tool's own table is left in place",
+			"tool", a.Tool, "baseline", a.Name, "version", a.Version, "verified_versions", a.Versions)
+	}
+	switch {
+	case err != nil:
+		// Returned to the caller, which reports it.
+	case res.Ahead != nil:
 		warnf(logger, "database schema is AHEAD of this binary (an older release mid-deploy) — every newer version was declared backward-compatible, so nothing is applied and startup continues",
-			"schema_version", ahead.Version, "binary_latest", ahead.Latest, "unknown_versions", joinVersions(ahead.Versions))
-		return nil
+			"schema_version", res.Ahead.Version, "binary_latest", res.Ahead.Latest, "unknown_versions", joinVersions(res.Ahead.Versions))
+	case res.Changed:
+		logf(logger, "migrations applied", "from_version", res.Before.Version, "to_version", res.After.Version)
+	default:
+		logf(logger, "no pending migrations", "version", res.After.Version)
 	}
-	if err := recordCompat(ctx, conn, source); err != nil {
-		return err
-	}
-
-	if _, err := foldNoChange(m.Up()); err != nil {
-		if recErr := recordFailedRun(ctx, conn, m, source, before); recErr != nil {
-			err = errors.Join(err, recErr)
-		}
-		return fmt.Errorf("running migrations: %w", err)
-	}
-
-	after, err := stateOf(m)
-	if err != nil {
-		return fmt.Errorf("after apply: %w", err)
-	}
-	if err := recordApplied(ctx, conn, source, before, after); err != nil {
-		return err
-	}
-	if after.Version != before.Version {
-		logf(logger, "migrations applied", "from_version", before.Version, "to_version", after.Version)
-	} else {
-		logf(logger, "no pending migrations")
-	}
-	return nil
 }
 
 // hasSQL reports whether the entry set holds at least one .sql file.

@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `migratekit.Migrator` is one Postgres session, so concurrent
+  `db migrate up` runs work behind a session-mode PgBouncer.** A Migrator held
+  its run-lock connection and a second session that golang-migrate's pgx driver
+  opened from the DSN, and a run waiting for the run lock sat on both. Behind a
+  session pooler with two server connections (reliant's prod pool per
+  PgBouncer replica), two concurrent runs deadlocked until `query_wait_timeout`
+  killed one: `open migrator: failed to open database: driver: bad
+  connection`. `Open` now checks one connection out of its own pool (capped at
+  one) and binds golang-migrate to it, as `AutoMigrate` does since the
+  one-connection fix; `Up`, `Force` and `State` all run on it, and a waiter
+  holds that session and nothing else. `forge db migrate *` and every
+  scaffolded `db migrate` command go through `Open`. golang-migrate's own
+  `x-` DSN options (`x-migrations-table`, `x-statement-timeout`,
+  `x-multi-statement`, …) are still honoured, and a failed migration still
+  reports `migration failed: <message> (column N) in line L`, where the
+  driver now underneath used to print `in line 0`. `Migrator.Up` returns what
+  a failed run did (`Before`, a committed adoption) alongside the error.
+  Tested behind a real session-mode PgBouncer (`-tags integration`) and a
+  per-role connection cap.
 - **The test harness imports a config only for a component that takes one.**
   `helpers_gen_test.go` imported `<module>/pkg/config` for every service and
   every wired contract package, and declared `WithConfig` and a
@@ -176,6 +195,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`migratekit.Apply(ctx, db, fsys, dir) (Result, error)`: the boot path's run,
+  returning what it did.** `AutoMigrate` is now `Apply` plus a log line per
+  fact. A command that wants the boot path's policy (a binary embedding no
+  migrations is `Result.NothingEmbedded`, not an error; a dirty schema is
+  refused before anything runs) can report adoption, a schema ahead, and the
+  versions applied without switching to a `Migrator`. It runs on one
+  connection borrowed from `db`. `AutoMigrate`'s boot log no longer has the
+  separate `migration status` line; `no pending migrations` now carries the
+  version.
 - **`forge lint --show-suppressed`: every suppression the project declares, in
   one list.** The `contracts/package-markers` skill told users their
   allowances were "reported by `--show-suppressed`", and `forge lint` answered

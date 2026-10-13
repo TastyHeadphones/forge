@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/golang-migrate/migrate/v4"
 )
@@ -234,5 +235,28 @@ func TestFoldNoChangeIsNarrow(t *testing.T) {
 				t.Errorf("foldNoChange(%v) fatal = %v; want the original error preserved in the chain", tc.in, fatal)
 			}
 		})
+	}
+}
+
+// driverConfig reads exactly the options golang-migrate's pgx v5 driver read
+// from a URL, and refuses the malformed ones it refused.
+func TestDriverConfigReadsTheMigratorOptions(t *testing.T) {
+	cfg, err := driverConfig(SchemePostgres + "u:p@h:5432/db?sslmode=disable&x-migrations-table=%22m%22.%22v%22" +
+		"&x-migrations-table-quoted=true&x-statement-timeout=1500&x-multi-statement=true&x-multi-statement-max-size=4096")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MigrationsTable != `"m"."v"` || !cfg.MigrationsTableQuoted || cfg.StatementTimeout != 1500*time.Millisecond ||
+		!cfg.MultiStatementEnabled || cfg.MultiStatementMaxSize != 4096 {
+		t.Errorf("driverConfig = %+v", cfg)
+	}
+	plain, err := driverConfig(SchemePostgres + "h/db")
+	if err != nil || plain.MigrationsTable != "" || plain.MultiStatementMaxSize <= 0 {
+		t.Errorf("driverConfig without options = %+v, %v; want golang-migrate's defaults", plain, err)
+	}
+	for _, bad := range []string{"x-migrations-table=v&x-migrations-table-quoted=true", "x-statement-timeout=soon", "x-multi-statement=maybe"} {
+		if _, err := driverConfig(SchemePostgres + "h/db?" + bad); err == nil {
+			t.Errorf("driverConfig(?%s) accepted a malformed option", bad)
+		}
 	}
 }

@@ -65,8 +65,17 @@ against the Deployments at all.
   `db migrate up` (the init container, the dev loop's migrate job) and
   `AutoMigrate` (a server booting with `AUTO_MIGRATE`). One replica applies;
   the others wait, then find nothing to do, and every one exits 0. The lock
-  is migratekit's own because golang-migrate's lock key differs between those
-  two entry points, so on its own it never made them wait for each other.
+  is migratekit's own because golang-migrate's lock key once differed between
+  those two entry points, so on its own it never made them wait for each other.
+- **Migrating through a pooler.** The locks are SESSION locks, so give
+  migrations a session-capable URL: the database directly, or a session-mode
+  PgBouncer entry, never a transaction pooler. A run is exactly ONE Postgres
+  session, including while it waits for the lock, so N concurrent runs need at
+  most N server connections and queue cleanly behind a smaller pool (each
+  waits in PgBouncer until a finished run disconnects). A command that wants
+  the boot path's policy and a report of what it did calls
+  `migratekit.Apply(ctx, pool, fsys, dir)`, which returns the same `Result`
+  as `Migrator.Up`.
 - **A migration fails.** The init container exits non-zero → CrashLoopBackOff
   → the rollout stalls, with the OLD pods still serving. That is the correct
   outcome: shipping code that needs a schema the database does not have is
