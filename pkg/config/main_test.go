@@ -35,7 +35,7 @@ import (
 func TestMain(m *testing.M) {
 	// Every env var bound by a fixture in this package's tests
 	// (loader_test, filelayer_test, block_validate_test, scoped_flags_test,
-	// semantic_test), plus the config-file path override the file layer reads.
+	// semantic_test), plus the config-file path variables filelayer_test reads.
 	for _, key := range []string{
 		"ADMIN_TOKEN",
 		"ALLOWED_REGISTRIES",
@@ -63,7 +63,8 @@ func TestMain(m *testing.M) {
 		"TLS_KEY",
 		"TOKEN",
 		"TRADER_MAX_PER_TICK",
-		ConfigPathEnv,
+		"FILELAYER_CONFIG",
+		"PROJ_CONFIG",
 	} {
 		if err := os.Unsetenv(key); err != nil {
 			panic("config test setup: unset " + key + ": " + err.Error())

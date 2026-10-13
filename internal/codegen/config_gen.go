@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/templates"
+	forgeconfig "github.com/reliant-labs/forge/pkg/config"
 )
 
 // ConfigTemplateField holds template data for a single config field.
@@ -59,6 +61,11 @@ type ConfigTemplateField struct {
 	// CLI flag (defense against shell-history / `ps` leaks) and are resolved
 	// from env / Secret mount only — never a flag or an inline default.
 	Sensitive bool
+
+	// EnvVarAliases are the further env vars the runtime reads for this
+	// field when EnvVar is unset ((forge.v1.config).env_var_aliases), by
+	// name. Read by validateConfigPathEnvs: an alias is read like EnvVar.
+	EnvVarAliases []string
 }
 
 // ConfigTemplateBlockType is one component config-block struct type the
@@ -146,6 +153,19 @@ type ConfigTemplateData struct {
 	// all, matching the historical all-binary behavior for such
 	// projects).
 	PrimaryConfigMessage string
+
+	// ProjectConfigPathEnv is the environment variable that names the
+	// project-global config's file when --config is not given:
+	// <PROJECT>_CONFIG (forgeconfig.ConfigPathEnvFor of the project name).
+	// RootConfigMessage carries no (forge.v1.binary_config) annotation for the
+	// runtime to derive a name from, so the generated RegisterFlags names it
+	// on the --config flag. Set by GenerateConfigLoader.
+	ProjectConfigPathEnv string
+
+	// PrimaryConfigPathEnv is PrimaryConfigMessage's binary's
+	// <BINARY>_CONFIG, for the generated doc comments. Set alongside
+	// PrimaryConfigMessage.
+	PrimaryConfigPathEnv string
 }
 
 // BinaryConfig is one binary's complete config surface: the message that
@@ -190,6 +210,12 @@ type BinaryConfig struct {
 func (bc BinaryConfig) Process() string {
 	return ConfigMessage{Binary: bc.Binary, Command: bc.Command}.ProcessName()
 }
+
+// PathEnv is the environment variable that names this config's file when
+// --config is not given: its binary's <BINARY>_CONFIG, shared by the binary's
+// root config and every one of its command configs, and derived by the
+// runtime from the same (forge.v1.binary_config).binary.
+func (bc BinaryConfig) PathEnv() string { return forgeconfig.ConfigPathEnvFor(bc.Binary) }
 
 // CommandLine is the subcommand path alone ("server api"); "" for a root
 // config.
@@ -527,6 +553,9 @@ func configTemplateField(f ConfigField, goPath string) ConfigTemplateField {
 		Role:         f.Role,
 		Sensitive:    f.Sensitive,
 	}
+	for _, a := range f.EnvVarAliases {
+		tf.EnvVarAliases = append(tf.EnvVarAliases, a.Name)
+	}
 
 	if f.DefaultValue != "" {
 		switch f.GoType {
@@ -758,6 +787,72 @@ func primaryCmdTreeDir(targetDir string) string {
 	return rel
 }
 
+// projectConfigName is the name a project-global config's path variable is
+// derived from: forge.yaml's project name, which is also the name every
+// scaffold gives the primary binary (cmd/<name>) — so a project that later
+// binds its AppConfig to that binary keeps the same variable. A directory with
+// no readable forge.yaml (a generator test) falls back to the last element of
+// the Go module path, skipping a /vN major-version suffix.
+func projectConfigName(targetDir, modulePath string) string {
+	if pc, err := config.LoadProjectDir(targetDir); err == nil && pc.Name != "" {
+		return pc.Name
+	}
+	parts := strings.Split(modulePath, "/")
+	for i := len(parts) - 1; i >= 0; i-- {
+		if p := parts[i]; p != "" && !isMajorVersionSuffix(p) {
+			return p
+		}
+	}
+	return modulePath
+}
+
+// isMajorVersionSuffix reports whether a module path element is a Go
+// major-version suffix ("v2", "v10").
+func isMajorVersionSuffix(s string) bool {
+	if len(s) < 2 || s[0] != 'v' {
+		return false
+	}
+	_, err := strconv.Atoi(s[1:])
+	return err == nil
+}
+
+// validateConfigPathEnvs refuses a config field whose env var — its env_var
+// or one of its env_var_aliases — is the config-FILE path variable of the
+// process that reads it (<BINARY>_CONFIG, or the project's <PROJECT>_CONFIG
+// for the project-global config). The loader would read the one variable
+// twice — as a file path, and as the field's value — and whichever reading
+// the operator meant, the other fails at startup.
+func validateConfigPathEnvs(data ConfigTemplateData) error {
+	var problems []string
+	check := func(owner, pathEnv string, fields []ConfigTemplateField) {
+		for _, f := range fields {
+			for i, name := range append([]string{f.EnvVar}, f.EnvVarAliases...) {
+				if pathEnv == "" || name != pathEnv {
+					continue
+				}
+				what := "env_var"
+				if i > 0 {
+					what = "env_var_aliases entry"
+				}
+				problems = append(problems, fmt.Sprintf(
+					"%s field %s declares %s %q, which is the variable that names %s's config file (--%s's environment twin)",
+					owner, f.GoPath, what, name, owner, forgeconfig.ConfigFlag))
+			}
+		}
+	}
+	if data.RootConfigMessage != "" {
+		check(data.RootConfigMessage, data.ProjectConfigPathEnv, data.Fields)
+	}
+	for _, bc := range data.BinaryConfigs {
+		check(bc.MessageName, bc.PathEnv(), bc.Fields)
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	return fmt.Errorf("config env var collides with the config-file path variable:\n  - %s\nRename the field's env var: the file path variable is derived from the binary (or project) name and cannot be reassigned to a field",
+		strings.Join(problems, "\n  - "))
+}
+
 // GenerateConfigLoader generates pkg/config/config.go from parsed config messages.
 //
 // cs is the project's checksum tracker. Passing it ensures the generated
@@ -815,6 +910,7 @@ func GenerateConfigLoader(messages []ConfigMessage, targetDir string, cs *checks
 				// and cannot stand in for it.
 				if bc.Binary == primaryBinary && len(bc.Command) == 0 {
 					data.PrimaryConfigMessage = bc.MessageName
+					data.PrimaryConfigPathEnv = bc.PathEnv()
 					break
 				}
 			}
@@ -854,6 +950,11 @@ func GenerateConfigLoader(messages []ConfigMessage, targetDir string, cs *checks
 		return fmt.Errorf("read module path: %w", err)
 	}
 	data.Module = modulePath
+	data.ProjectConfigPathEnv = forgeconfig.ConfigPathEnvFor(projectConfigName(targetDir, modulePath))
+
+	if err := validateConfigPathEnvs(data); err != nil {
+		return err
+	}
 
 	content, err := templates.ProjectTemplates().Render("config.go.tmpl", data)
 	if err != nil {

@@ -69,10 +69,19 @@ const (
 	ModeDevelopment = forgeconfig.ModeDevelopment
 )
 {{if .RootConfigMessage}}
+// ConfigPathEnv is the environment variable that names a config file when
+// --config is not given. {{.RootConfigMessage}} is the project-global config, bound to
+// no binary, so the variable is named after the project; a config bound to a
+// binary answers to that binary's <BINARY>_CONFIG instead. Either way the
+// variable is this project's own: another forge app's never reaches it.
+const ConfigPathEnv = "{{.ProjectConfigPathEnv}}"
+
 // RegisterFlags registers one CLI flag per config-bound field (and nested
 // config-block leaf) that carries a `flag:` annotation, with the annotated
 // name, default, and description. Sensitive fields are skipped (env/Secret
 // only). Duration fields register as string flags ("5s"); Load parses them.
+// It also registers the persistent --config <path> flag, with ConfigPathEnv
+// as its environment twin.
 //
 // It panics if the library cannot register a flag — that only happens when a
 // proto default is malformed for its field kind (e.g. a non-numeric int32
@@ -80,15 +89,16 @@ const (
 // never an operator/runtime condition. Failing loud at command construction
 // surfaces the proto bug immediately rather than shipping a broken binary.
 func RegisterFlags(cmd *cobra.Command) {
+	forgeconfig.RegisterConfigFlag(cmd, ConfigPathEnv)
 	if err := forgeconfig.RegisterFlags(cmd, &configv1.{{.RootConfigMessage}}{}); err != nil {
 		panic("config: RegisterFlags: " + err.Error())
 	}
 }
 
-// Load populates a Config from CLI flags > environment variables > proto
-// defaults (see the library for the precedence rationale), recursing into
-// nested config blocks. Malformed values abort startup. Sensitive fields
-// resolve from env / Secret mount only.
+// Load populates a Config from CLI flags > environment variables > config
+// file (--config, or ConfigPathEnv) > proto defaults (see the library for
+// the precedence rationale), recursing into nested config blocks. Malformed
+// values abort startup. Sensitive fields resolve from env / Secret mount only.
 func Load(cmd *cobra.Command) (*Config, error) {
 	return forgeconfig.LoadTyped[*configv1.{{.RootConfigMessage}}](cmd)
 }
@@ -109,6 +119,8 @@ func Validate(cfg *Config) error { return forgeconfig.Validate(cfg) }
 // instead, as LOCAL flags on cmd — the per-command form forge's command tree
 // calls on each command that loads it. Register{{.PrimaryConfigMessage}}Flags below is the
 // binary-wide form: the same leaves, once, as PERSISTENT flags on the root.
+// Both register the --config file flag, whose environment twin is
+// {{.PrimaryConfigPathEnv}}.
 func RegisterFlags(cmd *cobra.Command) {
 	if err := forgeconfig.RegisterFlags(cmd, &configv1.{{.PrimaryConfigMessage}}{}); err != nil {
 		panic("config: RegisterFlags: " + err.Error())
@@ -160,7 +172,9 @@ func Validate(cfg *Config) error { return forgeconfig.Validate(cfg) }
 //
 // A process running a subcommand loads its binary's root config AND its
 // command config (two Load calls); precedence is unchanged for both
-// (flags > env > config file > proto defaults).
+// (flags > env > config file > proto defaults). Every process of a binary
+// reads its config file from --config or that binary's own <BINARY>_CONFIG
+// variable — never another binary's.
 {{- range .BinaryConfigs}}
 {{- if .Command}}
 
@@ -175,8 +189,8 @@ type {{.MessageName}} = configv1.{{.MessageName}}
 // skipped (env / Secret only).
 {{- if .BinaryHasRootConfig}} The --config file flag is the {{.Binary}}
 // binary's root config's to register, persistent on the root.
-{{- else}} Also registers the --config file flag: the
-// {{.Binary}} binary binds no root config to carry it.
+{{- else}} Also registers the --config file flag (or
+// {{.PathEnv}}): the {{.Binary}} binary binds no root config to carry it.
 {{- end}}
 func Register{{.MessageName}}Flags(cmd *cobra.Command) {
 	if err := forgeconfig.{{if .BinaryHasRootConfig}}RegisterLocalFlags{{else}}RegisterFlags{{end}}(cmd, &configv1.{{.MessageName}}{}); err != nil {
@@ -202,9 +216,9 @@ type {{.MessageName}} = configv1.{{.MessageName}}
 
 // Register{{.MessageName}}Flags registers every leaf {{.MessageName}}
 // resolves — its own and those of the blocks it composes — as PERSISTENT
-// flags on cmd, plus the --config file flag: call it on the {{.Binary}}
-// binary's ROOT command, so every subcommand inherits them. Sensitive fields
-// are skipped (env / Secret only).
+// flags on cmd, plus the --config file flag (or {{.PathEnv}}): call it on
+// the {{.Binary}} binary's ROOT command, so every subcommand inherits them.
+// Sensitive fields are skipped (env / Secret only).
 func Register{{.MessageName}}Flags(cmd *cobra.Command) {
 	if err := forgeconfig.RegisterPersistentFlags(cmd, &configv1.{{.MessageName}}{}); err != nil {
 		panic("config: Register{{.MessageName}}Flags: " + err.Error())

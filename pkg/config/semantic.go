@@ -32,13 +32,14 @@ import (
 //
 // It ALSO registers a persistent --config <path> flag (ConfigFlag) — always,
 // for every config message. This is the first-class config-FILE layer's entry
-// point: it is on, not dormant. Load resolves the file from this flag (or the
-// FORGE_CONFIG env var) and unmarshals it as the layer between defaults and
-// env. Registering it persistent means it is also visible to subcommands. The
-// flag is registered idempotently so re-registering on the same command (or a
+// point: it is on, not dormant. Load resolves the file from this flag (or its
+// environment twin — <BINARY>_CONFIG for a message bound to a binary, see
+// ConfigPathEnvFor) and unmarshals it as the layer between defaults and env.
+// Registering it persistent means it is also visible to subcommands. The flag
+// is registered idempotently so re-registering on the same command (or a
 // parent that already has it) is safe.
 func RegisterFlags(cmd *cobra.Command, msg proto.Message) error {
-	registerConfigFileFlag(cmd)
+	registerConfigFileFlag(cmd, msg)
 	return RegisterFlagsFor(cmd.Flags(), msg)
 }
 
@@ -52,7 +53,7 @@ func RegisterFlags(cmd *cobra.Command, msg proto.Message) error {
 // subcommand. The two calls partition the message: no flag is registered
 // twice, and a binary's own flags stay invisible to its siblings.
 func RegisterSharedFlags(cmd *cobra.Command, msg proto.Message) error {
-	registerConfigFileFlag(cmd)
+	registerConfigFileFlag(cmd, msg)
 	return RegisterFlagsScoped(cmd.PersistentFlags(), msg, ScopeShared)
 }
 
@@ -81,7 +82,7 @@ func RegisterOwnFlags(cmd *cobra.Command, msg proto.Message) error {
 // a subcommand's Flags()). A command-scoped config registers on its own
 // subcommand with RegisterFlags instead, as LOCAL flags.
 func RegisterPersistentFlags(cmd *cobra.Command, msg proto.Message) error {
-	registerConfigFileFlag(cmd)
+	registerConfigFileFlag(cmd, msg)
 	return RegisterFlagsScoped(cmd.PersistentFlags(), msg, ScopeAll)
 }
 
@@ -142,24 +143,17 @@ func quoteJoin(items []string) string {
 }
 
 // registerConfigFileFlag adds the persistent --config <path> flag if neither
-// this command nor a parent already carries it. Idempotent, so the shared and
-// whole-message registration paths can both call it.
-func registerConfigFileFlag(cmd *cobra.Command) {
-	if cmd.PersistentFlags().Lookup(ConfigFlag) != nil || cmd.Flags().Lookup(ConfigFlag) != nil {
-		return
-	}
-	for p := cmd.Parent(); p != nil; p = p.Parent() {
-		if p.PersistentFlags().Lookup(ConfigFlag) != nil {
-			return // inherited: a second declaration would shadow it
-		}
-	}
-	cmd.PersistentFlags().String(ConfigFlag, "",
-		fmt.Sprintf("path to a config file (.json/.yaml/.yml); also settable via %s. "+
-			"Precedence: defaults < file < env < flags", ConfigPathEnv))
+// this command nor a parent already carries it, with msg's binary's
+// <BINARY>_CONFIG as its environment twin (none for an unbound message).
+// Idempotent, so the shared and whole-message registration paths can both
+// call it, and a RegisterConfigFlag call made first keeps its variable.
+func registerConfigFileFlag(cmd *cobra.Command, msg proto.Message) {
+	RegisterConfigFlag(cmd, ConfigPathEnvFor(binaryOf(msg)))
 }
 
 // Load populates msg in place from cobra flags > environment variables >
-// proto defaults, for every field carrying a (forge.v1.config) option.
+// config file > proto defaults, for every field carrying a (forge.v1.config)
+// option.
 // It is the cobra-facing alias of LoadInto. cmd may be nil (env + defaults
 // only). Sensitive fields resolve from env / Secret mount only.
 func Load(cmd *cobra.Command, msg proto.Message) error {

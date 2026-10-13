@@ -405,6 +405,13 @@ string database_url = 3 [(forge.v1.config) = {
 From that you get env-var loading with precedence (proto default < file < env
 < flag), a KCL schema, a per-environment value slot, and typed access.
 
+The file is a YAML or JSON document named by `--config`, or, when the flag is
+absent, by the binary's own path variable: `<BINARY>_CONFIG` for a config bound
+to a binary (`RELIANT_CONFIG` for `cmd/reliant`), `<PROJECT>_CONFIG` for the
+project-global `AppConfig`. No forge binary reads another's variable, so a
+shell configured for one app cannot hand its file to the rest. Set to `""`, the
+path variable is unset, like every other variable.
+
 An env var set to the empty string counts as unset, whatever the field's type:
 `TEMPORAL_HOST=` keeps the file's or the default's value rather than loading
 `""`. Deploy templates, compose files and shell profiles emit `X=` for "not

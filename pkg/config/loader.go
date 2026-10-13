@@ -136,9 +136,9 @@ func isConfigBlock(fd protoreflect.FieldDescriptor) bool {
 //     accident: a flag, which a person types (`--pprof-addr=` turns pprof
 //     off, and `--allowed-registries=` clears a defaulted list).
 //
-// FORGE_CONFIG (the file layer's path) already followed this rule, and so
-// do viper (AllowEmptyEnv is off by default) and caarlos0/env (an empty
-// variable falls back to the default).
+// The config file's path variable (<BINARY>_CONFIG, filelayer.go) reads
+// through here too, and viper (AllowEmptyEnv is off by default) and
+// caarlos0/env (an empty variable falls back to the default) agree.
 func lookupEnv(name string) (string, bool) {
 	v, ok := os.LookupEnv(name)
 	if !ok || v == "" {
@@ -275,8 +275,8 @@ func registerFlagsForDesc(flags *pflag.FlagSet, desc protoreflect.MessageDescrip
 
 		if fd.IsMap() {
 			return fmt.Errorf(
-				"config field %s: map fields cannot be bound to a flag — set it in the config file layer instead (--%s / %s)",
-				fd.Name(), ConfigFlag, ConfigPathEnv)
+				"config field %s: map fields cannot be bound to a flag — set it in the config file layer instead (--%s)",
+				fd.Name(), ConfigFlag)
 		}
 		// A repeated field registers as a STRING flag carrying the same
 		// comma-separated form the env layer uses, whatever its element kind
@@ -354,17 +354,18 @@ func registerFlagsForDesc(flags *pflag.FlagSet, desc protoreflect.MessageDescrip
 //	  - defaults: every annotated field's proto default (sensitive fields get
 //	    none — an inline secret default would be a leak).
 //	  - config file: when a path is EXPLICITLY given via the --config flag or
-//	    the FORGE_CONFIG env var, the file is proto-native unmarshaled INTO msg,
-//	    overlaying the defaults (see filelayer.go). A missing/invalid explicit
-//	    file is a LOUD error — never a silent fallback. With no path given this
-//	    layer is simply skipped (normal precedence, not a fallback).
+//	    the binary's <BINARY>_CONFIG env var, the file is proto-native
+//	    unmarshaled INTO msg, overlaying the defaults (see filelayer.go). A
+//	    missing/invalid explicit file is a LOUD error — never a silent
+//	    fallback. With no path given this layer is simply skipped (normal
+//	    precedence, not a fallback).
 //	  - environment: each field's env var overrides the file/default value.
 //	    A variable set to "" is unset, whatever the field's kind.
 //	  - flags: a flag changed on THIS invocation overrides everything.
 //
 // It is the runtime, descriptor-driven loader: empty-env handling, required-
 // field errors, and per-kind parsing all key off the (forge.v1.config) field
-// options. cmd may be nil (file via FORGE_CONFIG + env + defaults only), so
+// options. cmd may be nil (file via <BINARY>_CONFIG + env + defaults only), so
 // LoadInto works from non-cobra entrypoints too.
 //
 // Durations: declare a duration-shaped field as google.protobuf.Duration in
@@ -385,10 +386,11 @@ func LoadInto(cmd *cobra.Command, msg proto.Message) error {
 	}
 
 	// Layer 2: config file, ONLY when an explicit path is given (--config
-	// flag or FORGE_CONFIG env). A missing/invalid explicit file aborts
-	// LOUDLY here; no path given means this layer is skipped (not a fallback).
-	if path, ok := resolveConfigPath(cmd); ok {
-		if err := applyConfigFile(msg, path); err != nil {
+	// flag or the binary's <BINARY>_CONFIG env). A missing/invalid explicit
+	// file aborts LOUDLY here; no path given means this layer is skipped (not
+	// a fallback).
+	if path, source, ok := resolveConfigPath(cmd, msg); ok {
+		if err := applyConfigFile(msg, path, source); err != nil {
 			return err
 		}
 	}
@@ -595,8 +597,8 @@ func parseValue(m protoreflect.Message, fd protoreflect.FieldDescriptor, raw str
 // on the first key containing a comma, the loader refuses and points at the
 // layer that CAN express it natively.
 var errMapField = fmt.Errorf(
-	"map fields cannot be set from an env var or flag — set it in the config file layer instead (--%s / %s)",
-	ConfigFlag, ConfigPathEnv)
+	"map fields cannot be set from an env var or flag — set it in the config file layer instead (--%s)",
+	ConfigFlag)
 
 // parseList builds a repeated field's value from the single string an env var
 // or flag carries: elements are comma-separated and each is parsed with the
@@ -713,8 +715,8 @@ func parseElement(fd protoreflect.FieldDescriptor, raw string) (protoreflect.Val
 		// it states only what the caller cannot know: the shape, and where a
 		// field of this shape CAN be set.
 		return protoreflect.Value{}, fmt.Errorf(
-			"unsupported field kind %s — a field this shape cannot be spelled in an env var or flag; set it in the config file layer instead (--%s / %s)",
-			fd.Kind(), ConfigFlag, ConfigPathEnv)
+			"unsupported field kind %s — a field this shape cannot be spelled in an env var or flag; set it in the config file layer instead (--%s)",
+			fd.Kind(), ConfigFlag)
 	}
 }
 
