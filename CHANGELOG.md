@@ -22,6 +22,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clean run also stops reporting `typed-config guardrail — 1 warning` whose only
   detail was `0 issues.`: golangci-lint's summary and source snippets are not
   findings, only file-anchored issues are (`--quiet`, `--scope`, `--json`).
+### Changed
+
+- **A config env var set to `""` is unset, for every field type.**
+  `pkg/config`'s env layer read an empty variable as a value for strings, bytes
+  and lists, and as unset for numbers, bools and durations. So `TEMPORAL_HOST=`
+  (what compose's `X: ${X}`, a template rendered from a missing key, or
+  `export X=` produce) replaced a `localhost` default or a config file's value
+  with `""`, and `ALLOWED_REGISTRIES=` cleared a defaulted list. Every kind now
+  reads it as unset and the file or default value stands. An explicitly empty
+  value is a flag's to set: `--pprof-addr=` turns pprof off,
+  `--allowed-registries=` clears a list. A required field whose variable is set
+  but empty fails with an error that says so. The generated KCL config schema
+  gains a `check:` refusing `field = ""` for a non-sensitive string field with a
+  non-empty default: it would render an env value the process ignores, so the
+  render fails and names the flag instead. On re-pin, `PPROF_ADDR=` no longer
+  disables pprof (pass `--pprof-addr=`), and `forge generate` rewrites
+  `deploy/kcl/config_gen.k` with the checks.
 
 ### Added
 

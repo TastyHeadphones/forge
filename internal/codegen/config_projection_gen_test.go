@@ -46,6 +46,7 @@ func TestGenerateConfigProjectionKCL_ExactBlock(t *testing.T) {
 		"    # Max drain time during graceful shutdown\n" +
 		"    shutdown_timeout: str = \"30s\"\n" +
 		"    sample_rate: float = 0.0\n" +
+		representativeEmptyEnvChecks +
 		"\n" +
 		"# Every ENV_VAR AppConfig declares `sensitive: true` for. Used by forge's\n" +
 		"# host-mode config probe, which resolves the whole config for `forge env up`\n" +

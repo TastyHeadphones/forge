@@ -59,6 +59,15 @@ func representativeConfigFields() []ConfigField {
 	}
 }
 
+// representativeEmptyEnvChecks is the schema check block
+// representativeConfigFields renders: one condition per non-sensitive str
+// field with a non-empty default (log_level, and shutdown_timeout, a duration
+// carried as a str). See renderEmptyEnvChecks.
+const representativeEmptyEnvChecks = "\n" +
+	"    check:\n" +
+	"        log_level != \"\", \"log_level = \\\"\\\" cannot reach the process: an empty LOG_LEVEL counts as unset, so it would load the default \\\"info\\\" — set a value, or change its default in the proto\"\n" +
+	"        shutdown_timeout != \"\", \"shutdown_timeout = \\\"\\\" cannot reach the process: an empty SHUTDOWN_TIMEOUT counts as unset, so it would load the default \\\"30s\\\" — set a value\"\n"
+
 func TestGenerateConfigSchemaKCL_ExactBlock(t *testing.T) {
 	got, err := GenerateConfigSchemaKCL(representativeConfigFields(), "myproj")
 	if err != nil {
@@ -82,7 +91,8 @@ func TestGenerateConfigSchemaKCL_ExactBlock(t *testing.T) {
 		"    database_url: ConfigSecretRef = ConfigSecretRef { name = \"myproj-secrets\", key = \"database_url\" }\n" +
 		"    # Max drain time during graceful shutdown\n" +
 		"    shutdown_timeout: str = \"30s\"\n" +
-		"    sample_rate: float = 0.0\n"
+		"    sample_rate: float = 0.0\n" +
+		representativeEmptyEnvChecks
 
 	if got != want {
 		t.Fatalf("schema mismatch\n--- got ---\n%s\n--- want ---\n%s", got, want)

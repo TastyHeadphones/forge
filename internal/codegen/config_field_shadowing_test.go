@@ -207,7 +207,7 @@ schema AppConfig:
     # Max drain time during graceful shutdown
     shutdown_timeout: str = "30s"
     sample_rate: float = 0.0
-`
+` + representativeEmptyEnvChecks
 	if got != want {
 		t.Errorf("clean render changed\n--- got ---\n%s\n--- want ---\n%s", got, want)
 	}

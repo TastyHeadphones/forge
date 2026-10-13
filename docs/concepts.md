@@ -405,6 +405,13 @@ string database_url = 3 [(forge.v1.config) = {
 From that you get env-var loading with precedence (proto default < file < env
 < flag), a KCL schema, a per-environment value slot, and typed access.
 
+An env var set to the empty string counts as unset, whatever the field's type:
+`TEMPORAL_HOST=` keeps the file's or the default's value rather than loading
+`""`. Deploy templates, compose files and shell profiles emit `X=` for "not
+configured" far more often than anyone means an empty value. An explicitly
+empty value is a flag's to set (`--pprof-addr=` turns pprof off,
+`--allowed-registries=` clears a defaulted list).
+
 Typed access is a guardrail, not a suggestion: a direct `os.Getenv` /
 `os.LookupEnv` outside the generated loader is a lint finding, and
 `config.enforce_typed_access` in `forge.yaml` decides how hard. `error` fails

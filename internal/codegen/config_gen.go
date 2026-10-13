@@ -50,12 +50,6 @@ type ConfigTemplateField struct {
 	// list of identical one-liners.
 	ParseFn string
 
-	// AllowEmptyEnv preserves the historical string semantics: a string
-	// env var explicitly set to "" counts as set. Numeric/bool/duration
-	// fields treat an empty env var as unset (parsing "" would always
-	// error).
-	AllowEmptyEnv bool
-
 	// Role is the (forge.v1.config).role annotation (bare enum spelling, ""
 	// for none). Codegen selects semantic fields (e.g. the MODE field) by
 	// THIS, never by the field's name.
@@ -518,21 +512,20 @@ func configTemplateField(f ConfigField, goPath string) ConfigTemplateField {
 		structType = "time.Duration"
 	}
 	tf := ConfigTemplateField{
-		GoName:        f.GoName,
-		GoType:        f.GoType,
-		EnvVar:        f.EnvVar,
-		Flag:          f.Flag,
-		DefaultValue:  f.DefaultValue,
-		Description:   f.Description,
-		Required:      f.Required,
-		HasDefault:    f.DefaultValue != "",
-		GoPath:        goPath,
-		IsDuration:    isDur,
-		StructGoType:  structType,
-		ParseFn:       parseFnFor(f, isDur),
-		AllowEmptyEnv: f.GoType == "string" && !isDur,
-		Role:          f.Role,
-		Sensitive:     f.Sensitive,
+		GoName:       f.GoName,
+		GoType:       f.GoType,
+		EnvVar:       f.EnvVar,
+		Flag:         f.Flag,
+		DefaultValue: f.DefaultValue,
+		Description:  f.Description,
+		Required:     f.Required,
+		HasDefault:   f.DefaultValue != "",
+		GoPath:       goPath,
+		IsDuration:   isDur,
+		StructGoType: structType,
+		ParseFn:      parseFnFor(f, isDur),
+		Role:         f.Role,
+		Sensitive:    f.Sensitive,
 	}
 
 	if f.DefaultValue != "" {
@@ -1131,7 +1124,7 @@ func DefaultConfigMessages() []ConfigMessage {
 					EnvVar:       "PPROF_ADDR",
 					Flag:         "pprof-addr",
 					DefaultValue: "127.0.0.1:6060",
-					Description:  "Address of the always-on net/http/pprof side-listener — never the app's public port. Defaults to loopback (127.0.0.1:6060), which is what makes it safe to leave on: reachable from inside the machine or pod running the process and from nowhere else, and never given a k8s Service. Grab a profile with: go tool pprof http://localhost:6060/debug/pprof/heap (in a cluster, kubectl port-forward <pod> 6060:6060 first). Set 0.0.0.0:6060 when a profile must cross a container boundary; empty disables pprof.",
+					Description:  "Address of the always-on net/http/pprof side-listener — never the app's public port. Defaults to loopback (127.0.0.1:6060), which is what makes it safe to leave on: reachable from inside the machine or pod running the process and from nowhere else, and never given a k8s Service. Grab a profile with: go tool pprof http://localhost:6060/debug/pprof/heap (in a cluster, kubectl port-forward <pod> 6060:6060 first). Set 0.0.0.0:6060 when a profile must cross a container boundary; --pprof-addr= (empty) disables pprof.",
 				},
 				{
 					Name:         "security_headers_enabled",

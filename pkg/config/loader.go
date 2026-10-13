@@ -18,11 +18,9 @@ package config
 //     cmd.Flags().Changed), then a required-field check. The file layer
 //     (filelayer.go) loads only when a path is EXPLICITLY given and fails
 //     loudly on a missing/invalid explicit path. See LoadInto.
-//   - Empty-env handling: a string field treats an explicitly-empty env
-//     var ("") as SET; every non-string scalar treats "" as unset, because
-//     parsing "" would always error. A repeated field also treats "" as set,
-//     meaning the EMPTY LIST — the only way to clear a defaulted list. See
-//     allowEmptyEnv.
+//   - Empty-env handling: an env var set to "" is UNSET, for every field
+//     kind — the file or default value stands. An explicitly empty value is
+//     a flag's to set (`--pprof-addr=`). See lookupEnv.
 //   - Cardinality: a repeated field is carried by env/flag as ONE
 //     comma-separated string, each element parsed with the field's element
 //     kind, with surrounding whitespace trimmed and blank elements dropped.
@@ -115,24 +113,42 @@ func isConfigBlock(fd protoreflect.FieldDescriptor) bool {
 	return false
 }
 
-// allowEmptyEnv mirrors the generated AllowEmptyEnv: an explicitly-empty
-// env var counts as "set" only for plain string scalars. Every other scalar
-// kind (numeric, bool, duration message) treats "" as unset because parsing
-// "" would always error.
+// lookupEnv reads one variable for the env layer. Unset and set-to-"" are
+// the same answer here, for every field kind: the environment does not
+// configure this field, and the value the file or the default gave stands.
 //
-// A REPEATED field of any element kind also allows it, and means something
-// different by it: "" is the empty list, which is the only way a deployment
-// can CLEAR a list that has a compiled-in default. Parsing "" never errors
-// for a list (it yields zero elements), so the reason the scalar kinds are
-// excluded does not apply.
-func allowEmptyEnv(fd protoreflect.FieldDescriptor) bool {
-	if fd.IsMap() {
-		return false // rejected outright by parseValue; never "set" from env
+// Why "" is unset rather than an empty value:
+//
+//   - The environment cannot tell the two apart. compose's `X: ${X}`, a
+//     deploy template's `value:` rendered from a missing key, systemd's
+//     `Environment=X=` and `export X=` in a shell profile all produce a
+//     set-but-empty variable whose author meant "not configured". Read as a
+//     value, it silently replaced a default (TEMPORAL_HOST="" turning
+//     "localhost" into "") or a config file's value with "".
+//   - One rule for every kind. It used to be a value for strings and lists
+//     and unset for numbers, bools and durations: an artifact of what
+//     parses, not something an operator could predict from the field.
+//   - An explicitly empty value keeps a channel nothing produces by
+//     accident: a flag, which a person types (`--pprof-addr=` turns pprof
+//     off, and `--allowed-registries=` clears a defaulted list).
+//
+// FORGE_CONFIG (the file layer's path) already followed this rule, and so
+// do viper (AllowEmptyEnv is off by default) and caarlos0/env (an empty
+// variable falls back to the default).
+func lookupEnv(name string) (string, bool) {
+	v, ok := os.LookupEnv(name)
+	if !ok || v == "" {
+		return "", false
 	}
-	if fd.IsList() {
-		return true
-	}
-	return fd.Kind() == protoreflect.StringKind
+	return v, true
+}
+
+// envSetButEmpty reports whether name is present in the environment with an
+// empty value — the case lookupEnv reads as unset, and which a required-field
+// error names so the operator is not left hunting a variable that IS set.
+func envSetButEmpty(name string) bool {
+	v, ok := os.LookupEnv(name)
+	return ok && v == ""
 }
 
 // RegisterFlagsFor walks msg's fields and registers one cobra/pflag flag
@@ -339,6 +355,7 @@ func registerFlagsForDesc(flags *pflag.FlagSet, desc protoreflect.MessageDescrip
 //	    file is a LOUD error — never a silent fallback. With no path given this
 //	    layer is simply skipped (normal precedence, not a fallback).
 //	  - environment: each field's env var overrides the file/default value.
+//	    A variable set to "" is unset, whatever the field's kind.
 //	  - flags: a flag changed on THIS invocation overrides everything.
 //
 // It is the runtime, descriptor-driven loader: empty-env handling, required-
@@ -409,9 +426,9 @@ func applyDefaults(m protoreflect.Message) error {
 }
 
 // applyEnvAndFlags overlays the env layer then the flag layer onto m,
-// recursing into nested config blocks. For each field the env var (if set,
-// honoring the empty-string rule for the field's kind) overrides the current
-// value, then a flag changed on THIS invocation overrides that. A field that
+// recursing into nested config blocks. For each field the env var (if set
+// to something other than "" — see lookupEnv) overrides the current value,
+// then a flag changed on THIS invocation overrides that. A field that
 // neither env nor flag touches keeps whatever defaults/file set.
 func applyEnvAndFlags(cmd *cobra.Command, m protoreflect.Message) error {
 	fields := m.Descriptor().Fields()
@@ -442,7 +459,7 @@ func applyEnvAndFlags(cmd *cobra.Command, m protoreflect.Message) error {
 func overlayField(cmd *cobra.Command, m protoreflect.Message, fd protoreflect.FieldDescriptor, opt *forgepb.ConfigFieldOptions) error {
 	// Env layer.
 	if envVar := opt.GetEnvVar(); envVar != "" {
-		if v, present := os.LookupEnv(envVar); present && (allowEmptyEnv(fd) || v != "") {
+		if v, set := lookupEnv(envVar); set {
 			val, err := parseValue(m, fd, v)
 			if err != nil {
 				return fmt.Errorf("invalid value %q for config field %s (from env %s): %w", v, fd.Name(), envVar, err)
@@ -487,10 +504,15 @@ func checkRequired(m protoreflect.Message) error {
 			continue
 		}
 		if fieldIsEmpty(m, fd) {
-			if flag := opt.GetFlag(); flag != "" && !opt.GetSensitive() {
-				return fmt.Errorf("required config field %s is not set (env: %s, flag: --%s)", fd.Name(), opt.GetEnvVar(), flag)
+			envVar := opt.GetEnvVar()
+			var empty string
+			if envVar != "" && envSetButEmpty(envVar) {
+				empty = fmt.Sprintf(" — %s is set but empty, and an empty env var counts as unset", envVar)
 			}
-			return fmt.Errorf("required config field %s is not set (env: %s)", fd.Name(), opt.GetEnvVar())
+			if flag := opt.GetFlag(); flag != "" && !opt.GetSensitive() {
+				return fmt.Errorf("required config field %s is not set (env: %s, flag: --%s)%s", fd.Name(), envVar, flag, empty)
+			}
+			return fmt.Errorf("required config field %s is not set (env: %s)%s", fd.Name(), envVar, empty)
 		}
 	}
 	return nil
@@ -585,9 +607,9 @@ var errMapField = fmt.Errorf(
 //     env block means two elements; the space is formatting, not data.
 //   - Blank elements are dropped, so a trailing comma ("a,b,") is a
 //     two-element list and not a list with an empty tail. This also makes an
-//     explicitly-empty env var an EMPTY list rather than a list holding one
-//     empty string — see allowEmptyEnv for why clearing a defaulted list has
-//     to be expressible.
+//     empty flag value (`--allowed-registries=`) an EMPTY list rather than a
+//     list holding one empty string: the way to clear a defaulted list. An
+//     empty env var never reaches here — it is unset (see lookupEnv).
 //   - There is no escape syntax. An element that legitimately contains a
 //     comma, or one whose leading/trailing whitespace is significant, cannot
 //     be expressed here and belongs in the config file, which carries a real
