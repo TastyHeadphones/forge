@@ -21,6 +21,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default and the Deps fill. A component without the field gets none of them.
   A service whose Deps has no `Config` no longer gets `deps.Config = cfg.cfg`,
   which did not compile either.
+- **An interface your Deps consumes no longer binds the package's own type
+  that satisfies it.** The contract analyzer let a type implementing any
+  `contract.go` interface export only that interface's methods. An interface
+  `contract.go` names as a `Deps` field's type is a requirement, the narrow
+  seam `forgeconv-deps-are-interfaces` asks for, and the rule treated it as
+  the contract. So a package could not take its own registry through a narrow
+  seam: reliant's connauth wanted `Deps.Broker` to be a `Get`-only interface
+  over its `*Brokers`, which also exports `Register` for the composition root,
+  and turned the lookup into a func field instead. A type that satisfies only
+  Deps seams (a field's type, or a pointer, slice, array, map or channel of
+  one) is no longer bound. `Service` and a `//forge:service` /
+  `//forge:contract` interface still bind every implementer, even when a Deps
+  field also names them (a decorator's `Next Service`). Any other `contract.go`
+  interface still binds. A bound type may still export the methods of every
+  contract interface it satisfies, seams included.
 
 - **A freshly scaffolded service lints clean again.** The `metrics` command
   scaffolded into every service binary (`cmd/<bin>/cmd/metrics.go`, #681)
