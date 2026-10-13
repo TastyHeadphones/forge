@@ -72,7 +72,7 @@ func TestPreflight_RequiredSecretPresent(t *testing.T) {
 			{Name: "cloudflare-api-token", Namespace: "cert-manager", Keys: []string{"api-token"}},
 		},
 	}
-	res, err := runPreflightChecks(context.Background(), opts, CollectManifestRefs(opts.Manifests))
+	res, err := runPreflightChecks(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("runPreflightChecks: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestPreflight_RequiredSecretAbsentBlocks(t *testing.T) {
 			{Name: "cloudflare-api-token", Namespace: "cert-manager", Keys: []string{"api-token"}},
 		},
 	}
-	res, err := runPreflightChecks(context.Background(), opts, CollectManifestRefs(opts.Manifests))
+	res, err := runPreflightChecks(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("runPreflightChecks: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestPreflight_RequiredSecretMissingKeyBlocks(t *testing.T) {
 			{Name: "cloudflare-api-token", Namespace: "cert-manager", Keys: []string{"api-token"}},
 		},
 	}
-	res, err := runPreflightChecks(context.Background(), opts, CollectManifestRefs(opts.Manifests))
+	res, err := runPreflightChecks(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("runPreflightChecks: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestPreflight_RequiredSecretSkippedWithoutContext(t *testing.T) {
 		Secrets:         nsSecretGetter{secrets: map[string]map[string]struct{}{}},
 		RequiredSecrets: []RequiredSecret{{Name: "x", Namespace: "cert-manager", Keys: []string{"k"}}},
 	}
-	res, err := runPreflightChecks(context.Background(), opts, CollectManifestRefs(opts.Manifests))
+	res, err := runPreflightChecks(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("runPreflightChecks: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestPreflight_ByteMatchGroupConsistent(t *testing.T) {
 			{Name: "tok-mir", Namespace: "b", Keys: []string{"api-token"}, ValueGroup: "g"},
 		},
 	}
-	res, err := runPreflightChecks(context.Background(), opts, CollectManifestRefs(opts.Manifests))
+	res, err := runPreflightChecks(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("runPreflightChecks: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestPreflight_ByteMatchGroupDivergentBlocks(t *testing.T) {
 			{Name: "tok-mir", Namespace: "b", Keys: []string{"api-token"}, ValueGroup: "g"},
 		},
 	}
-	res, err := runPreflightChecks(context.Background(), opts, CollectManifestRefs(opts.Manifests))
+	res, err := runPreflightChecks(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("runPreflightChecks: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestPreflight_RequiredSecretGetterErrorAborts(t *testing.T) {
 		Secrets:         nsSecretGetter{err: errors.New("kubectl: connection refused")},
 		RequiredSecrets: []RequiredSecret{{Name: "x", Namespace: "cert-manager", Keys: []string{"k"}}},
 	}
-	_, err := runPreflightChecks(context.Background(), opts, CollectManifestRefs(opts.Manifests))
+	_, err := runPreflightChecks(context.Background(), opts)
 	if err == nil {
 		t.Fatal("expected a getter error to abort the preflight")
 	}

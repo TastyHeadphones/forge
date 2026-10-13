@@ -287,7 +287,7 @@ func TestPreflight_UndeclaredSecretMountBlocks(t *testing.T) {
 		// No Context, no Secrets — the LIVE checks are inert; only the
 		// render-time back-prop gate runs.
 	}
-	res, err := runPreflightChecks(context.Background(), opts, CollectManifestRefs(opts.Manifests))
+	res, err := runPreflightChecks(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("runPreflightChecks: %v", err)
 	}
@@ -310,7 +310,7 @@ func TestPreflight_UndeclaredSecretMountSatisfiedBySupply(t *testing.T) {
 		Manifests:    renderedSecretDoc + docDelimiter + mountManifest, // app-secrets rendered in-stream
 		SecretSupply: []SecretSupply{{Name: "cp-daemon-kubeconfig", Kind: SupplyKubeconfigSecret}},
 	}
-	res, err := runPreflightChecks(context.Background(), opts, CollectManifestRefs(opts.Manifests))
+	res, err := runPreflightChecks(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("runPreflightChecks: %v", err)
 	}

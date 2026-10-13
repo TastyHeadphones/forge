@@ -47,14 +47,14 @@ func TestRequiredSecretsCheckedInEveryCluster(t *testing.T) {
 		}},
 		RequiredSecretContexts: []string{"k3d-control-plane", "k3d-cp-daemon"},
 	}
-	res, err := runPreflightChecks(context.Background(), opts, CollectManifestRefs(opts.Manifests))
+	res, err := runPreflightChecks(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("runPreflightChecks: %v", err)
 	}
 	if len(res.MissingRequiredSecretKeys) == 0 {
 		t.Fatal("preflight passed while a required key was missing from the secondary cluster")
 	}
-	key := "k3d-cp-daemon/control-plane-dev/control-plane-secrets"
+	key := "k3d-cp-daemon:control-plane-dev/control-plane-secrets"
 	missing, ok := res.MissingRequiredSecretKeys[key]
 	if !ok {
 		t.Fatalf("secondary-cluster miss not reported under %q; got %v", key, res.MissingRequiredSecretKeys)
@@ -64,7 +64,7 @@ func TestRequiredSecretsCheckedInEveryCluster(t *testing.T) {
 	}
 	// The primary is complete and must NOT be reported.
 	for k := range res.MissingRequiredSecretKeys {
-		if strings.HasPrefix(k, "k3d-control-plane/") {
+		if strings.HasPrefix(k, "k3d-control-plane:") {
 			t.Errorf("primary cluster reported despite having every key: %v", res.MissingRequiredSecretKeys)
 		}
 	}
@@ -84,7 +84,7 @@ func TestRequiredSecretsSingleClusterKeepsUnqualifiedKey(t *testing.T) {
 			Name: "cloudflare-api-token", Namespace: "cert-manager", Keys: []string{"api-token"},
 		}},
 	}
-	res, err := runPreflightChecks(context.Background(), opts, CollectManifestRefs(opts.Manifests))
+	res, err := runPreflightChecks(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("runPreflightChecks: %v", err)
 	}
@@ -116,11 +116,12 @@ func TestRequiredSecretContextsFallsBackToContext(t *testing.T) {
 // never been told to look for.
 func TestRequiredSecretKeysUnionsManifestReferences(t *testing.T) {
 	rs := RequiredSecret{Name: "control-plane-secrets", Namespace: "control-plane-dev", Keys: []string{"proxy_session_secret"}}
-	refs := ManifestRefs{Secrets: map[string]map[string]struct{}{
-		"control-plane-secrets": {"zitadel_broker_token": {}, "proxy_session_secret": {}, "": {}},
+	at := ResourceRef{Context: "k3d-control-plane", Namespace: "control-plane-dev", Name: "control-plane-secrets"}
+	refs := ManifestRefs{Secrets: map[ResourceRef]map[string]struct{}{
+		at: {"zitadel_broker_token": {}, "proxy_session_secret": {}, "": {}},
 	}}
 
-	got := requiredSecretKeys(rs, refs, "control-plane-dev")
+	got := requiredSecretKeys(rs, refs, "k3d-control-plane")
 	if len(got) != 2 || got[0] != "proxy_session_secret" || got[1] != "zitadel_broker_token" {
 		t.Fatalf("keys = %v; want the declared key unioned with the referenced one", got)
 	}
@@ -135,8 +136,25 @@ func TestRequiredSecretKeysUnionsManifestReferences(t *testing.T) {
 	// A prerequisite in ANOTHER namespace is resolved there, so deploy-namespace
 	// references must not be folded in.
 	other := RequiredSecret{Name: "control-plane-secrets", Namespace: "cert-manager", Keys: []string{"api-token"}}
-	got = requiredSecretKeys(other, refs, "control-plane-dev")
+	got = requiredSecretKeys(other, refs, "k3d-control-plane")
 	if len(got) != 1 || got[0] != "api-token" {
 		t.Fatalf("cross-namespace keys = %v; want only the declared [api-token]", got)
+	}
+
+	// A reference from a pod on ANOTHER cluster resolves to that cluster's
+	// copy, so it adds nothing to this one's requirement.
+	got = requiredSecretKeys(rs, refs, "k3d-cp-daemon")
+	if len(got) != 1 || got[0] != "proxy_session_secret" {
+		t.Fatalf("cross-cluster keys = %v; want only the declared [proxy_session_secret]", got)
+	}
+
+	// A reference collected with no cluster (the deploy target was never
+	// named) is placed nowhere in particular, so it counts on every cluster.
+	unplaced := ManifestRefs{Secrets: map[ResourceRef]map[string]struct{}{
+		{Namespace: "control-plane-dev", Name: "control-plane-secrets"}: {"zitadel_broker_token": {}},
+	}}
+	got = requiredSecretKeys(rs, unplaced, "k3d-cp-daemon")
+	if len(got) != 2 || got[1] != "zitadel_broker_token" {
+		t.Fatalf("unplaced keys = %v; want the referenced key folded in on any cluster", got)
 	}
 }

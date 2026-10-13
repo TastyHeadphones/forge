@@ -62,7 +62,7 @@ func TestPreflight_MintedKubeconfigSecretDoesNotBlock(t *testing.T) {
 			Namespace: "control-plane-prod",
 			By:        SupplyKubeconfigSecret,
 		}},
-	}, CollectManifestRefs(mintedKubeconfigManifest))
+	})
 	if err != nil {
 		t.Fatalf("runPreflightChecks: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestPreflight_UnmintedKubeconfigSecretStillBlocks(t *testing.T) {
 		Secrets:   fakeSecretGetter{secrets: map[string]map[string]struct{}{}},
 		// Not minted by this deploy => not exempt.
 		ProvisionedByDeploy: nil,
-	}, CollectManifestRefs(mintedKubeconfigManifest))
+	})
 	if err != nil {
 		t.Fatalf("runPreflightChecks: %v", err)
 	}
@@ -139,7 +139,7 @@ spec:
 		ProvisionedByDeploy: []ProvisionedSecret{{
 			Name: "control-plane-hub-kubeconfig", By: SupplyKubeconfigSecret,
 		}},
-	}, CollectManifestRefs(manifests))
+	})
 	if err != nil {
 		t.Fatalf("runPreflightChecks: %v", err)
 	}
@@ -190,7 +190,7 @@ spec:
 		ProvisionedByDeploy: []ProvisionedSecret{{
 			Name: "control-plane-hub-kubeconfig", By: SupplyKubeconfigSecret,
 		}},
-	}, CollectManifestRefs(manifests))
+	})
 	if err != nil {
 		t.Fatalf("runPreflightChecks: %v", err)
 	}
@@ -204,12 +204,12 @@ spec:
 // case — an env that mints nothing — neither filters nor reallocates, so the
 // gate's behaviour is bit-for-bit what it was before this seam existed.
 func TestWithoutProvisionedSecrets_EmptyExemptionIsIdentity(t *testing.T) {
-	refs := map[string]map[string]struct{}{
-		"a": {"k": struct{}{}},
-		"b": {},
+	refs := map[ResourceRef]map[string]struct{}{
+		{Namespace: "app", Name: "a"}: {"k": struct{}{}},
+		{Namespace: "app", Name: "b"}: {},
 	}
 	for _, provisioned := range [][]ProvisionedSecret{nil, {}, {{Name: "   "}}} {
-		got := withoutProvisionedSecrets(refs, provisioned)
+		got := withoutProvisionedSecrets(refs, provisioned, "app")
 		if len(got) != len(refs) {
 			t.Errorf("provisioned=%v: exempted something, want identity: %v", provisioned, got)
 		}

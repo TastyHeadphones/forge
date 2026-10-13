@@ -67,7 +67,7 @@ spec:
 				ProvisionedByDeploy: []ProvisionedSecret{{
 					Name: "reliant-otel-auth", Namespace: "control-plane-prod", By: SupplyControlPlaneSecret,
 				}},
-			}, CollectManifestRefs(manifests))
+			})
 			if err != nil {
 				t.Fatalf("runPreflightChecks: %v", err)
 			}
@@ -108,7 +108,7 @@ spec:
 		Namespace: "control-plane-prod",
 		Context:   "gke_p_prod",
 		Secrets:   fakeSecretGetter{secrets: map[string]map[string]struct{}{}},
-	}, CollectManifestRefs(manifests))
+	})
 	if err != nil {
 		t.Fatalf("runPreflightChecks: %v", err)
 	}
@@ -150,8 +150,8 @@ spec:
 // An optional Secret volume is not a schedule-time dependency (kubelet starts
 // the pod without it), so it is not collected as one.
 func TestCollectManifestRefs_OptionalSecretVolumeIsNotADependency(t *testing.T) {
-	refs := CollectManifestRefs(controlPlaneSecretManifest)
-	if _, ok := refs.Secrets["reliant-otel-auth"]; ok {
+	refs := CollectManifestRefs(controlPlaneSecretManifest, RefPlacement{})
+	if _, ok := byName(refs.Secrets)["reliant-otel-auth"]; ok {
 		t.Errorf("an optional Secret volume was collected as a demand: %+v", refs.Secrets)
 	}
 }

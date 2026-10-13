@@ -62,34 +62,115 @@ func (g ManifestGVK) group() string {
 	return grp
 }
 
+// ResourceRef locates one Secret or ConfigMap a rendered object depends on.
+//
+// A pod resolves every Secret and ConfigMap it names in its OWN namespace, on
+// the cluster it runs on, so a reference is only meaningful with both. Keying
+// references by bare name, and checking them all in the deploy namespace on
+// the primary cluster, refused control-plane's prod release for
+// observability-data/obs-credentials and observability/otel-agent-token —
+// Secrets that existed exactly where their workloads use them, reported as
+// missing from control-plane-prod.
+type ResourceRef struct {
+	// Context is the kubectl context of the cluster the referencing object is
+	// applied to. Empty when the collection was not placed on a cluster.
+	Context string
+	// Namespace is the referencing object's metadata.namespace, or the deploy
+	// namespace when it declares none.
+	Namespace string
+	// Name is the referenced Secret / ConfigMap name.
+	Name string
+}
+
+// subject renders the reference for a report: "<namespace>/<name>", qualified
+// as "<context>:<namespace>/<name>" when the run spans several clusters and an
+// unqualified name could be on any of them.
+func (r ResourceRef) subject(multiCluster bool) string {
+	s := r.Namespace + "/" + r.Name
+	if multiCluster && r.Context != "" {
+		s = r.Context + ":" + s
+	}
+	return s
+}
+
+// RefPlacement says where a rendered document's references must resolve.
+type RefPlacement struct {
+	// Namespace is the namespace of a document that declares none — the
+	// deploy namespace `kubectl apply -n` puts it in.
+	Namespace string
+	// Context is the cluster every document lands on when Contexts is nil.
+	Context string
+	// Contexts attributes one document to the kubectl contexts it is applied
+	// to, for an env that spans several clusters. It must be the deploy's own
+	// router (ScopeManifestsToGroup), never a second model of it. Nil means
+	// every document lands on Context. A document it attributes to no cluster
+	// is applied nowhere, so it demands nothing.
+	Contexts func(doc string) []string
+}
+
+// place resolves one document's namespace and clusters.
+func (p RefPlacement) place(doc string, node any) (namespace string, contexts []string) {
+	namespace = p.Namespace
+	if root, ok := node.(map[string]any); ok {
+		if md, ok := mapAt(root, "metadata"); ok {
+			if ns := strings.TrimSpace(stringAt(md, "namespace")); ns != "" {
+				namespace = ns
+			}
+		}
+	}
+	if p.Contexts == nil {
+		return namespace, []string{p.Context}
+	}
+	return namespace, p.Contexts(doc)
+}
+
 // ManifestRefs is the set of external references a rendered manifest bundle
 // depends on at schedule time: the Secret / ConfigMap (name, key) pairs its
 // containers project into env or mount, and the distinct container images it
 // runs.
 type ManifestRefs struct {
-	// Secrets maps a Secret name to the set of keys referenced from it. A
-	// key of "" (present in the set) means a whole-Secret reference
-	// (envFrom secretRef, a volume mount, an imagePullSecret) — verify
-	// existence only.
-	Secrets map[string]map[string]struct{}
-	// ConfigMaps maps a ConfigMap name to the set of keys referenced from
-	// it. A key of "" means a whole-ConfigMap reference (envFrom
-	// configMapRef or a whole-ConfigMap volume mount) — verify existence
-	// only. A missing ConfigMap key fails a pod identically to a missing
-	// Secret key (CreateContainerConfigError).
-	ConfigMaps map[string]map[string]struct{}
+	// Secrets maps a Secret, located where the referencing pod resolves it,
+	// to the set of keys referenced from it. A key of "" (present in the set)
+	// means a whole-Secret reference (envFrom secretRef, a volume mount, an
+	// imagePullSecret) — verify existence only.
+	Secrets map[ResourceRef]map[string]struct{}
+	// ConfigMaps maps a ConfigMap, located like Secrets, to the set of keys
+	// referenced from it. A key of "" means a whole-ConfigMap reference
+	// (envFrom configMapRef or a whole-ConfigMap volume mount) — verify
+	// existence only. A missing ConfigMap key fails a pod identically to a
+	// missing Secret key (CreateContainerConfigError).
+	ConfigMaps map[ResourceRef]map[string]struct{}
 	// Images is the set of distinct container image refs in the bundle.
 	Images map[string]struct{}
-	// ImagePullSecrets is the set of distinct Secret names referenced via a
-	// pod spec's imagePullSecrets[].name. These are the credentials the
-	// CLUSTER uses to pull private images — the image-verification path
-	// resolves their .dockerconfigjson from the target cluster and uses it to
+	// ImagePullSecrets is the set of distinct Secrets referenced via a pod
+	// spec's imagePullSecrets[].name. These are the credentials the CLUSTER
+	// uses to pull private images — the image-verification path resolves
+	// their .dockerconfigjson from the target cluster and uses it to
 	// authenticate an otherwise auth-denied registry lookup, so a present
 	// private image isn't false-flagged just because the LOCAL docker daemon
-	// lacks creds for that registry. A subset of the names in Secrets (which
-	// records every Secret reference shape); kept distinct here because only
+	// lacks creds for that registry. A subset of Secrets (which records every
+	// Secret reference shape); kept distinct here because only
 	// imagePullSecrets carry registry credentials.
-	ImagePullSecrets map[string]struct{}
+	ImagePullSecrets map[ResourceRef]struct{}
+}
+
+func newManifestRefs() ManifestRefs {
+	return ManifestRefs{
+		Secrets:          map[ResourceRef]map[string]struct{}{},
+		ConfigMaps:       map[ResourceRef]map[string]struct{}{},
+		Images:           map[string]struct{}{},
+		ImagePullSecrets: map[ResourceRef]struct{}{},
+	}
+}
+
+// secretNames is the distinct set of referenced Secret names, for the
+// name-based render-time supply gate.
+func (r ManifestRefs) secretNames() map[string]struct{} {
+	out := make(map[string]struct{}, len(r.Secrets))
+	for ref := range r.Secrets {
+		out[ref.Name] = struct{}{}
+	}
+	return out
 }
 
 // CollectManifestRefs walks a `---`-separated multi-doc YAML manifest stream
@@ -102,22 +183,49 @@ type ManifestRefs struct {
 // DaemonSets, Jobs, CronJobs, Pods, and any nested template — including init
 // containers and CronJob/Job pod templates. Malformed documents are skipped
 // (best-effort, mirroring the other manifest scanners in this package).
-func CollectManifestRefs(manifests string) ManifestRefs {
-	refs := ManifestRefs{
-		Secrets:          map[string]map[string]struct{}{},
-		ConfigMaps:       map[string]map[string]struct{}{},
-		Images:           map[string]struct{}{},
-		ImagePullSecrets: map[string]struct{}{},
-	}
+//
+// Each Secret / ConfigMap reference is recorded where it resolves: the
+// referencing document's namespace (place.Namespace when it declares none),
+// on every cluster place attributes the document to.
+func CollectManifestRefs(manifests string, place RefPlacement) ManifestRefs {
+	refs := newManifestRefs()
 	for _, doc := range splitDocs(manifests) {
 		var node any
 		if err := yaml.Unmarshal([]byte(doc), &node); err != nil {
 			continue
 		}
-		collectRefs(node, &refs)
+		namespace, contexts := place.place(doc, node)
+		collectRefs(node, refSink{refs: &refs, namespace: namespace, contexts: contexts})
 	}
-	dropSelfProvided(manifests, &refs)
+	dropSelfProvided(manifests, place, &refs)
 	return refs
+}
+
+// refSink records one document's references at every place the document
+// lands: its namespace, on each of its clusters.
+type refSink struct {
+	refs      *ManifestRefs
+	namespace string
+	contexts  []string
+}
+
+func (s refSink) secret(name, key string) {
+	for _, c := range s.contexts {
+		addRef(s.refs.Secrets, ResourceRef{Context: c, Namespace: s.namespace, Name: name}, key)
+	}
+}
+
+func (s refSink) configMap(name, key string) {
+	for _, c := range s.contexts {
+		addRef(s.refs.ConfigMaps, ResourceRef{Context: c, Namespace: s.namespace, Name: name}, key)
+	}
+}
+
+func (s refSink) pullSecret(name string) {
+	s.secret(name, "")
+	for _, c := range s.contexts {
+		s.refs.ImagePullSecrets[ResourceRef{Context: c, Namespace: s.namespace, Name: name}] = struct{}{}
+	}
 }
 
 // dropSelfProvided removes references the SAME manifest stream satisfies.
@@ -139,28 +247,38 @@ func CollectManifestRefs(manifests string) ManifestRefs {
 // Only Secrets and ConfigMaps are subtracted. Images are deliberately NOT:
 // an image reference is satisfied by a registry, never by another document
 // in this stream, so a "self-provided" image is meaningless.
-func dropSelfProvided(manifests string, refs *ManifestRefs) {
+//
+// A rendered Secret satisfies only the references that resolve to it: the
+// same name, in its namespace, on a cluster it is applied to. Matching on the
+// bare name let a Secret in one namespace hide a reference from another that
+// nothing provides.
+func dropSelfProvided(manifests string, place RefPlacement, refs *ManifestRefs) {
 	for _, doc := range splitDocs(manifests) {
-		var head struct {
-			Kind     string `yaml:"kind"`
-			Metadata struct {
-				Name string `yaml:"name"`
-			} `yaml:"metadata"`
-		}
-		if err := yaml.Unmarshal([]byte(doc), &head); err != nil {
+		var node any
+		if err := yaml.Unmarshal([]byte(doc), &node); err != nil {
 			continue
 		}
-		if head.Metadata.Name == "" {
+		root, ok := node.(map[string]any)
+		if !ok {
 			continue
 		}
-		// Keyed by BARE NAME, matching how collectRefs records references
-		// (a secretKeyRef names a Secret in the pod's own namespace, so the
-		// namespace is implied by the apply target, not carried in the key).
-		switch head.Kind {
+		var into map[ResourceRef]map[string]struct{}
+		switch stringAt(root, "kind") {
 		case "Secret":
-			delete(refs.Secrets, head.Metadata.Name)
+			into = refs.Secrets
 		case "ConfigMap":
-			delete(refs.ConfigMaps, head.Metadata.Name)
+			into = refs.ConfigMaps
+		default:
+			continue
+		}
+		md, _ := mapAt(root, "metadata")
+		name := stringAt(md, "name")
+		if name == "" {
+			continue
+		}
+		namespace, contexts := place.place(doc, node)
+		for _, c := range contexts {
+			delete(into, ResourceRef{Context: c, Namespace: namespace, Name: name})
 		}
 	}
 }
@@ -199,21 +317,21 @@ func CollectManifestGVKs(manifests string) []ManifestGVK {
 }
 
 // collectRefs recursively descends a decoded YAML value, recording any
-// Secret / ConfigMap reference and container image it finds into refs. The
+// Secret / ConfigMap reference and container image it finds into the sink. The
 // recursion is shape-driven (it matches on the well-known key names wherever
 // they appear), so it covers every pod-template site uniformly.
-func collectRefs(node any, refs *ManifestRefs) {
+func collectRefs(node any, sink refSink) {
 	switch v := node.(type) {
 	case map[string]any:
-		collectSecretRefs(v, refs)
-		collectConfigMapRefs(v, refs)
-		collectImageRef(v, refs)
+		collectSecretRefs(v, sink)
+		collectConfigMapRefs(v, sink)
+		collectImageRef(v, sink.refs)
 		for _, child := range v {
-			collectRefs(child, refs)
+			collectRefs(child, sink)
 		}
 	case []any:
 		for _, child := range v {
-			collectRefs(child, refs)
+			collectRefs(child, sink)
 		}
 	}
 }
@@ -237,17 +355,17 @@ func collectRefs(node any, refs *ManifestRefs) {
 // deploy in the live preflight and report as a pod that "will FailedMount" in
 // the render-time supply gate, both false. imagePullSecrets carry no
 // `optional` field and are unaffected.
-func collectSecretRefs(v map[string]any, refs *ManifestRefs) {
+func collectSecretRefs(v map[string]any, sink refSink) {
 	// secretKeyRef: {name, key} — a single (Secret, key) projection.
 	if skr, ok := mapAt(v, "secretKeyRef"); ok && !isOptional(skr) {
 		if name := stringAt(skr, "name"); name != "" {
-			addRef(refs.Secrets, name, stringAt(skr, "key"))
+			sink.secret(name, stringAt(skr, "key"))
 		}
 	}
 	// envFrom secretRef: {name} — projects the WHOLE Secret. Existence only.
 	if sr, ok := mapAt(v, "secretRef"); ok && !isOptional(sr) {
 		if name := stringAt(sr, "name"); name != "" {
-			addRef(refs.Secrets, name, "")
+			sink.secret(name, "")
 		}
 	}
 	// volumes[].secret.secretName — a secret-backed volume mount.
@@ -256,38 +374,24 @@ func collectSecretRefs(v map[string]any, refs *ManifestRefs) {
 		// projected source keys it as `name`. Accept either so both the
 		// `volumes[].secret` and `sources[].secret` shapes are covered.
 		if name := stringAt(sv, "secretName"); name != "" {
-			addRef(refs.Secrets, name, "")
+			sink.secret(name, "")
 		}
 		if name := stringAt(sv, "name"); name != "" {
-			addRef(refs.Secrets, name, "")
+			sink.secret(name, "")
 		}
 	}
 	// imagePullSecrets[].name — a list of {name} Secret references. Recorded
 	// in BOTH Secrets (existence check) and ImagePullSecrets (the
 	// registry-credential source the image-verification path authenticates
-	// with).
-	collectNamedListRefs(v, "imagePullSecrets", refs.Secrets)
-	collectImagePullSecretNames(v, refs.ImagePullSecrets)
-}
-
-// collectImagePullSecretNames records the bare Secret name of every
-// imagePullSecrets[].name entry into out. These are the cluster's registry
-// pull credentials; the image-verification path resolves their
-// .dockerconfigjson and uses it to authenticate registry lookups the LOCAL
-// docker daemon would be denied.
-func collectImagePullSecretNames(v map[string]any, out map[string]struct{}) {
-	raw, ok := v["imagePullSecrets"]
-	if !ok {
-		return
-	}
-	list, ok := raw.([]any)
-	if !ok {
-		return
-	}
-	for _, item := range list {
-		if m, ok := item.(map[string]any); ok {
-			if name := stringAt(m, "name"); name != "" {
-				out[name] = struct{}{}
+	// with). These are the cluster's registry pull credentials; the
+	// image-verification path resolves their .dockerconfigjson and uses it to
+	// authenticate registry lookups the LOCAL docker daemon would be denied.
+	if list, ok := v["imagePullSecrets"].([]any); ok {
+		for _, item := range list {
+			if m, ok := item.(map[string]any); ok {
+				if name := stringAt(m, "name"); name != "" {
+					sink.pullSecret(name)
+				}
 			}
 		}
 	}
@@ -303,11 +407,11 @@ func collectImagePullSecretNames(v map[string]any, out map[string]struct{}) {
 //
 // `optional: true` references are skipped for the reason collectSecretRefs
 // gives: kubelet schedules the pod without them.
-func collectConfigMapRefs(v map[string]any, refs *ManifestRefs) {
+func collectConfigMapRefs(v map[string]any, sink refSink) {
 	// configMapKeyRef: {name, key} — a single (ConfigMap, key) projection.
 	if ckr, ok := mapAt(v, "configMapKeyRef"); ok && !isOptional(ckr) {
 		if name := stringAt(ckr, "name"); name != "" {
-			addRef(refs.ConfigMaps, name, stringAt(ckr, "key"))
+			sink.configMap(name, stringAt(ckr, "key"))
 		}
 	}
 	// envFrom configMapRef / volumes[].configMap / sources[].configMap:
@@ -315,12 +419,12 @@ func collectConfigMapRefs(v map[string]any, refs *ManifestRefs) {
 	// EXCEPT envFrom, which uses `configMapRef`; handle both.
 	if cmr, ok := mapAt(v, "configMapRef"); ok && !isOptional(cmr) {
 		if name := stringAt(cmr, "name"); name != "" {
-			addRef(refs.ConfigMaps, name, "")
+			sink.configMap(name, "")
 		}
 	}
 	if cm, ok := mapAt(v, "configMap"); ok && !isOptional(cm) {
 		if name := stringAt(cm, "name"); name != "" {
-			addRef(refs.ConfigMaps, name, "")
+			sink.configMap(name, "")
 		}
 	}
 }
@@ -335,33 +439,13 @@ func collectImageRef(v map[string]any, refs *ManifestRefs) {
 	}
 }
 
-// collectNamedListRefs records an existence-only (key "") reference for every
-// {name: ...} entry in the list at v[key]. Used for imagePullSecrets.
-func collectNamedListRefs(v map[string]any, key string, into map[string]map[string]struct{}) {
-	raw, ok := v[key]
-	if !ok {
-		return
-	}
-	list, ok := raw.([]any)
-	if !ok {
-		return
-	}
-	for _, item := range list {
-		if m, ok := item.(map[string]any); ok {
-			if name := stringAt(m, "name"); name != "" {
-				addRef(into, name, "")
-			}
-		}
-	}
-}
-
-// addRef records (name, key) into a name→keyset map (Secrets or ConfigMaps),
+// addRef records (ref, key) into a ref→keyset map (Secrets or ConfigMaps),
 // lazily allocating the inner set.
-func addRef(into map[string]map[string]struct{}, name, key string) {
-	if into[name] == nil {
-		into[name] = map[string]struct{}{}
+func addRef(into map[ResourceRef]map[string]struct{}, ref ResourceRef, key string) {
+	if into[ref] == nil {
+		into[ref] = map[string]struct{}{}
 	}
-	into[name][key] = struct{}{}
+	into[ref][key] = struct{}{}
 }
 
 // mapAt returns m[key] as a map[string]any when present and of that type.
@@ -586,9 +670,19 @@ type PreflightOpts struct {
 	// compose env with nothing to verify against a cluster).
 	Context string
 
-	// Namespace is the namespace the referenced Secrets are expected to
-	// live in (the deploy's target namespace).
+	// Namespace is the deploy's target namespace: where a rendered object
+	// that declares no metadata.namespace is applied, and so where ITS
+	// Secret / ConfigMap references resolve. An object that declares a
+	// namespace resolves its references there instead.
 	Namespace string
+
+	// DocumentContexts attributes each rendered document to the kubectl
+	// contexts it is applied to, for an env that spans several clusters, so
+	// every reference is checked on the cluster its pod actually runs on. It
+	// must be the deploy's own router (ScopeManifestsToGroup), not a second
+	// model of it. Nil — a single-cluster env — checks every reference on
+	// Context. See RefPlacement.Contexts.
+	DocumentContexts func(doc string) []string
 
 	// Secrets resolves Secret keys against the target cluster.
 	Secrets SecretGetter
@@ -636,9 +730,9 @@ type PreflightOpts struct {
 	// those creds, so a present private image the cluster can pull yields a TRUE
 	// verdict instead of a false BLOCK. Nil (or no imagePullSecrets, or creds
 	// not resolvable) leaves the existing local-daemon behaviour unchanged — the
-	// auth-denied lookup still BLOCKS (fail-safe, no regression). Resolution
-	// runs against opts.Context / opts.Namespace, the same target the apply
-	// uses.
+	// auth-denied lookup still BLOCKS (fail-safe, no regression). Each pull
+	// Secret is resolved where the pod that names it reads it — its
+	// namespace, on its cluster — and the results are merged.
 	PullCreds PullCredsResolver
 
 	// TargetArch is the DECLARED node architecture of the target cluster
@@ -659,10 +753,11 @@ type PreflightOpts struct {
 	// RequiredSecrets are the env's DECLARED external Secret prerequisites
 	// (forge.ExternalSecret) — out-of-band Secrets the deploy depends on but
 	// forge does NOT create. UNLIKE the secretKeyRef check above (which is
-	// driven by what the rendered manifests reference, all in opts.Namespace),
-	// a declared prereq carries its OWN namespace (cert-manager's
-	// `cloudflare-api-token` lives in the `cert-manager` namespace, not the
-	// deploy namespace), so each is checked in its declared namespace. A
+	// driven by what the rendered manifests reference, each in its
+	// referencing object's namespace), a declared prereq names no consumer
+	// and carries its OWN namespace (cert-manager's `cloudflare-api-token`
+	// lives in the `cert-manager` namespace, not the deploy namespace), so
+	// each is checked in its declared namespace. A
 	// declared-required-but-absent Secret/key BLOCKS — this is the whole
 	// point: it converts "render green, then ACME hangs silently" into a
 	// fail-fast pre-apply block. Verified only when opts.Secrets is configured
@@ -765,13 +860,15 @@ type RequiredSecret struct {
 // its absence up-front is not a missing dependency. See
 // PreflightOpts.ProvisionedByDeploy for why the gate needs to know.
 //
-// Namespace is recorded for the report; the match is name-based, matching
-// SecretSupply. A forge bundle renders into one deploy namespace, and the
-// alternative — insisting on an exact namespace match — fails CLOSED in the
-// wrong direction here: a mismatch would re-block the deploy on a Secret forge
-// does create, which is the defect this exists to fix.
+// The match is on namespace AND name, because a reference is: the Secret
+// exempts exactly the references that resolve to it, from pods in the
+// namespace it is created in. A same-named Secret provisioned elsewhere does
+// nothing for a pod in another namespace, which would fail at rollout. The
+// cluster is not matched — the provisioning step does not record one, and
+// exempting on every cluster errs toward the deploy proceeding on a Secret
+// forge does create, rather than blocking on its own output.
 type ProvisionedSecret struct {
-	// Name is the k8s Secret name this deploy will create. The match key.
+	// Name is the k8s Secret name this deploy will create.
 	Name string
 	// Namespace is the declared namespace (empty means the deploy namespace).
 	Namespace string
@@ -779,16 +876,24 @@ type ProvisionedSecret struct {
 	By SecretSupplyKind
 }
 
-// provisionedSecretNames is the name set of the Secrets this deploy creates
-// after the preflight. Empty input yields an empty set, which exempts nothing.
-func provisionedSecretNames(provisioned []ProvisionedSecret) map[string]struct{} {
-	names := make(map[string]struct{}, len(provisioned))
+// provisionedSecretRefs is the (namespace, name) set of the Secrets this
+// deploy creates after the preflight, with an unset namespace resolved to the
+// deploy namespace. Context is left empty: the match ignores the cluster.
+// Empty input yields an empty set, which exempts nothing.
+func provisionedSecretRefs(provisioned []ProvisionedSecret, deployNamespace string) map[ResourceRef]struct{} {
+	out := make(map[ResourceRef]struct{}, len(provisioned))
 	for _, p := range provisioned {
-		if name := strings.TrimSpace(p.Name); name != "" {
-			names[name] = struct{}{}
+		name := strings.TrimSpace(p.Name)
+		if name == "" {
+			continue
 		}
+		namespace := strings.TrimSpace(p.Namespace)
+		if namespace == "" {
+			namespace = deployNamespace
+		}
+		out[ResourceRef{Namespace: namespace, Name: name}] = struct{}{}
 	}
-	return names
+	return out
 }
 
 // withoutProvisionedSecrets drops from the manifest-driven Secret references
@@ -803,19 +908,20 @@ func provisionedSecretNames(provisioned []ProvisionedSecret) map[string]struct{}
 // Returns refs unchanged when nothing is exempt, so the overwhelmingly common
 // case allocates nothing.
 func withoutProvisionedSecrets(
-	refs map[string]map[string]struct{},
+	refs map[ResourceRef]map[string]struct{},
 	provisioned []ProvisionedSecret,
-) map[string]map[string]struct{} {
-	exempt := provisionedSecretNames(provisioned)
+	deployNamespace string,
+) map[ResourceRef]map[string]struct{} {
+	exempt := provisionedSecretRefs(provisioned, deployNamespace)
 	if len(exempt) == 0 || len(refs) == 0 {
 		return refs
 	}
-	out := make(map[string]map[string]struct{}, len(refs))
-	for name, keys := range refs {
-		if _, skip := exempt[name]; skip {
+	out := make(map[ResourceRef]map[string]struct{}, len(refs))
+	for ref, keys := range refs {
+		if _, skip := exempt[ResourceRef{Namespace: ref.Namespace, Name: ref.Name}]; skip {
 			continue
 		}
-		out[name] = keys
+		out[ref] = keys
 	}
 	return out
 }
@@ -835,11 +941,14 @@ type SecretValueGetter interface {
 type PreflightResult struct {
 	// MissingSecretKeys maps "<namespace>/<secret>" to the sorted list of
 	// referenced keys that are absent (or the whole Secret, rendered as a
-	// single marker when the Secret doesn't exist).
+	// single marker when the Secret doesn't exist). The namespace is the
+	// referencing object's. When the run spans more than one cluster the
+	// key is "<context>:<namespace>/<secret>".
 	MissingSecretKeys map[string][]string
-	// MissingConfigMapKeys maps "<namespace>/<configmap>" to the sorted
-	// list of referenced keys that are absent (or the whole-ConfigMap
-	// marker when the ConfigMap doesn't exist).
+	// MissingConfigMapKeys maps "<namespace>/<configmap>" (cluster-qualified
+	// like MissingSecretKeys) to the sorted list of referenced keys that are
+	// absent (or the whole-ConfigMap marker when the ConfigMap doesn't
+	// exist).
 	MissingConfigMapKeys map[string][]string
 	// MissingImages is the sorted list of image refs CONFIRMED absent.
 	MissingImages []string
@@ -879,7 +988,9 @@ type PreflightResult struct {
 	// populated when a ServedKindChecker is configured (an undeclared discovery
 	// surface can't assert a kind is missing).
 	MissingCRDs []string
-	// MissingRequiredSecretKeys maps "<namespace>/<secret>" to the sorted list
+	// MissingRequiredSecretKeys maps "<namespace>/<secret>" (as
+	// "<context>:<namespace>/<secret>" when the run spans more than one
+	// cluster) to the sorted list
 	// of declared-required keys absent on the live target (or the whole-Secret
 	// marker when the Secret itself is absent), for the DECLARED external
 	// Secret prerequisites (forge.ExternalSecret). These BLOCK — the deploy
@@ -959,9 +1070,7 @@ func Preflight(ctx context.Context, opts PreflightOpts) error {
 // distinguishable from a preflight that never ran (which produces no result at
 // all) — "nothing wrong" and "nobody looked" must not present identically.
 func PreflightReport(ctx context.Context, opts PreflightOpts) (PreflightResult, error) {
-	refs := CollectManifestRefs(opts.Manifests)
-
-	result, err := runPreflightChecks(ctx, opts, refs)
+	result, err := runPreflightChecks(ctx, opts)
 	if err != nil {
 		return result, err
 	}
@@ -983,10 +1092,46 @@ func PreflightReport(ctx context.Context, opts PreflightOpts) (PreflightResult, 
 	return result, fmt.Errorf("%s", FormatPreflightReport(result))
 }
 
+// refPlacement is where the rendered documents' references resolve: each
+// document's own namespace (else the deploy namespace), on the clusters
+// DocumentContexts routes it to (else the deploy target).
+func (opts PreflightOpts) refPlacement() RefPlacement {
+	return RefPlacement{Namespace: opts.Namespace, Context: opts.Context, Contexts: opts.DocumentContexts}
+}
+
+// spansClusters reports whether this run checks anything on more than one
+// cluster. One rule for every finding, so a report never qualifies some
+// subjects by cluster and leaves others for the reader to place.
+func spansClusters(opts PreflightOpts, refs ManifestRefs) bool {
+	spanned := map[string]struct{}{}
+	add := func(c string) {
+		if c = strings.TrimSpace(c); c != "" {
+			spanned[c] = struct{}{}
+		}
+	}
+	add(opts.Context)
+	for _, c := range requiredSecretContexts(opts) {
+		add(c)
+	}
+	for _, rs := range opts.RequiredSecrets {
+		for _, c := range rs.Contexts {
+			add(c)
+		}
+	}
+	for ref := range refs.Secrets {
+		add(ref.Context)
+	}
+	for ref := range refs.ConfigMaps {
+		add(ref.Context)
+	}
+	return len(spanned) > 1
+}
+
 // runPreflightChecks performs the secret + image lookups concurrently and
 // assembles the PreflightResult. Split out from Preflight so tests can
 // assert on the structured result directly.
-func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRefs) (PreflightResult, error) {
+func runPreflightChecks(ctx context.Context, opts PreflightOpts) (PreflightResult, error) {
+	refs := CollectManifestRefs(opts.Manifests, opts.refPlacement())
 	result := PreflightResult{
 		MissingSecretKeys:         map[string][]string{},
 		MissingConfigMapKeys:      map[string][]string{},
@@ -1033,10 +1178,11 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 	// under mu, plus the first-error sink), mirroring keyedResourceCheck's
 	// bundled coordination primitives so the extracted per-check helpers stay
 	// under the argument limit.
-	sink := preflightSink{mu: &mu, result: &result, recordErr: recordErr}
+	sink := preflightSink{mu: &mu, result: &result, recordErr: recordErr, multiCluster: spansClusters(opts, refs)}
 
-	// Secret checks — one lookup per distinct Secret, only when a getter
-	// and a target context are configured.
+	// Secret checks — one lookup per distinct Secret, each in the namespace
+	// and on the cluster of the object that references it, only when a
+	// getter and a target context are configured.
 	// The Secrets THIS deploy mints after the preflight are dropped from the
 	// reference set first — see PreflightOpts.ProvisionedByDeploy. Everything
 	// else is checked exactly as before, including a KubeconfigSecret forge
@@ -1044,12 +1190,12 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 	if opts.Secrets != nil && hasContext {
 		checkKeyedResources(ctx, keyedResourceCheck{
 			wg:   &wg,
-			refs: withoutProvisionedSecrets(refs.Secrets, opts.ProvisionedByDeploy),
-			kind: "Secret", namespace: opts.Namespace,
-			getKeys: func(ctx context.Context, name string) (map[string]struct{}, bool, error) {
-				return opts.Secrets.GetSecretKeys(ctx, opts.Context, opts.Namespace, name)
+			refs: withoutProvisionedSecrets(refs.Secrets, opts.ProvisionedByDeploy, opts.Namespace),
+			kind: "Secret",
+			getKeys: func(ctx context.Context, ref ResourceRef) (map[string]struct{}, bool, error) {
+				return opts.Secrets.GetSecretKeys(ctx, ref.Context, ref.Namespace, ref.Name)
 			},
-			out: result.MissingSecretKeys, mu: &mu, recordErr: recordErr,
+			out: result.MissingSecretKeys, sink: sink,
 		})
 	}
 
@@ -1057,11 +1203,11 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 	// fails a pod identically (CreateContainerConfigError).
 	if opts.ConfigMaps != nil && hasContext {
 		checkKeyedResources(ctx, keyedResourceCheck{
-			wg: &wg, refs: refs.ConfigMaps, kind: "ConfigMap", namespace: opts.Namespace,
-			getKeys: func(ctx context.Context, name string) (map[string]struct{}, bool, error) {
-				return opts.ConfigMaps.GetConfigMapKeys(ctx, opts.Context, opts.Namespace, name)
+			wg: &wg, refs: refs.ConfigMaps, kind: "ConfigMap",
+			getKeys: func(ctx context.Context, ref ResourceRef) (map[string]struct{}, bool, error) {
+				return opts.ConfigMaps.GetConfigMapKeys(ctx, ref.Context, ref.Namespace, ref.Name)
 			},
-			out: result.MissingConfigMapKeys, mu: &mu, recordErr: recordErr,
+			out: result.MissingConfigMapKeys, sink: sink,
 		})
 	}
 
@@ -1166,6 +1312,9 @@ type preflightSink struct {
 	mu        *sync.Mutex
 	result    *PreflightResult
 	recordErr func(error)
+	// multiCluster qualifies every finding's subject with its cluster — see
+	// spansClusters.
+	multiCluster bool
 }
 
 // checkImages fans out one existence lookup per distinct image, skipping refs
@@ -1370,9 +1519,9 @@ func checkServedKinds(ctx context.Context, opts PreflightOpts, wg *sync.WaitGrou
 // (often NOT opts.Namespace). One GetSecretKeys per declared Secret; a missing
 // key/Secret BLOCKS via MissingRequiredSecretKeys. Only called when a
 // SecretGetter and a target context are set and prerequisites are declared.
-// requiredSecretKeys is the key set a declared prerequisite must carry: the
-// keys it DECLARES, unioned with the keys the rendered manifests actually
-// reference from it (in the deploy namespace).
+// requiredSecretKeys is the key set a declared prerequisite must carry on
+// cluster kctx: the keys it DECLARES, unioned with the keys the rendered
+// manifests actually reference from it there.
 //
 // The declared list is hand-maintained and drifts. A workload that starts
 // reading a new key is a change to what the Secret must contain, but nothing
@@ -1383,15 +1532,18 @@ func checkServedKinds(ctx context.Context, opts PreflightOpts, wg *sync.WaitGrou
 // requirement from the reference removes the second place to keep in sync.
 //
 // A whole-Secret reference (key "") asserts existence only and adds no key.
-func requiredSecretKeys(rs RequiredSecret, refs ManifestRefs, deployNS string) []string {
+//
+// A reference counts only where it resolves to this Secret: from a pod in the
+// prerequisite's namespace, on kctx. A reference collected with no cluster
+// (the deploy target was never named — a local env) is placed nowhere in
+// particular, so it counts on every cluster, as before references carried one.
+func requiredSecretKeys(rs RequiredSecret, refs ManifestRefs, kctx string) []string {
 	want := map[string]struct{}{}
 	for _, k := range rs.Keys {
 		want[k] = struct{}{}
 	}
-	// Manifest references are resolved in the pod's own namespace, so only
-	// fold them in when the prerequisite lives there.
-	if rs.Namespace == deployNS {
-		for k := range refs.Secrets[rs.Name] {
+	for _, c := range []string{kctx, ""} {
+		for k := range refs.Secrets[ResourceRef{Context: c, Namespace: rs.Namespace, Name: rs.Name}] {
 			if k != "" {
 				want[k] = struct{}{}
 			}
@@ -1413,19 +1565,6 @@ func checkRequiredSecrets(ctx context.Context, opts PreflightOpts, refs Manifest
 		}
 		return fallback
 	}
-	// Qualify by cluster whenever the env spans more than one, even if this
-	// Secret is checked in only one of them: once there are two, the reader
-	// cannot tell which cluster an unqualified miss is in.
-	spanned := map[string]struct{}{}
-	for _, c := range fallback {
-		spanned[c] = struct{}{}
-	}
-	for _, rs := range opts.RequiredSecrets {
-		for _, c := range contextsFor(rs) {
-			spanned[c] = struct{}{}
-		}
-	}
-	multi := len(spanned) > 1
 	for _, rs := range opts.RequiredSecrets {
 		for _, kctx := range contextsFor(rs) {
 			rs, kctx := rs, kctx
@@ -1438,7 +1577,7 @@ func checkRequiredSecrets(ctx context.Context, opts PreflightOpts, refs Manifest
 					return
 				}
 				want := map[string]struct{}{}
-				for _, k := range requiredSecretKeys(rs, refs, opts.Namespace) {
+				for _, k := range requiredSecretKeys(rs, refs, kctx) {
 					want[k] = struct{}{}
 				}
 				missing := missingSecretKeys(want, present, exists)
@@ -1446,14 +1585,12 @@ func checkRequiredSecrets(ctx context.Context, opts PreflightOpts, refs Manifest
 					return
 				}
 				sort.Strings(missing)
-				// The cluster qualifies the key ONLY when more than one is
-				// checked: naming it is what makes a multi-cluster miss
-				// actionable, and omitting it keeps the single-cluster message
-				// (by far the common case) unchanged.
-				key := rs.Namespace + "/" + rs.Name
-				if multi {
-					key = kctx + "/" + key
-				}
+				// The cluster qualifies the key ONLY when the run spans more
+				// than one, even if this Secret is checked in only one of
+				// them: once there are two, the reader cannot tell which
+				// cluster an unqualified miss is in, and omitting it keeps the
+				// single-cluster message (by far the common case) unchanged.
+				key := ResourceRef{Context: kctx, Namespace: rs.Namespace, Name: rs.Name}.subject(sink.multiCluster)
 				sink.mu.Lock()
 				sink.result.MissingRequiredSecretKeys[key] = missing
 				sink.mu.Unlock()
@@ -1747,14 +1884,8 @@ func prepareCredentialedCheckers(ctx context.Context, opts PreflightOpts, refs M
 		return nil, nil, noop
 	}
 
-	names := make([]string, 0, len(refs.ImagePullSecrets))
-	for n := range refs.ImagePullSecrets {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-
-	dockerConfig, err := opts.PullCreds.ResolveDockerConfig(ctx, opts.Context, opts.Namespace, names)
-	if err != nil || len(dockerConfig) == 0 {
+	dockerConfig := resolvePullCreds(ctx, opts, refs)
+	if len(dockerConfig) == 0 {
 		// No usable creds (none of the imagePullSecrets resolved to a
 		// dockerconfigjson, or a lookup failed). Fall back — don't regress.
 		return nil, nil, noop
@@ -1782,6 +1913,81 @@ func prepareCredentialedCheckers(ctx context.Context, opts PreflightOpts, refs M
 		credArch = credArchCap.WithDockerConfigDir(dir)
 	}
 	return credImages, credArch, cleanup
+}
+
+// resolvePullCreds reads the bundle's imagePullSecrets where each pod reads
+// them — its own namespace, on its own cluster — one resolver call per
+// (cluster, namespace), and merges the results into one docker config. A
+// registry configured by several Secrets keeps the first, in sorted order, so
+// the choice is deterministic. A location whose lookup fails contributes
+// nothing rather than discarding the creds the others resolved. Nil when
+// nothing resolved.
+func resolvePullCreds(ctx context.Context, opts PreflightOpts, refs ManifestRefs) []byte {
+	type location struct{ context, namespace string }
+	byLocation := map[location][]string{}
+	for ref := range refs.ImagePullSecrets {
+		at := location{context: ref.Context, namespace: ref.Namespace}
+		if at.context == "" {
+			at.context = opts.Context
+		}
+		byLocation[at] = append(byLocation[at], ref.Name)
+	}
+	locations := make([]location, 0, len(byLocation))
+	for at := range byLocation {
+		locations = append(locations, at)
+	}
+	sort.Slice(locations, func(i, j int) bool {
+		if locations[i].context != locations[j].context {
+			return locations[i].context < locations[j].context
+		}
+		return locations[i].namespace < locations[j].namespace
+	})
+
+	var configs [][]byte
+	for _, at := range locations {
+		names := byLocation[at]
+		sort.Strings(names)
+		cfg, err := opts.PullCreds.ResolveDockerConfig(ctx, at.context, at.namespace, names)
+		if err != nil || len(cfg) == 0 {
+			continue
+		}
+		configs = append(configs, cfg)
+	}
+	return mergeDockerConfigs(configs)
+}
+
+// mergeDockerConfigs unions the `auths` of several docker config.json
+// documents, first writer wins per registry. A single config passes through
+// byte-for-byte; one that does not parse contributes nothing.
+func mergeDockerConfigs(configs [][]byte) []byte {
+	switch len(configs) {
+	case 0:
+		return nil
+	case 1:
+		return configs[0]
+	}
+	merged := map[string]json.RawMessage{}
+	for _, cfg := range configs {
+		var parsed struct {
+			Auths map[string]json.RawMessage `json:"auths"`
+		}
+		if json.Unmarshal(cfg, &parsed) != nil {
+			continue
+		}
+		for registry, entry := range parsed.Auths {
+			if _, seen := merged[registry]; !seen {
+				merged[registry] = entry
+			}
+		}
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	out, err := json.Marshal(map[string]any{"auths": merged})
+	if err != nil {
+		return nil
+	}
+	return out
 }
 
 // archMatchesTarget reports whether the target cluster arch is among the
@@ -1817,46 +2023,57 @@ func archList(archs []string) string {
 }
 
 // keyedResourceCheck carries the inputs for one keyed-resource preflight
-// fan-out: the references to verify, the resource kind/namespace they live
-// in, the getter that reads present keys, and the shared coordination
-// primitives (WaitGroup / Mutex / error sink) the goroutines report into.
+// fan-out: the references to verify (each located on its cluster, in its
+// namespace), the resource kind, the getter that reads present keys, the
+// result map findings land in, and the shared sink (mutex / error / subject
+// qualification) the goroutines report into.
 type keyedResourceCheck struct {
-	wg        *sync.WaitGroup
-	refs      map[string]map[string]struct{}
-	kind      string
-	namespace string
-	getKeys   func(ctx context.Context, name string) (map[string]struct{}, bool, error)
-	out       map[string][]string
-	mu        *sync.Mutex
-	recordErr func(error)
+	wg      *sync.WaitGroup
+	refs    map[ResourceRef]map[string]struct{}
+	kind    string
+	getKeys func(ctx context.Context, ref ResourceRef) (map[string]struct{}, bool, error)
+	out     map[string][]string
+	sink    preflightSink
 }
 
-// checkKeyedResources fans out one existence/key lookup per distinct named
-// resource (Secret or ConfigMap) and records the missing keys into c.out under
-// "<namespace>/<name>". c.getKeys returns (presentKeys, exists, err); a lookup
-// error aborts the preflight via c.recordErr. Shared by the Secret and
-// ConfigMap checks so both behave identically.
+// checkKeyedResources fans out one existence/key lookup per distinct
+// referenced resource (Secret or ConfigMap), where the referencing pod
+// resolves it, and records the missing keys into c.out under the ref's
+// subject ("<namespace>/<name>", cluster-qualified on a multi-cluster run).
+// c.getKeys returns (presentKeys, exists, err); a lookup error aborts the
+// preflight via the sink. Shared by the Secret and ConfigMap checks so both
+// behave identically.
 func checkKeyedResources(ctx context.Context, c keyedResourceCheck) {
-	for name, keys := range c.refs {
-		name, keys := name, keys
+	for ref, keys := range c.refs {
+		ref, keys := ref, keys
 		c.wg.Add(1)
 		go func() {
 			defer c.wg.Done()
-			present, exists, err := c.getKeys(ctx, name)
+			present, exists, err := c.getKeys(ctx, ref)
 			if err != nil {
-				c.recordErr(fmt.Errorf("preflight: read %s %s/%s: %w", c.kind, c.namespace, name, err))
+				c.sink.recordErr(fmt.Errorf("preflight: read %s %s/%s in %s: %w", c.kind, ref.Namespace, ref.Name, ref.Context, err))
 				return
 			}
-			missing := missingSecretKeys(keys, present, exists)
+			missing := []string{absentMarker(c.kind)}
+			if exists {
+				missing = missingSecretKeys(keys, present, true)
+			}
 			if len(missing) == 0 {
 				return
 			}
 			sort.Strings(missing)
-			c.mu.Lock()
-			c.out[c.namespace+"/"+name] = missing
-			c.mu.Unlock()
+			c.sink.mu.Lock()
+			c.out[ref.subject(c.sink.multiCluster)] = missing
+			c.sink.mu.Unlock()
 		}()
 	}
+}
+
+// absentMarker is the placeholder listed under a referenced resource that
+// does not exist at all. A ConfigMap used to be reported as "(the Secret does
+// not exist)".
+func absentMarker(kind string) string {
+	return "(the " + kind + " does not exist)"
 }
 
 // missingSecretKeys returns the referenced keys not satisfied by the

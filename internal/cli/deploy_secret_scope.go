@@ -110,6 +110,30 @@ func scopeRequiredSecretsToClusters(
 	return scoped, unattributed
 }
 
+// preflightDocumentContexts is the deploy's router as the preflight needs it:
+// which of the env's clusters one rendered document is applied to, so a
+// workload's Secret and ConfigMap references are checked on the cluster that
+// workload runs on rather than on the env's primary. It is the same
+// attribution `forge env render` prints in its `# cluster:` headers
+// (clustersForDoc over cluster.ScopeManifestsToGroup), never a second model.
+//
+// Nil for an env with fewer than two clusters: there is nothing to route, and
+// the preflight checks every reference on the deploy target.
+//
+// groups and entities must be the WHOLE env's topology, not a --target
+// subset — a targeted deploy routes its objects by the same topology the
+// untargeted one does.
+func preflightDocumentContexts(groups []deploytarget.ServiceGroup, entities *KCLEntities) func(doc string) []string {
+	clusters := envClusterOrder(groups, entities)
+	if len(clusters) < 2 {
+		return nil
+	}
+	scopes := envClusterScopes(groups, entities)
+	return func(doc string) []string {
+		return clustersForDoc(doc, clusters, scopes)
+	}
+}
+
 // unattributedSecretsNote explains why a Secret is being required on every
 // cluster, so a miss on a cluster that plainly does not use it reads as a
 // declaration to fix rather than a forge bug. Empty when there is nothing to say.

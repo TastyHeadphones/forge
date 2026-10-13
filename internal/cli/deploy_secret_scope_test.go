@@ -51,7 +51,7 @@ ctx=""
 if [ "$1" = "--context" ]; then ctx="$2"; shift 2; fi
 case "$1" in
 api-resources)
-  printf 'daemonsets ds apps/v1 true DaemonSet [get]\npriorityclasses pc scheduling.k8s.io/v1 false PriorityClass [get]\n'
+  printf 'daemonsets ds apps/v1 true DaemonSet [get]\nstatefulsets sts apps/v1 true StatefulSet [get]\npriorityclasses pc scheduling.k8s.io/v1 false PriorityClass [get]\n'
   exit 0 ;;
 get)
   name="$3"; ns=""; all="$*"
@@ -168,10 +168,10 @@ func TestPreflightStillChecksSecretsOnTheSecondaryThatUsesThem(t *testing.T) {
 	if err == nil {
 		t.Fatal("preflight passed while the daemon cluster lacked a Secret it consumes")
 	}
-	if !strings.Contains(err.Error(), scopeDaemon+"/workspaces/workspace-proxy-secrets") {
+	if !strings.Contains(err.Error(), scopeDaemon+":workspaces/workspace-proxy-secrets") {
 		t.Errorf("miss not attributed to the daemon cluster:\n%v", err)
 	}
-	if strings.Contains(err.Error(), scopePrimary+"/workspaces/") {
+	if strings.Contains(err.Error(), scopePrimary+":workspaces/") {
 		t.Errorf("primary asked for a Secret only the daemon consumes:\n%v", err)
 	}
 	if report.document().Preflight.Blocking != 1 {
@@ -187,7 +187,7 @@ func TestPreflightKeepsUnattributableSecretsOnEveryCluster(t *testing.T) {
 	in, _ := scopeProdInput(t, "", ExternalSecretEntity{Name: "orphan", Namespace: "nowhere", Keys: []string{"token"}})
 
 	err := runDeployPreflightForEnv(context.Background(), in)
-	if err == nil || !strings.Contains(err.Error(), scopeDaemon+"/nowhere/orphan") {
+	if err == nil || !strings.Contains(err.Error(), scopeDaemon+":nowhere/orphan") {
 		t.Fatalf("unattributable Secret not checked on the daemon cluster: %v", err)
 	}
 	if !strings.Contains(err.Error(), "cannot tell which cluster consumes it") {
@@ -241,10 +241,10 @@ func TestPreflightTargetedDeployStillChecksTheSecretsItWrites(t *testing.T) {
 	in.targets = []string{"kata-prepull"}
 
 	err := runDeployPreflightForEnv(context.Background(), in)
-	if err == nil || !strings.Contains(err.Error(), scopeDaemon+"/workspaces/workspace-proxy-secrets") {
+	if err == nil || !strings.Contains(err.Error(), scopeDaemon+":workspaces/workspace-proxy-secrets") {
 		t.Fatalf("the daemon cluster's own Secret was not required: %v", err)
 	}
-	// Findings are the "Secret <ctx>/<ns>/<name> missing" lines; the
+	// Findings are the "Secret <ctx>:<ns>/<name> missing" lines; the
 	// remediation prose below them names cloudflare-api-token as an example.
 	for _, line := range strings.Split(err.Error(), "\n") {
 		if strings.Contains(line, "missing keys") && !strings.Contains(line, "workspace-proxy-secrets") {
@@ -260,5 +260,65 @@ func TestScopeRequiredSecretsSingleClusterUntouched(t *testing.T) {
 	got, unattributed := scopeRequiredSecretsToClusters(in, "", groups, &KCLEntities{}, "ns")
 	if len(got) != 1 || len(got[0].Contexts) != 0 || len(unattributed) != 0 {
 		t.Errorf("single-cluster env was scoped: %+v, unattributed %+v", got, unattributed)
+	}
+}
+
+// scopeObservabilityKCL is the control-plane prod observability stack that
+// blocked v1.7.39: workloads in namespaces other than the deploy namespace,
+// on both clusters, each reading a Secret that exists where it runs.
+const scopeObservabilityKCL = `    {apiVersion = "apps/v1", kind = "StatefulSet", metadata = {name = "clickhouse", namespace = "observability-data", labels = _on("` + scopePrimary + `")}, spec = {selector.matchLabels = {app = "c"}, template = {metadata.labels = {app = "c"}, spec.containers = [{name = "c", image = "localhost:5000/clickhouse:1", env = [{name = "P", valueFrom.secretKeyRef = {name = "obs-credentials", key = "token"}}]}]}}}
+    {apiVersion = "apps/v1", kind = "DaemonSet", metadata = {name = "otel-agent", namespace = "observability", labels = _on("` + scopeDaemon + `")}, spec = {selector.matchLabels = {app = "o"}, template = {metadata.labels = {app = "o"}, spec.containers = [{name = "o", image = "localhost:5000/otel:1", env = [{name = "T", valueFrom.secretKeyRef = {name = "otel-agent-token", key = "token"}}]}]}}}`
+
+// TestPreflightChecksManifestSecretsInTheirNamespaceOnTheirCluster is the
+// regression for control-plane's prod release v1.7.39, refused for
+// control-plane-prod/obs-credentials and control-plane-prod/otel-agent-token:
+// the manifest-driven check looked every referenced Secret up in the deploy
+// namespace on the primary cluster. Each is now read where its pod reads it.
+func TestPreflightChecksManifestSecretsInTheirNamespaceOnTheirCluster(t *testing.T) {
+	gets := scopeFakeKubectl(t, scopePrimary, scopeDaemon) // every Secret exists on both clusters
+	in, report := scopeProdInput(t, scopeObservabilityKCL)
+
+	if err := runDeployPreflightForEnv(context.Background(), in); err != nil {
+		t.Fatalf("preflight refused Secrets that exist where their workloads run:\n%v", err)
+	}
+	asked := strings.Join(gets(), " ")
+	for _, want := range []string{
+		scopePrimary + " observability-data/obs-credentials",
+		scopeDaemon + " observability/otel-agent-token",
+	} {
+		if !strings.Contains(asked, want) {
+			t.Errorf("never read %q; lookups: %v", want, gets())
+		}
+	}
+	for _, wrong := range []string{
+		scopeAppNS + "/obs-credentials",
+		scopeAppNS + "/otel-agent-token",
+		scopePrimary + " observability/otel-agent-token",
+	} {
+		if strings.Contains(asked, wrong) {
+			t.Errorf("read %q, where no pod resolves it; lookups: %v", wrong, gets())
+		}
+	}
+	if doc := report.document(); doc.Preflight.Blocking != 0 {
+		t.Errorf("preflight = %+v, want 0 blocking", doc.Preflight)
+	}
+}
+
+// TestPreflightNamesTheClusterAndNamespaceOfAMissingManifestSecret: a Secret
+// absent from the cluster its workload runs on is still refused, reported as
+// <context>:<namespace>/<name>.
+func TestPreflightNamesTheClusterAndNamespaceOfAMissingManifestSecret(t *testing.T) {
+	scopeFakeKubectl(t, scopePrimary) // nothing exists on the daemon cluster
+	in, _ := scopeProdInput(t, scopeObservabilityKCL)
+
+	err := runDeployPreflightForEnv(context.Background(), in)
+	if err == nil {
+		t.Fatal("preflight passed while the daemon cluster lacks observability/otel-agent-token")
+	}
+	if !strings.Contains(err.Error(), "Secret "+scopeDaemon+":observability/otel-agent-token missing keys") {
+		t.Errorf("miss not named by cluster and namespace:\n%v", err)
+	}
+	if strings.Contains(err.Error(), "obs-credentials") {
+		t.Errorf("obs-credentials exists on the hub, where clickhouse runs:\n%v", err)
 	}
 }
