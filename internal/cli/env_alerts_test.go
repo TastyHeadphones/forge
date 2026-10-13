@@ -81,8 +81,8 @@ func TestResolveShapeAlerts_UserRulesPlusEnabledDefaults(t *testing.T) {
 	for _, a := range got {
 		by[a.Alert] = a
 	}
-	if len(got) != 4 {
-		t.Fatalf("got %d alerts %v, want OrdersBacklog + error-rate + p95 + frontend (silent disabled, Off dropped)", len(got), by)
+	if len(got) != 12 {
+		t.Fatalf("got %d alerts %v, want OrdersBacklog + error-rate + p95 + frontend + 5 metadata + DeployFailed + 2 quota levels (silent disabled, Off dropped)", len(got), by)
 	}
 	if by["OrdersBacklog"].Source != release.AlertSourceUser || by["ServiceErrorRateHigh"].Source != release.AlertSourceDefault || by["ServiceErrorRateHigh"].DefaultID != "error-rate" {
 		t.Errorf("sources wrong: %+v", by)
@@ -126,11 +126,15 @@ func TestResolveShapeAlerts_DefaultsAreScopedToTheEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 4 {
-		t.Fatalf("an env that declares nothing still gets the 4 defaults, got %d", len(got))
+	if len(got) != 12 {
+		t.Fatalf("an env that declares nothing still gets the 12 defaults, got %d", len(got))
 	}
 	for _, a := range got {
-		if !strings.Contains(a.Expr, "'staging'") || strings.Contains(a.Expr, "'dev'") {
+		if strings.Contains(a.Expr, "'dev'") {
+			t.Errorf("%s names another env: %s", a.Alert, a.Expr)
+		}
+		// Telemetry rules name the env; metadata and platform rules are scoped by the id the control plane binds.
+		if a.DefaultID == "error-rate" && !strings.Contains(a.Expr, "'staging'") {
 			t.Errorf("%s is not scoped to staging: %s", a.Alert, a.Expr)
 		}
 	}
@@ -171,5 +175,49 @@ func TestResolveShapeAlerts_Refusals(t *testing.T) {
 		if _, _, err := resolveShapeAlerts(dir, "dev", obsEntities(a)); err == nil {
 			t.Errorf("%s: want a refusal", name)
 		}
+	}
+}
+
+func TestResolveShapeAlerts_MetadataOptOutLeavesNoMetadataRules(t *testing.T) {
+	dir := writeAlertDefaults(t, alertProject())
+	e := obsEntities(nil)
+	e.Observability.Policy = &ObservabilityPolicyEntity{Enabled: true, Disabled: []string{"metadata"}}
+	got, _, err := resolveShapeAlerts(dir, "prod", e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 7 {
+		t.Fatalf("got %d alerts, want the 4 telemetry rules plus the 3 platform rules and none of the 5 metadata rules", len(got))
+	}
+	for _, a := range got {
+		switch a.DefaultID {
+		case "crash-loop", "oom-killed", "memory-near-limit", "image-pull-failed", "evicted":
+			t.Errorf("%s is recorded for an env that opted out of metadata", a.Alert)
+		}
+	}
+}
+
+func TestResolveShapeAlerts_DisabledPlatformDefaultIsRecordedOff(t *testing.T) {
+	dir := writeAlertDefaults(t, alertProject())
+	got, _, err := resolveShapeAlerts(dir, "prod", obsEntities(&AlertsEntity{Defaults: map[string]AlertDefaultEntity{
+		"observability-quota": {Enabled: false},
+		"crash-loop":          {Enabled: false},
+	}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := map[string]release.ShapeAlert{}
+	for _, a := range got {
+		by[a.Alert] = a
+	}
+	if _, ok := by["WorkloadCrashLooping"]; ok {
+		t.Error("a disabled telemetry default is recorded")
+	}
+	q := by["ObservabilityQuotaOver100"]
+	if q.DefaultID != "observability-quota" || !strings.HasSuffix(q.Expr, " off */") {
+		t.Errorf("a disabled platform default is recorded off: %+v", q)
+	}
+	if by["DeployFailed"].Source != release.AlertSourceDefault {
+		t.Errorf("DeployFailed = %+v", by["DeployFailed"])
 	}
 }

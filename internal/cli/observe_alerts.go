@@ -22,6 +22,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/clickstack"
+	"github.com/reliant-labs/forge/internal/obsdash"
 	"github.com/reliant-labs/forge/pkg/alerting"
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -164,6 +165,7 @@ type checkRule struct {
 	Severity  string            `json:"severity"`
 	For       string            `json:"for"`
 	Firing    []checkInstance   `json:"firing"`
+	Platform  bool              `json:"platform,omitempty"`
 	Error     string            `json:"error,omitempty"`
 	Expr      string            `json:"expr,omitempty"`
 	Summaries map[string]string `json:"-"`
@@ -236,7 +238,15 @@ func runObserveAlertsCheck(ctx context.Context, stdout, stderr io.Writer, o obse
 			res.Rules = append(res.Rules, cr)
 			continue
 		}
+		if obsdash.IsPlatformExpr(a.Expr) {
+			// Raised by the control plane from its own events; there is no
+			// telemetry to query locally.
+			cr.Platform = true
+			res.Rules = append(res.Rules, cr)
+			continue
+		}
 		spec.For = 0 // the question is what returns now, not what has held for `for`
+		spec.Expr = obsdash.BindEnvID(spec.Expr, o.env)
 		rule := spec.Rule("local", o.env, nil)
 		after, err := ev.EvaluateRule(ctx, rule, nil)
 		if err != nil {
@@ -299,6 +309,8 @@ func printAlertCheck(w io.Writer, res checkResult) error {
 	for _, r := range res.Rules {
 		state := "ok"
 		switch {
+		case r.Platform:
+			state = "n/a (the control plane raises it from its own events)"
 		case r.Error != "":
 			state = "ERROR"
 			failed++

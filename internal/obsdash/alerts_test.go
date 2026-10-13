@@ -29,8 +29,8 @@ func TestGoldenDefaultAlertSQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rules) != 4 {
-		t.Fatalf("got %d default rules, want error-rate, p95-latency, service-silent, frontend-js-errors", len(rules))
+	if len(rules) != 12 {
+		t.Fatalf("got %d default rules, want the 4 telemetry rules, the 5 customer-metadata rules, DeployFailed and the two quota levels", len(rules))
 	}
 	var b strings.Builder
 	for _, r := range rules {
@@ -78,6 +78,9 @@ func TestDefaultsRouteToNoPagerAndAreMetricsBased(t *testing.T) {
 func TestDefaultsScopeToTheEnvAndTheProjectsServices(t *testing.T) {
 	rules, _ := ResolveAlertDefaults(AlertInputOf(fixture()), "stag'ing", nil)
 	for _, r := range rules {
+		if r.ID != "error-rate" && r.ID != "p95-latency" && r.ID != "service-silent" && r.ID != "frontend-js-errors" {
+			continue
+		}
 		if !strings.Contains(r.Expr, `'stag\'ing'`) {
 			t.Errorf("%s does not scope to the (quoted) env: %s", r.ID, r.Expr)
 		}
@@ -134,14 +137,27 @@ func TestTuningDisablesRetargetsAndRefusesTypos(t *testing.T) {
 }
 
 func TestDefaultsFollowTheProject(t *testing.T) {
+	// Only the platform rules apply to every project: a failed deploy and a quota state need no service.
+	ids := func(rules []AlertRule) string {
+		seen := map[string]bool{}
+		var out []string
+		for _, r := range rules {
+			if !seen[r.ID] {
+				seen[r.ID] = true
+				out = append(out, r.ID)
+			}
+		}
+		return strings.Join(out, ",")
+	}
 	none := AlertInput{Project: "x"}
-	if rules, _ := ResolveAlertDefaults(none, "dev", nil); len(rules) != 0 {
-		t.Errorf("a project with no service and no frontend has %d defaults", len(rules))
+	rules, _ := ResolveAlertDefaults(none, "dev", nil)
+	if got := ids(rules); got != "deploy-failed,observability-quota" {
+		t.Errorf("a project with no service and no frontend has defaults %q", got)
 	}
 	feOnly := AlertInput{Project: "x", FrontendService: "x-frontend"}
-	rules, _ := ResolveAlertDefaults(feOnly, "dev", nil)
-	if len(rules) != 1 || rules[0].ID != "frontend-js-errors" {
-		t.Errorf("a frontend-only project: %+v", rules)
+	rules, _ = ResolveAlertDefaults(feOnly, "dev", nil)
+	if got := ids(rules); got != "deploy-failed,frontend-js-errors,observability-quota" {
+		t.Errorf("a frontend-only project: %q", got)
 	}
 }
 
@@ -161,5 +177,217 @@ func TestAlertDefaultsFileRoundTrips(t *testing.T) {
 	}
 	if _, err := ParseAlertDefaults([]byte(`{"version":"forge.alert-defaults/v0"}`)); err == nil {
 		t.Error("an unknown file version must be refused")
+	}
+}
+
+func byAlert(rules []AlertRule) map[string]AlertRule {
+	m := map[string]AlertRule{}
+	for _, r := range rules {
+		m[r.Alert] = r
+	}
+	return m
+}
+
+var metadataRuleIDs = []string{"crash-loop", "oom-killed", "memory-near-limit", "image-pull-failed", "evicted"}
+
+func TestMetadataDefaultsReadCustomerMetadataByEnvID(t *testing.T) {
+	rules, _ := ResolveAlertDefaults(AlertInputOf(fixture()), "dev", nil)
+	got := map[string]AlertRule{}
+	for _, r := range rules {
+		got[r.ID] = r
+	}
+	for _, id := range metadataRuleIDs {
+		r, ok := got[id]
+		if !ok {
+			t.Fatalf("default %s is not resolved", id)
+		}
+		// The node agent stamps reliant.env.id, never deployment.environment.name, and the id is the
+		// control plane's to bind: forge records the placeholder and never invents an id.
+		if !strings.Contains(r.Expr, EnvIDPlaceholder) || strings.Contains(r.Expr, "'dev'") || strings.Contains(r.Expr, "deployment.environment.name") {
+			t.Errorf("%s must scope by %s, not by the env name: %s", id, EnvIDPlaceholder, r.Expr)
+		}
+		if err := validateExprForTest(BindEnvID(r.Expr, "env-1")); err != nil {
+			t.Errorf("%s once bound: %v", id, err)
+		}
+		if strings.Contains(BindEnvID(r.Expr, "env-1"), EnvIDPlaceholder) {
+			t.Errorf("%s: BindEnvID left a placeholder", id)
+		}
+		if r.Labels["severity"] == "" {
+			t.Errorf("%s has no severity", id)
+		}
+	}
+	// Restarts and memory are gauges: a restart is the growth of one pod's count, never a sum of raw values.
+	if e := got["crash-loop"].Expr; !strings.Contains(e, "max(Value) - min(Value)") || !strings.Contains(e, "otel_metrics_gauge") || !strings.Contains(e, "otel_logs") {
+		t.Errorf("crash-loop must difference per-pod restart gauges and read BackOff events: %s", e)
+	}
+	if e := got["oom-killed"].Expr; !strings.Contains(e, "k8s.container.last_terminated_reason") || !strings.Contains(e, "OOMKilling") {
+		t.Errorf("oom-killed must read the terminated reason and the OOMKilling event: %s", e)
+	}
+	if e := got["memory-near-limit"].Expr; !strings.Contains(e, "k8s.container.memory_limit_utilization") || !strings.Contains(e, "avg(Value)") {
+		t.Errorf("memory-near-limit must average the utilization ratio so a spike does not fire: %s", e)
+	}
+	if got["memory-near-limit"].For != "10m" || got["crash-loop"].Labels["severity"] != "critical" || got["oom-killed"].Labels["severity"] != "critical" {
+		t.Errorf("default holds/severities changed: %+v", got)
+	}
+}
+
+func TestOptingOutOfMetadataSkipsTheMetadataDefaults(t *testing.T) {
+	in := AlertInputOf(fixture())
+	rules, skipped, err := ResolveAlertDefaultsFor(in, "dev", nil, []string{"metadata"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rules {
+		for _, id := range metadataRuleIDs {
+			if r.ID == id {
+				t.Errorf("%s is recorded for an env that opted out of metadata: it can only ever be empty", id)
+			}
+		}
+	}
+	if len(skipped) != len(metadataRuleIDs) {
+		t.Errorf("skipped = %+v, want the %d metadata defaults", skipped, len(metadataRuleIDs))
+	}
+	by := byAlert(rules)
+	for _, keep := range []string{"ServiceErrorRateHigh", "DeployFailed", "ObservabilityQuotaOver100"} {
+		if _, ok := by[keep]; !ok {
+			t.Errorf("%s must survive a metadata opt-out", keep)
+		}
+	}
+	// A different category changes nothing here.
+	rules, skipped, _ = ResolveAlertDefaultsFor(in, "dev", nil, []string{"logs", "profiles"})
+	if len(skipped) != 0 || len(rules) != 12 {
+		t.Errorf("opting out of logs skipped %v and left %d rules", skipped, len(rules))
+	}
+}
+
+func TestPlatformDefaultsAreMarkersTheControlPlaneRecognizes(t *testing.T) {
+	rules, _ := ResolveAlertDefaults(AlertInputOf(fixture()), "dev", nil)
+	by := byAlert(rules)
+	want := map[string][2]string{
+		"DeployFailed":              {"deploy-failed", "critical"},
+		"ObservabilityQuotaOver100": {"observability-quota:over_100", "warning"},
+		"ObservabilityQuotaOver150": {"observability-quota:over_150", "critical"},
+	}
+	for name, w := range want {
+		r, ok := by[name]
+		if !ok {
+			t.Fatalf("%s missing", name)
+		}
+		if !IsPlatformExpr(r.Expr) || !strings.Contains(r.Expr, "reliant:platform "+w[0]+" env:"+EnvIDPlaceholder) || strings.Contains(r.Expr, " off") {
+			t.Errorf("%s expr = %q", name, r.Expr)
+		}
+		if r.Labels["severity"] != w[1] || r.ID != strings.Split(w[0], ":")[0] {
+			t.Errorf("%s = id %s labels %v", name, r.ID, r.Labels)
+		}
+		if err := validateExprForTest(BindEnvID(r.Expr, "env-1")); err != nil {
+			t.Errorf("%s once bound is not an acceptable expr: %v", name, err)
+		}
+	}
+	// Whatever evaluates it without knowing the marker finds no row: it can never fire spuriously.
+	if !strings.Contains(by["DeployFailed"].Expr, "WHERE 0") {
+		t.Error("a platform marker must be a query that returns no row")
+	}
+	for _, id := range []string{"error-rate", "crash-loop"} {
+		for _, r := range rules {
+			if r.ID == id && IsPlatformExpr(r.Expr) {
+				t.Errorf("%s is a telemetry rule and must not look like a platform marker", id)
+			}
+		}
+	}
+}
+
+func TestPlatformDefaultsAreTunedAndDisabledByID(t *testing.T) {
+	in := AlertInputOf(fixture())
+	rules, err := ResolveAlertDefaults(in, "dev", map[string]AlertTuning{
+		"deploy-failed":       {Enabled: true, For: "15m", Labels: map[string]string{"team": "platform", "severity": "warning"}},
+		"observability-quota": {Enabled: false},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := byAlert(rules)
+	d := by["DeployFailed"]
+	if d.For != "15m" || d.Labels["severity"] != "warning" || d.Labels["team"] != "platform" {
+		t.Errorf("deploy-failed tuning not applied: %+v", d)
+	}
+	// A disabled platform default is still RECORDED, marked off: the control plane injects the built-ins itself,
+	// so absence in the shape could not tell "disabled" from "recorded by a forge that predates the rule".
+	for _, n := range []string{"ObservabilityQuotaOver100", "ObservabilityQuotaOver150"} {
+		r, ok := by[n]
+		if !ok || !strings.HasSuffix(r.Expr, " off */") {
+			t.Errorf("%s: a disabled platform default must be recorded as off, got %+v", n, r)
+		}
+	}
+	if _, err := ResolveAlertDefaults(in, "dev", map[string]AlertTuning{"deploy-failed": {Enabled: true, Params: map[string]float64{"x": 1}}}); err == nil {
+		t.Error("a platform default takes no params: a typo must be refused")
+	}
+}
+
+func TestMetadataDefaultsAreTunableAndDisablable(t *testing.T) {
+	in := AlertInputOf(fixture())
+	rules, err := ResolveAlertDefaults(in, "dev", map[string]AlertTuning{
+		"crash-loop":        {Enabled: true, Params: map[string]float64{"min_restarts": 5, "window_minutes": 30}, For: "2m"},
+		"memory-near-limit": {Enabled: true, Params: map[string]float64{"threshold": 0.8}},
+		"evicted":           {Enabled: false},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := byAlert(rules)
+	if c := by["WorkloadCrashLooping"]; c.For != "2m" || !strings.Contains(c.Expr, ">= 5") || !strings.Contains(c.Expr, "INTERVAL 30 MINUTE") {
+		t.Errorf("crash-loop tuning not applied: %+v", c)
+	}
+	if m := by["WorkloadMemoryNearLimit"]; !strings.Contains(m.Expr, "value > 0.8") {
+		t.Errorf("memory threshold not applied: %s", m.Expr)
+	}
+	if _, ok := by["WorkloadEvicted"]; ok {
+		t.Error("a disabled metadata default is still resolved")
+	}
+}
+
+func TestBindEnvIDQuotesTheID(t *testing.T) {
+	if got := BindEnvID("a = "+EnvIDPlaceholder+" AND b = "+EnvIDPlaceholder, `x'y`); got != `a = 'x\'y' AND b = 'x\'y'` {
+		t.Errorf("BindEnvID = %s", got)
+	}
+}
+
+func TestUserRulesMayNotTakeADefaultsName(t *testing.T) {
+	names := map[string]bool{}
+	for _, n := range AlertDefaultAlertNames() {
+		names[n] = true
+	}
+	for _, n := range []string{"WorkloadCrashLooping", "WorkloadOOMKilled", "WorkloadMemoryNearLimit", "WorkloadImagePullFailed", "WorkloadEvicted", "DeployFailed", "ObservabilityQuotaOver100", "ObservabilityQuotaOver150"} {
+		if !names[n] {
+			t.Errorf("%s is not reserved against user rules", n)
+		}
+	}
+}
+
+// The control plane injects these three rules for a shape recorded by a forge
+// that predates them (control-plane internal/alerting/builtin.go), and its test
+// TestInjectedBuiltinsEqualWhatForgeRecords pins the SAME literals. If a value
+// here changes, change it there in the same pin bump; until then a customer on
+// the older forge and one on this forge get different rules.
+func TestPlatformDefaultsAreExactlyWhatTheControlPlaneInjects(t *testing.T) {
+	rules, _ := ResolveAlertDefaults(AlertInputOf(fixture()), "dev", nil)
+	type pinned struct{ severity, hold, interval, expr, summary string }
+	want := map[string]pinned{
+		"DeployFailed": {"critical", "5m", "1m",
+			"SELECT 1 AS value WHERE 0 /* reliant:platform deploy-failed env:{reliant_env_id:String} */",
+			"The release promoted to this env failed to converge on {{ $labels.cluster }}: {{ $labels.reason }}"},
+		"ObservabilityQuotaOver100": {"warning", "0s", "1m",
+			"SELECT 1 AS value WHERE 0 /* reliant:platform observability-quota:over_100 env:{reliant_env_id:String} */",
+			"This org's observability usage is at {{ $value }}% of its monthly allowance; the gateway is limiting ingest"},
+		"ObservabilityQuotaOver150": {"critical", "0s", "1m",
+			"SELECT 1 AS value WHERE 0 /* reliant:platform observability-quota:over_150 env:{reliant_env_id:String} */",
+			"This org's observability usage is at {{ $value }}% of its monthly allowance; the gateway is limiting ingest"},
+	}
+	by := byAlert(rules)
+	for name, w := range want {
+		r := by[name]
+		got := pinned{r.Labels["severity"], r.For, r.Interval, r.Expr, r.Annotations["summary"]}
+		if got != w {
+			t.Errorf("%s = %+v, want %+v", name, got, w)
+		}
 	}
 }

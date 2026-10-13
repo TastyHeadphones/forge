@@ -61,6 +61,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   objects (`resourceNames`): `bind` on exactly two ClusterRoles, `get` on
   one Secret. It replaces a hand-written ClusterRole beside the mint.
 
+- **Built-in alerts for workloads and the platform (A6).** Five new
+  `forge.Alerts.defaults` ids over the node agent's customer metadata:
+  `crash-loop` (restarts grew by 3 in 10m, or a BackOff event), `oom-killed`
+  (a restart whose last exit was `OOMKilled`, or an `OOMKilling` event),
+  `memory-near-limit` (memory limit utilization above 0.9 for 10m),
+  `image-pull-failed` and `evicted` (Kubernetes events). Each is tuned or
+  disabled by id like the rest. Their SQL scopes by `reliant.env.id`, which the
+  node agent stamps and forge cannot know, so it carries the placeholder
+  `{reliant_env_id:String}` for the evaluator to bind (the local check binds
+  the env name). An env with `signals.metadata = False` records none of the
+  five: there is nothing for them to read. Two more ids,
+  `deploy-failed` and `observability-quota`, are raised by the control plane
+  from its own events; forge records them as marker rules so your tuning and
+  `enabled = False` travel with the release. Tested against ClickHouse 26.8
+  with the exporter's real tables.
 - **Dashboards ship in the release.** A release bundle now carries every
   dashboard the project declares at `observability/dashboards/`, beside the
   metrics schema at `observability/metrics-schema.json`, inside the same
