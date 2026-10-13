@@ -169,13 +169,13 @@ func composeConstructorProblems(projectDir, dir, pkg string) []string {
 		if ctorName == DefaultConstructorName {
 			problems = append(problems, "declares no constructor: no `func New`, and no func marked `// forge:constructor`")
 		} else {
-			problems = append(problems, fmt.Sprintf("declares no func `%s`", ctorName))
+			problems = append(problems, fmt.Sprintf("declares no func %#q", ctorName))
 		}
 		return problems
 	}
 
 	sig := printType(fset, ctor.Type)
-	where := fmt.Sprintf("%s: `%s` is `%s`", at(ctor.Pos()), ctorName, sig)
+	where := fmt.Sprintf("%s: %#q is %#q", at(ctor.Pos()), ctorName, sig)
 	if ctor.Type.TypeParams != nil && len(ctor.Type.TypeParams.List) > 0 {
 		problems = append(problems, fmt.Sprintf("%s — it has type parameters, which %s cannot infer", where, call))
 	}
