@@ -244,3 +244,39 @@ func TestRetireResolvesFiringImmediately(t *testing.T) {
 		t.Fatalf("events = %v", got)
 	}
 }
+
+func TestKeepFiringForHoldsResolutionPastTheNextMiss(t *testing.T) {
+	var st []Instance
+	r := rule(0)
+	r.KeepFiringFor = 5 * time.Minute
+	step(t, r, &st, []series{ser(1, "api")}, t0)
+	step(t, r, &st, nil, t0.Add(time.Minute)) // first miss: held
+	for _, m := range []int{2, 3, 4, 5} {
+		ch := step(t, r, &st, nil, t0.Add(time.Duration(m)*time.Minute))
+		if got := only(t, st); got.State != StateFiring || len(ch.Events) != 0 {
+			t.Fatalf("minute %d: resolved inside keep_firing_for: %+v", m, got)
+		}
+	}
+	if alerts, _ := alertsFor(st, time.Minute, t0.Add(5*time.Minute)); len(alerts) != 1 || !alerts[0].EndsAt.After(t0.Add(5*time.Minute)) {
+		t.Fatal("a held alert must keep being re-sent")
+	}
+	// the hold ends 5m after the FIRST miss (t0+1m).
+	ch := step(t, r, &st, nil, t0.Add(6*time.Minute))
+	if got := only(t, st); got.State != StateResolved || len(ch.Events) != 1 {
+		t.Fatalf("not resolved after keep_firing_for: %+v", got)
+	}
+}
+
+func TestKeepFiringForIsClearedByAReturn(t *testing.T) {
+	var st []Instance
+	r := rule(0)
+	r.KeepFiringFor = 5 * time.Minute
+	step(t, r, &st, []series{ser(1, "api")}, t0)
+	step(t, r, &st, nil, t0.Add(time.Minute))
+	step(t, r, &st, []series{ser(1, "api")}, t0.Add(2*time.Minute))
+	step(t, r, &st, nil, t0.Add(3*time.Minute)) // a NEW first miss
+	step(t, r, &st, nil, t0.Add(7*time.Minute)) // only 4m after it
+	if got := only(t, st); got.State != StateFiring {
+		t.Fatalf("the hold restarts when the series returns: %+v", got)
+	}
+}

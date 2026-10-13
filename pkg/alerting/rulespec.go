@@ -77,6 +77,9 @@ type RuleSpec struct {
 	For Duration `json:"for,omitempty"`
 	// Interval is the evaluation period; zero means the evaluator's floor.
 	Interval Duration `json:"interval,omitempty"`
+	// KeepFiringFor holds a firing alert open this long after it stops
+	// returning, so a flapping series does not page on every recovery.
+	KeepFiringFor Duration `json:"keep_firing_for,omitempty"`
 	// Labels carry routing data (`severity` is a label). Names starting with
 	// "reliant_" are reserved and dropped.
 	Labels      map[string]string `json:"labels,omitempty"`
@@ -120,14 +123,15 @@ func (s RuleSpec) Validate() error {
 // RuleSource vouches for.
 func (s RuleSpec) Rule(tenant, env string, identity map[string]string) Rule {
 	return Rule{
-		RuleKey:     RuleKey{Tenant: tenant, Env: env, Name: s.Alert},
-		Expr:        s.Expr,
-		For:         s.For.Std(),
-		Interval:    s.Interval.Std(),
-		Labels:      s.Labels,
-		Annotations: s.Annotations,
-		Source:      s.sourceOrUser(),
-		Identity:    identity,
+		RuleKey:       RuleKey{Tenant: tenant, Env: env, Name: s.Alert},
+		Expr:          s.Expr,
+		For:           s.For.Std(),
+		Interval:      s.Interval.Std(),
+		KeepFiringFor: s.KeepFiringFor.Std(),
+		Labels:        s.Labels,
+		Annotations:   s.Annotations,
+		Source:        s.sourceOrUser(),
+		Identity:      identity,
 	}
 }
 

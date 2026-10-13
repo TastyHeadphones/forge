@@ -51,6 +51,10 @@ type Rule struct {
 	For time.Duration
 	// Interval is the evaluation period, raised to the scheduler's MinInterval.
 	Interval time.Duration
+	// KeepFiringFor holds a firing alert open this long after its series stops
+	// returning (Prometheus's keep_firing_for). The hold is never shorter than
+	// one evaluation, which is the flap damping every rule gets.
+	KeepFiringFor time.Duration
 
 	// Source is where the rule was declared.
 	Source Source

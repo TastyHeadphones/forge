@@ -9,14 +9,15 @@ import (
 
 // advance moves one rule's instances one evaluation forward.
 //
-//	inactive ─returns→ pending ─held for `for`→ firing ─stops returning→ (held one
-//	evaluation) → resolved
+//	inactive ─returns→ pending ─held for `for`→ firing ─stops returning→ (held) → resolved
 //
 // FLAP DAMPING. A firing instance that stops returning is not resolved at once:
-// the first miss only records ClearedAt, and it resolves on the next evaluation
-// that also misses. One interval of grace, so a single empty result (a gap in
-// ingestion, a late batch) does not page-resolve-page. A return in between
-// clears ClearedAt and nothing was ever sent.
+// the first miss only records ClearedAt, and it resolves on a LATER evaluation
+// that also misses and is at least rule.KeepFiringFor after that first miss.
+// With no KeepFiringFor that is the next evaluation: one interval of grace, so
+// a single empty result (a gap in ingestion, a late batch) does not
+// page-resolve-page. A return in between clears ClearedAt and nothing was ever
+// sent.
 //
 // A pending instance that stops returning is dropped without ceremony: nothing
 // was sent for it, so there is nothing to resolve.
@@ -68,7 +69,7 @@ func advance(rule Rule, prev []Instance, ss []series, now time.Time) ([]Instance
 			in.LastEvalAt = now
 			if in.ClearedAt.IsZero() {
 				in.ClearedAt = now
-			} else {
+			} else if now.Sub(in.ClearedAt) >= rule.KeepFiringFor {
 				in.State, in.ResolvedAt, in.ResolveSent = StateResolved, now, false
 				ch.Events = append(ch.Events, event(in, TransitionResolved, now))
 			}
