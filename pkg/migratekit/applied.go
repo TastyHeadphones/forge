@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"github.com/golang-migrate/migrate/v4"
 )
 
 // A VERSION NUMBER IS NOT A MIGRATION'S IDENTITY.
@@ -160,16 +162,7 @@ func readApplied(ctx context.Context, db *sql.DB) (map[uint]string, error) {
 // and this binary's filename is not evidence of what that database ran — so
 // an upgrade must leave them empty rather than fill them in with a guess.
 func recordApplied(ctx context.Context, db *sql.DB, source sourceSet, before, after State) error {
-	if !after.Applied {
-		return nil
-	}
-	var values []string
-	for _, m := range source {
-		if (before.Applied && m.Version <= before.Version) || m.Version > after.Version {
-			continue
-		}
-		values = append(values, fmt.Sprintf("(%d, %s)", m.Version, quoteLiteral(m.Descriptor)))
-	}
+	values := appliedRows(source, before, after)
 	if len(values) == 0 {
 		return nil
 	}
@@ -195,6 +188,81 @@ func recordApplied(ctx context.Context, db *sql.DB, source sourceSet, before, af
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("record applied migrations: %w", err)
+	}
+	return nil
+}
+
+// appliedRows renders the appliedTable rows for every embedded version in
+// (before, after], each under this binary's descriptor.
+func appliedRows(source sourceSet, before, after State) []string {
+	if !after.Applied {
+		return nil
+	}
+	var values []string
+	for _, m := range source {
+		if (before.Applied && m.Version <= before.Version) || m.Version > after.Version {
+			continue
+		}
+		values = append(values, fmt.Sprintf("(%d, %s)", m.Version, quoteLiteral(m.Descriptor)))
+	}
+	return values
+}
+
+// recordFailedRun records what an Up that FAILED did apply: every version
+// before the one that failed.
+//
+// golang-migrate applies pending versions one at a time and stops at the first
+// that fails, leaving the schema dirty AT it. Each version before it ran to
+// completion, and golang-migrate's version says so. Left out of this record,
+// they become indistinguishable from migrations the schema passed without
+// running, so the very recovery a dirty schema calls for — repair it, force the
+// failed version, run Up — was refused, naming every one of them as MISSING
+// (missing.go). The failed version itself is recorded only when a Force
+// asserts it (see Migrator.Force).
+func recordFailedRun(ctx context.Context, db *sql.DB, m *migrate.Migrate, source sourceSet, before State) error {
+	after, err := stateOf(m)
+	if err != nil {
+		return fmt.Errorf("record the migrations applied before the failure: %w", err)
+	}
+	return recordApplied(ctx, db, source, before, after.settled())
+}
+
+// forceApplied makes the applied record agree with a forced version, in tx
+// (which holds appliedLockKey). See Migrator.Force.
+//
+// A row above version is deleted: the schema no longer claims it, and a later
+// file under that number would otherwise trip as a mismatch. Every embedded
+// version the force newly asserts — above the version the schema had settled
+// at (before), up to and including the forced one — is recorded under this
+// binary's descriptor, as Up records what it applies. Versions at or below the
+// settled one keep whatever they have: a force asserts the schema's new
+// position, not that an older gap was filled.
+//
+// A database with no record yet is left without one. Creating it here would
+// skip bootstrapApplied, which backfills only when IT creates the table, and
+// every older version would then read as missing; the next Up bootstraps it
+// from the forced version instead, as it does any database that predates it.
+func forceApplied(ctx context.Context, tx *sql.Tx, source sourceSet, before State, version int) error {
+	var exists bool
+	if err := tx.QueryRowContext(ctx, "SELECT to_regclass('"+appliedTable+"') IS NOT NULL").Scan(&exists); err != nil {
+		return fmt.Errorf("read applied-migration record: %w", err)
+	}
+	if !exists {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE version > %d", appliedTable, version)); err != nil {
+		return fmt.Errorf("record forced version: %w", err)
+	}
+	if version < 0 {
+		return nil
+	}
+	values := appliedRows(source, before.settled(), State{Version: uint(version), Applied: true})
+	if len(values) == 0 {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO "+appliedTable+" (version, name) VALUES "+
+		strings.Join(values, ", ")+" ON CONFLICT (version) DO NOTHING"); err != nil {
+		return fmt.Errorf("record forced version: %w", err)
 	}
 	return nil
 }

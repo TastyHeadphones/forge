@@ -3,6 +3,7 @@ package migratekit
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -196,6 +197,9 @@ func autoMigrate(fsys fs.FS, dir string, db *sql.DB, logger *slog.Logger) error 
 	}
 
 	if _, err := foldNoChange(m.Up()); err != nil {
+		if recErr := recordFailedRun(context.Background(), db, m, source, before); recErr != nil {
+			err = errors.Join(err, recErr)
+		}
 		return fmt.Errorf("running migrations: %w", err)
 	}
 
