@@ -993,7 +993,21 @@ const (
 // --strict it is an error that flips `ok` to false. The old code returned the
 // same rule id at warning severity with gated=false, so `forge lint --json`
 // answered "ok": true over a check that never executed.
+//
+// A golangci-lint config that gives forbidigo no env-read pattern is the
+// same could-not-run condition, reported before forbidigo is invoked: it
+// would check its built-in fmt.Print patterns instead. A run that completes
+// contributes only its file-anchored issues; its summary line ("0 issues.")
+// and source snippets are not findings (lint_typed_access_guard.go).
 func collectTypedAccessGuardJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+	if reason := typedAccessGuardUnconfigured(rc.cwd); reason != "" {
+		return []lintJSONFinding{{
+			Severity: unavailableSeverity(rc.strict),
+			Rule:     ruleTypedAccessGuardUnavailable,
+			Message:  "typed-config guardrail did NOT run: " + reason,
+			FixHint:  typedAccessGuardUnconfiguredHint,
+		}}, rc.strict, nil
+	}
 	run, err := rc.execGolangci(golangciRunArgs([]string{"--enable-only=forbidigo", "--issues-exit-code=0"}, rc.paths))
 	if err != nil {
 		return []lintJSONFinding{golangciUnresolvedFinding(err, unavailableSeverity(rc.strict))}, rc.strict, nil
@@ -1012,7 +1026,7 @@ func collectTypedAccessGuardJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error
 		out = append(out, externalLinesToFindings(run.combined(), ruleTypedAccessGuardUnavailable, lintSevInfo)...)
 		return out, rc.strict, nil
 	}
-	fs := externalLinesToFindings(run.combined(), ruleTypedAccessGuard, lintSevWarning)
+	fs := anchoredFindings(externalLinesToFindings(run.combined(), ruleTypedAccessGuard, lintSevWarning))
 	return fs, false, nil
 }
 

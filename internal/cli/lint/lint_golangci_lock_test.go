@@ -67,10 +67,8 @@ func TestGolangciLanesQueueForTheMachineLock(t *testing.T) {
 	})
 	t.Run("json advisory guardrail", func(t *testing.T) {
 		fakeGolangciLint(t, contendedUnlessSerialStub)
-		// Strict, so an unavailable lane would gate. The advisory lane
-		// surfaces every output line as a warning, so the stub's own
-		// "0 issues." arrives as one; what must be absent is the
-		// could-not-run rule.
+		// Strict, so an unavailable lane would gate. What must be absent
+		// is the could-not-run rule.
 		fs, gated, err := collectTypedAccessGuardJSON(testRunCtx(t, true))
 		if err != nil || gated {
 			t.Fatalf("--json guardrail gated on a contended lock: err=%v gated=%v findings=%+v", err, gated, fs)

@@ -57,9 +57,13 @@ const contendedLockStub = `echo "Error: parallel golangci-lint is running" >&2
 echo "The command is terminated due to an error: parallel golangci-lint is running" >&2
 exit 3`
 
+// testRunCtx runs in a project whose golangci-lint config points forbidigo
+// at env reads, so the typed-config guardrail lane gets as far as invoking
+// the stub. Without one the lane refuses before running anything
+// (lint_typed_access_guard_test.go).
 func testRunCtx(t *testing.T, strict bool) *lintRunCtx {
 	t.Helper()
-	return &lintRunCtx{ctx: context.Background(), strict: strict, paths: []string{"./..."}}
+	return &lintRunCtx{ctx: context.Background(), strict: strict, cwd: writeGuardConfig(t, t.TempDir()), paths: []string{"./..."}}
 }
 
 // ── text mode ───────────────────────────────────────────────────────────────
