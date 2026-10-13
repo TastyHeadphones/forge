@@ -27,6 +27,7 @@
 // entry point and the kubectl/KCL helpers exported for callers that
 // need them piecewise.
 //
+//forge:lint-disable-next-line forge-exclude-contract-outbound-io: the oras registry probe (RegistryImageChecker, preflight_registry.go) already sits behind the consumer-side ImageChecker/CredentialedImageChecker interfaces (preflight.go); the kubectl/KCL calls are the pipeline itself, and a contract.go split of the whole package is CONTRACTS follow-up F2
 //forge:exclude-contract: CLI-internal deploy-pipeline glue (render KCL → kubectl apply → wait rollouts); its exported methods are the pipeline's own API, not a bootstrap-wired Service
 package cluster
 

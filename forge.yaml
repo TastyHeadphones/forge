@@ -100,3 +100,8 @@ contracts:
     - "internal/checksums" # Pure data-record + I/O helpers (FileChecksums struct + Load/Save/Hash); the file-state itself is the API. No behavioural seam to mock.
     - "cmd/forge" # Linker-set version metadata; -X flags require exported package vars.
     - "cmd/contractlint" # Tool entry point; main package, no test seam.
+    - "internal/bundle" # Immutable-OCI-bundle value type + builders/parsers; the registry seam is already two consumer-side one-method interfaces (Pusher, Resolver), and the local layout is a concrete on-disk format. A contract.go over Build/Parse would restate them.
+    - "internal/forgecompat" # Pure version/skew decisions over go.mod/go.work text plus a read of the checkout's git state; Bridge/BridgeReport are data records whose exported methods are renderers (Line/Undo), not a swappable service.
+    - "internal/hostedimage" # Pure and offline by design (the package doc forbids a call): the push-base rule and Finding's wording, so there is no I/O boundary to mock.
+    - "internal/ledgerfile" # The machine-scoped file store of pkg/release's records. Its consumers (internal/cli) already hold it behind their own narrow bindingStore/releaseLedger interfaces; a second, package-side contract would be one-implementation indirection.
+    - "internal/procguard" # Structural lineage rule over the kernel process table; Lineage is an immutable value and the table read is the package's own OS-specific lookup, not an injected collaborator.
