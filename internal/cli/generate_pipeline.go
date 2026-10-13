@@ -1692,6 +1692,16 @@ func stepParseServicesAndModule(ctx *pipelineContext) error {
 				return fmt.Errorf("%s: %w", svc.ProtoFile, verr)
 			}
 		}
+		// `// forge:custom` decides whether an rpc gets a stub or CRUD
+		// wiring, so a marker the descriptor lost, or a custom rpc whose
+		// shim still calls the CRUD op forge stops generating, is refused
+		// here too — before any emitter classifies an rpc.
+		if err := checkCustomMarkerPlacement(services, ctx.ProjectDir); err != nil {
+			return err
+		}
+		if err := checkCustomRPCsDelegate(services, ctx.ProjectDir); err != nil {
+			return err
+		}
 		// ParseServicesFromProtos already reads the module path and sets it on each ServiceDef.
 		// Extract it from the first service to avoid a redundant GetModulePath() call.
 		if len(services) > 0 {
@@ -1898,7 +1908,9 @@ func stepServiceStubs(ctx *pipelineContext) error {
 				svc.Name, codegen.ServiceRowFuncName(svc.Name), serviceRegistryRelPath)
 		}
 	}
-	crudMethodNames := collectCRUDMethodNames(rows, ctx.ProjectDir)
+	// The stub step skips exactly what the CRUD step will implement, under
+	// the CRUD step's own gate — see collectCRUDMethodNames.
+	crudMethodNames := collectCRUDMethodNames(rows, ctx.ProjectDir, gateCRUDProjection(ctx))
 	if err := generateServiceStubs(ctx.Cfg, rows, ctx.ProjectDir, crudMethodNames, ctx.Checksums); err != nil {
 		return fmt.Errorf("service stub generation failed: %w", err)
 	}

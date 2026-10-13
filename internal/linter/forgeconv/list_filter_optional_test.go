@@ -386,3 +386,32 @@ service ModernService {
 		t.Fatalf("request shared with a managed service: want 1 finding, got %d: %+v", len(got), got)
 	}
 }
+
+// A `// forge:custom` List rpc is exempt for the unmanaged service's reason:
+// forge generates no list filter and no page for it, so its handler reads
+// the request however it likes. reliant's ListTasks takes a plain project_id
+// it requires; marked custom, that is the author's contract to state.
+func TestListFilterOptional_SkipsRequestsOnlyCustomRPCsUse(t *testing.T) {
+	custom := `syntax = "proto3";
+
+package tasks.v1;
+
+service TaskService {
+  // forge:custom — lists a project's tasks with their dependency edges.
+  rpc ListTasks(ListTasksRequest) returns (ListTasksResponse);
+}
+
+message ListTasksRequest {
+  string project_id = 1;
+}
+
+message ListTasksResponse {}
+`
+	if got := lintListFilters(t, "tasks.proto", custom); len(got) != 0 {
+		t.Fatalf("forge:custom List rpc's request was judged: %+v", got)
+	}
+	unmarked := strings.Replace(custom, "  // forge:custom — lists a project's tasks with their dependency edges.\n", "", 1)
+	if got := lintListFilters(t, "tasks.proto", unmarked); len(got) != 1 {
+		t.Fatalf("unmarked List rpc: want 1 finding, got %d: %+v", len(got), got)
+	}
+}

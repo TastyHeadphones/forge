@@ -250,6 +250,44 @@ type RawProtoRPC struct {
 	Request string
 	// Streaming reports a `stream` keyword on either side.
 	Streaming bool
+	// Custom reports a `// forge:custom` marker above the rpc
+	// (ProtoMarkerCustom) — the raw-source reading of Method.Custom
+	// (rawRPCMarkerComments). Generate refuses a project where the two
+	// disagree, so after a successful generate they are the same answer.
+	Custom bool
+}
+
+// rawRPCMarkerComments returns the comment text an rpc-level marker may sit
+// in, with the `//` stripped so it has the descriptor path's shape: every
+// comment line between the previous declaration and the rpc. Blank lines do
+// not end the walk — this is where the author PUT the marker, which is the
+// question generate's raw-source cross-check asks of the descriptor
+// (protobuf may hand a block under one rpc to that rpc, or drop it). A
+// trailing comment on the rpc line is not read: the descriptor path refuses a
+// trailing marker, so it never makes an rpc custom. An rpc that does not
+// start its line (`service S { rpc A(...) ...`) has no leading block:
+// whatever sits above that line belongs to the declaration the line opens.
+//
+// start is the byte offset of the rpc signature within content.
+func rawRPCMarkerComments(content string, start int) string {
+	lineStart := strings.LastIndexByte(content[:start], '\n') + 1
+	if strings.TrimSpace(content[lineStart:start]) != "" {
+		return ""
+	}
+	var blocks []string
+	above := strings.Split(content[:lineStart], "\n")
+	for i := len(above) - 1; i >= 0; i-- {
+		t := strings.TrimSpace(above[i])
+		if t == "" {
+			continue
+		}
+		text, ok := strings.CutPrefix(t, "//")
+		if !ok {
+			break
+		}
+		blocks = append([]string{strings.TrimLeft(text, "/")}, blocks...)
+	}
+	return strings.Join(blocks, "\n")
 }
 
 // RawProtoScan is the raw-truth view of one service's proto directory.
@@ -762,6 +800,7 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 				Service:   service,
 				Request:   rawRPCMessageType(req),
 				Streaming: strings.Contains(req, "stream ") || strings.Contains(resp, "stream "),
+				Custom:    CommentMarksCustom(rawRPCMarkerComments(content, loc[0])),
 			})
 		}
 	}

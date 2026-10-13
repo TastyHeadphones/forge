@@ -74,10 +74,10 @@ func entitiesForTables(tables []schemadef.Table, services []ServiceDef) []Entity
 	var entities []EntityDef
 	for _, svc := range services {
 		for _, m := range svc.Methods {
-			if m.ClientStreaming || m.ServerStreaming {
-				continue
-			}
-			op, name := parseCRUDOperation(m.Name)
+			// A `// forge:custom` rpc claims no entity: when every
+			// CRUD-named rpc of a table carries it, the table stays plain
+			// schema — no ORM struct, page or seed root.
+			op, name := CRUDShape(m)
 			if op == "" {
 				continue
 			}

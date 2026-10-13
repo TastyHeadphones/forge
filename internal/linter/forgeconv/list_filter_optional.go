@@ -148,7 +148,9 @@ func checkListFilterOptional(rootDir string, protoFiles []string) map[string][]F
 			if rpc.Request == "" {
 				continue
 			}
-			unmanaged := scan.ServiceUnmanaged(rpc.Service)
+			// A `// forge:custom` rpc is exempt for the same reason: forge
+			// generates no list filter and no page for it.
+			unmanaged := scan.ServiceUnmanaged(rpc.Service) || rpc.Custom
 			requests := managedRequests
 			if unmanaged {
 				requests = unmanagedRequests

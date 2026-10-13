@@ -189,7 +189,8 @@ func buildAnnotationsSpec(kind string) (AnnotationsSpec, error) {
 			ServiceOptions: all.ServiceOptions,
 		}, nil
 	case "method":
-		// Method options plus the one comment marker that attaches to an rpc.
+		// Method options plus the comment markers that attach to an rpc
+		// (forge:mutation, forge:custom).
 		return AnnotationsSpec{
 			Markers:       filterMarkers(all.Markers, "method"),
 			MethodOptions: all.MethodOptions,
@@ -309,6 +310,13 @@ func markerSpecs() []MarkerSpec {
 			Effect:    "Forces the generated React Query hook for this rpc to be a useMutation. Classification is otherwise by leading verb — Get/List/Search/Find/Check/Has/Is/Count/Exists (whole-word) are reads, EVERYTHING else is a mutation — so this is needed only for an imperative rpc that happens to open with a read word (FindAndHoldSeat, IssueRefund). A write generated as useQuery re-fires on every component remount. Unlike the entity/field markers this one is read on every `forge generate`, not just at birth.",
 			Placement: "leading full-line comment above the `rpc` line, or a trailing comment on it",
 			Example:   "// forge:mutation — holds inventory, so it must never be a cached read.\nrpc FindAndHoldSeat(FindAndHoldSeatRequest) returns (FindAndHoldSeatResponse);",
+		},
+		{
+			Name:      codegen.ProtoMarkerCustom,
+			AppliesTo: "method",
+			Effect:    "Declares this rpc custom whatever its name. Without it a unary rpc named exactly Create<E>/Get<E>/Update<E>/Delete<E>/List<Es>, where <E> has a table and a wire message, is CRUD and gets generic CRUD wiring. Marked, it is custom on both sides of the wire: a pb-through stub in rpc_<name>.go plus a scaffold test row, no CRUD shim or op, no entity page, a hook that invalidates at service scope, and it is exempt from the list-filter lint. It makes no entity, so when EVERY CRUD-named rpc of a table carries it the table is plain schema — no ORM struct in internal/db, no page, no seed root: the per-entity opt-out, one rpc at a time. Use it instead of renaming an rpc to dodge detection. Marking an rpc that was CRUD stops forge generating its crud<Rpc>Op, so generate refuses while a shim still calls it — delete that method (or replace its body) first. A near-miss spelling, or the marker on a service or message, fails generate.",
+			Placement: "full-line comment directly above the `rpc` line. Never trailing: protobuf hands a comment after an rpc (same line, or the line below followed by a blank line) to THAT rpc even when it was written for the next one, so generate refuses a trailing marker, and refuses a marker written above an rpc that the compiled descriptor did not attach to it.",
+			Example:   "// forge:custom — creating a task also wires its dependencies and fires triggers.\nrpc CreateTask(CreateTaskRequest) returns (CreateTaskResponse);",
 		},
 		{
 			Name:      codegen.ProtoMarkerUnmanaged,

@@ -38,7 +38,7 @@ func TestAnnotations_JSONValidAndComplete(t *testing.T) {
 	}
 	for _, want := range []string{
 		"forge:entity", "forge:soft-delete", "forge:append-only",
-		"forge:read-only", "forge:secret", "forge:mutation", "forge:unmanaged",
+		"forge:read-only", "forge:secret", "forge:mutation", "forge:custom", "forge:unmanaged",
 	} {
 		if !markerNames[want] {
 			t.Errorf("markers missing %q", want)
@@ -48,8 +48,8 @@ func TestAnnotations_JSONValidAndComplete(t *testing.T) {
 	// Go-source markers. The authoritative per-marker pin is
 	// TestAnnotations_MarkerNamesMatchRecognizers and its Go-source twin;
 	// this only guards the full dump against silent loss.
-	if len(spec.Markers) != 25 {
-		t.Errorf("expected 25 markers, got %d", len(spec.Markers))
+	if len(spec.Markers) != 26 {
+		t.Errorf("expected 26 markers, got %d", len(spec.Markers))
 	}
 
 	// The proto→column mapping a birth applies: every proto3 scalar kind
@@ -198,13 +198,17 @@ func TestAnnotations_KindFilters(t *testing.T) {
 		t.Errorf("--kind service leaked other sections: %+v", service)
 	}
 
-	// method → method_options plus the rpc-level comment marker.
+	// method → method_options plus the rpc-level comment markers.
 	method := dumpJSON(t, "method")
 	if len(method.MethodOptions) == 0 {
 		t.Error("--kind method returned no method_options")
 	}
-	if len(method.Markers) != 1 || method.Markers[0].Name != "forge:mutation" {
-		t.Errorf("--kind method must carry the rpc-level marker: %+v", method.Markers)
+	methodMarkers := map[string]bool{}
+	for _, m := range method.Markers {
+		methodMarkers[m.Name] = true
+	}
+	if len(method.Markers) != 2 || !methodMarkers["forge:mutation"] || !methodMarkers["forge:custom"] {
+		t.Errorf("--kind method must carry the rpc-level markers forge:mutation and forge:custom: %+v", method.Markers)
 	}
 	if len(method.FieldTypes) != 0 ||
 		len(method.ValidateRules) != 0 || len(method.ServiceOptions) != 0 {
@@ -343,7 +347,7 @@ message LedgerEntity {
 	for _, want := range []string{
 		"forge:entity", "forge:soft-delete", "forge:append-only",
 		"forge:read-only", "forge:generated", "forge:secret", "forge:guards", "forge:mutation",
-		"forge:unmanaged",
+		"forge:custom", "forge:unmanaged",
 		"forge:optional-dep", "forge:optional-checked", "forge:constructor",
 		"forge:no-observe", "forge:service", "forge:exclude-contract",
 		"forge:external-component", "forge:not-a-component", "forge:outbound-io",
@@ -352,8 +356,8 @@ message LedgerEntity {
 			t.Errorf("markerSpecs missing recognized marker %q", want)
 		}
 	}
-	if len(got) != 24 {
-		t.Errorf("expected 24 marker specs, got %d", len(got))
+	if len(got) != 25 {
+		t.Errorf("expected 25 marker specs, got %d", len(got))
 	}
 
 	// Proto markers are pinned against codegen.KnownProtoMarkers — the same

@@ -97,6 +97,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a failed run did (`Before`, a committed adoption) alongside the error.
   Tested behind a real session-mode PgBouncer (`-tags integration`) and a
   per-role connection cap.
+- **Under `//forge:no-orm`, a CRUD-named rpc gets a stub instead of
+  vanishing.** The stub step skipped every rpc that matched an entity, and the
+  CRUD step, which is off with the ORM, never implemented it: the rpc had
+  neither a stub nor a shim and served Unimplemented with nothing in the tree,
+  `shapes` or the audit saying so. The stub step now skips exactly what the
+  CRUD step will implement, under the CRUD step's own gate, so with no ORM
+  every rpc is stubbed. The skip set is also per service: one service's CRUD
+  `CreateTask` no longer suppresses another service's custom `CreateTask`
+  stub.
+
 - **The test harness imports a config only for a component that takes one.**
   `helpers_gen_test.go` imported `<module>/pkg/config` for every service and
   every wired contract package, and declared `WithConfig` and a
@@ -296,6 +306,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   connection borrowed from `db`. `AutoMigrate`'s boot log no longer has the
   separate `migration status` line; `no pending migrations` now carries the
   version.
+- **`// forge:custom`: declare an rpc custom whatever its name.** An rpc was
+  CRUD whenever it was unary, named `Create<E>`/`Get<E>`/`Update<E>`/
+  `Delete<E>`/`List<Es>` and `<E>` had a table and a wire message, and the
+  framework guide forbids the only way out (renaming it). reliant has 52 such
+  rpcs whose semantics are its own. Put `// forge:custom` on its own line
+  above the rpc and it is custom on both sides of the wire: a pb-through stub
+  and a scaffold test row, no CRUD shim or op, no entity page, a hook that
+  invalidates at service scope, no list-filter lint. It makes no entity, so
+  marking every CRUD-named rpc of a table is the per-entity opt-out: the table
+  stays plain schema, with no ORM struct in `internal/db` (no `Task
+  redeclared` against a project's own `Task`), page or seed root. A comment
+  marker, like `forge:unmanaged`, because who implements a handler is not a
+  fact about the API contract and must not cost the `forge.proto` import.
+  Generate refuses a near-miss spelling, the marker on a service or message,
+  a trailing marker (protobuf hands a comment under one rpc to that rpc even
+  when it was written for the next), a marker the source shows but the
+  compiled descriptor lost, and a newly custom rpc whose shim or lifecycle
+  test still uses its `crud<Rpc>Op` or create-request factory, naming the
+  file and line. `forge project audit` marks each in
+  `shape.services[].rpcs[].custom`.
+- **`forge project audit` reports rpcs with no handler method
+  (`unhandled_rpcs`).** A Service embeds `Unimplemented<Svc>Handler`, so an
+  rpc of a managed service with no `*Service` method compiles and serves
+  `CodeUnimplemented` with no stub saying so, invisible to `orphan_stubs` and
+  `shapes`. The category names each one (warn), and lists a service whose
+  struct embeds another type, which may promote the method, as unresolved
+  rather than accusing it.
+
 - **`forge lint --show-suppressed`: every suppression the project declares, in
   one list.** The `contracts/package-markers` skill told users their
   allowances were "reported by `--show-suppressed`", and `forge lint` answered

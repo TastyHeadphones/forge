@@ -85,6 +85,11 @@ func generateDescriptor(p *protogen.Plugin, descriptorOut string) error {
 		if err := checkUnmanagedMarkers(f); err != nil {
 			return err
 		}
+		// `// forge:custom` decides whether forge wires generic CRUD over an
+		// rpc, so the same refusal covers it.
+		if err := checkCustomMarkers(f); err != nil {
+			return err
+		}
 
 		// Extract services
 		for _, svc := range f.Services {
@@ -293,6 +298,7 @@ func extractService(file *protogen.File, svc *protogen.Service) codegen.ServiceD
 			AuthRequired:    true,
 			InputProtoFile:  m.Input.Desc.ParentFile().Path(),
 			OutputProtoFile: m.Output.Desc.ParentFile().Path(),
+			Custom:          codegen.CommentMarksCustom(rpcMarkerComments(m)),
 		}
 
 		// Read method-level options
@@ -523,6 +529,69 @@ func checkUnmanagedMarkers(f *protogen.File) error {
 		if codegen.CommentMarksUnmanaged(string(msg.Comments.Leading)) {
 			return fmt.Errorf("%s: message %s carries %q, which applies to a service and does nothing on a message. Move it above the `service X {` whose handlers live outside forge, or delete it",
 				path, msg.Desc.Name(), codegen.ProtoMarkerUnmanaged)
+		}
+	}
+	return nil
+}
+
+// rpcMarkerComments is the comment text an rpc-level marker may sit in: the
+// detached blocks between the previous declaration and the rpc, and the
+// attached one — serviceMarkerComments' placement rule. NOT the trailing
+// comment: inside a service body protobuf hands a comment that directly
+// follows an rpc to THAT rpc as its trailing comment even when the author
+// wrote it for the next one, so a trailing marker has no single meaning and
+// checkCustomMarkers refuses it instead.
+func rpcMarkerComments(m *protogen.Method) string {
+	var b strings.Builder
+	for _, c := range m.Comments.LeadingDetached {
+		b.WriteString(string(c))
+		b.WriteString("\n")
+	}
+	b.WriteString(string(m.Comments.Leading))
+	return b.String()
+}
+
+// checkCustomMarkers refuses a `forge:custom` marker whose meaning is not the
+// one its author wrote, each of which leaves forge wiring generic CRUD over
+// logic the author meant to keep — or marks the wrong rpc:
+//
+//   - a near-miss spelling on an rpc (`forge:cusotm`, `forge:custom-rpc`);
+//   - the marker in an rpc's TRAILING comment. `rpc A(...); // forge:custom`
+//     and a marker on the line under `rpc A` followed by a blank line both
+//     reach the descriptor as A's trailing comment, and the second one was
+//     written for the rpc BELOW. Nothing in the descriptor tells them apart,
+//     so neither is guessed at;
+//   - the marker above a service or a top-level message. It declares ONE rpc
+//     custom: a whole service whose handlers live elsewhere is
+//     forge:unmanaged, and an entity with no generic CRUD is every one of its
+//     CRUD-named rpcs marked — the entity then does not exist.
+//
+// A marker protobuf drops altogether (a block under an rpc that already has a
+// same-line comment, followed by a blank line) never reaches the descriptor;
+// generate's raw-source cross-check (checkCustomMarkerPlacement) catches it.
+func checkCustomMarkers(f *protogen.File) error {
+	path := f.Desc.Path()
+	for _, svc := range f.Services {
+		if codegen.CommentMarksCustom(serviceMarkerComments(svc)) {
+			return fmt.Errorf("%s: service %s carries %q, which declares ONE rpc custom and does nothing on a service. Put it above each rpc whose semantics are your own, or use %q to leave the whole service to your own handlers",
+				path, svc.Desc.Name(), codegen.ProtoMarkerCustom, codegen.ProtoMarkerUnmanaged)
+		}
+		for _, m := range svc.Methods {
+			trailing := string(m.Comments.Trailing)
+			if tok := codegen.CustomMarkerNearMiss(rpcMarkerComments(m) + "\n" + trailing); tok != "" {
+				return fmt.Errorf("%s: rpc %s.%s: %q is not a forge marker — did you mean %q? As written, forge still treats %s as CRUD when its name matches an entity, and wires generic CRUD over it",
+					path, svc.Desc.Name(), m.Desc.Name(), tok, codegen.ProtoMarkerCustom, m.Desc.Name())
+			}
+			if codegen.CommentMarksCustom(trailing) {
+				return fmt.Errorf("%s: rpc %s.%s has %q in its trailing comment (after it on the same line, or on the line below it), and protobuf reads a comment there as belonging to %s even when it was written for the rpc below. Put the marker on its own line directly above the rpc it describes, with no blank line between",
+					path, svc.Desc.Name(), m.Desc.Name(), codegen.ProtoMarkerCustom, m.Desc.Name())
+			}
+		}
+	}
+	for _, msg := range f.Messages {
+		if codegen.CommentMarksCustom(string(msg.Comments.Leading)) {
+			return fmt.Errorf("%s: message %s carries %q, which declares ONE rpc custom and does nothing on a message. Put it above each of %s's CRUD-named rpcs (Create%s, Get%s, ...) whose semantics are your own; marked on all of them, %s is not a forge entity",
+				path, msg.Desc.Name(), codegen.ProtoMarkerCustom, msg.Desc.Name(), msg.Desc.Name(), msg.Desc.Name(), msg.Desc.Name())
 		}
 	}
 	return nil

@@ -363,12 +363,7 @@ func MatchCRUDMethods(svc ServiceDef, entities []EntityDef) []CRUDMethod {
 
 	var matches []CRUDMethod
 	for _, m := range svc.Methods {
-		// Skip streaming methods — CRUD is unary only
-		if m.ClientStreaming || m.ServerStreaming {
-			continue
-		}
-
-		op, entityName := parseCRUDOperation(m.Name)
+		op, entityName := CRUDShape(m)
 		if op == "" {
 			continue
 		}
@@ -402,12 +397,30 @@ func MatchCRUDMethods(svc ServiceDef, entities []EntityDef) []CRUDMethod {
 	return matches
 }
 
+// CRUDShape is the one answer to "does this rpc's DECLARATION claim CRUD,
+// and on which entity name?" — every projection that classifies an rpc asks
+// it, so the server wiring, the entity set, the frontend, the seed scope and
+// the audit cannot disagree about one rpc.
+//
+// An rpc claims CRUD when it is unary, named Create<E>/Get<E>/Update<E>/
+// Delete<E>/List<Es>, and carries no `// forge:custom` marker
+// (ProtoMarkerCustom). The claim is not the verdict: the rpc is CRUD only
+// when <E> also has a table and a wire message, which MatchCRUDMethods and
+// BuildSchemaEntities decide. Everything CRUDShape refuses is custom.
+//
+// The entity name is as written — List's plural is NOT singularized here,
+// because each caller resolves it against a different inventory.
+func CRUDShape(m Method) (operation, entityName string) {
+	if m.Custom || m.ClientStreaming || m.ServerStreaming {
+		return "", ""
+	}
+	return parseCRUDOperation(m.Name)
+}
+
 // ParseCRUDOperation extracts the CRUD operation and entity name from a
-// method name. Returns ("", "") if the method doesn't match a CRUD
-// pattern. Exported so the CLI's webhook-only detection can ask the
-// same question MatchCRUDMethods does without re-implementing the
-// prefix list. Internal callers should keep using parseCRUDOperation;
-// they're identical.
+// method NAME alone. Returns ("", "") if the name doesn't match a CRUD
+// pattern. Name-only, so it cannot see `// forge:custom` or streaming:
+// classify an rpc you hold as a Method with CRUDShape instead.
 func ParseCRUDOperation(methodName string) (operation, entityName string) {
 	return parseCRUDOperation(methodName)
 }
@@ -454,8 +467,10 @@ func parseCRUDOperation(methodName string) (operation, entityName string) {
 //
 // For List, the plural is singularized first (ListJobs → Job), falling back
 // to the name as written (ListJob, or a plural inflection does not invert).
-func crudEntity(svc ServiceDef, methodName string) (operation, entity string) {
-	op, name := parseCRUDOperation(methodName)
+// A `// forge:custom` rpc is custom here too (CRUDShape): it births no page
+// and its hook keys and invalidates at the service scope.
+func crudEntity(svc ServiceDef, m Method) (operation, entity string) {
+	op, name := CRUDShape(m)
 	if op == "" {
 		return "", ""
 	}

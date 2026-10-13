@@ -763,10 +763,9 @@ func printFromProtoNextSteps() {
 func selectFromProtoBatch(sd codegen.ServiceDef, applied map[string]bool) (selected []string, skipped []string) {
 	ops := map[string]map[string]bool{} // entity message name → op set
 	for _, m := range sd.Methods {
-		if m.ClientStreaming || m.ServerStreaming {
-			continue
-		}
-		op, entity := codegen.ParseCRUDOperation(m.Name)
+		// A `// forge:custom` rpc claims no entity, so a quintet of them
+		// births no table.
+		op, entity := codegen.CRUDShape(m)
 		if op == "" || entity == "" {
 			continue
 		}
@@ -993,10 +992,7 @@ func fkKnownTables(applied map[string]bool, sd codegen.ServiceDef, scans ...*cod
 		}
 	}
 	for _, m := range sd.Methods {
-		if m.ClientStreaming || m.ServerStreaming {
-			continue
-		}
-		op, entity := codegen.ParseCRUDOperation(m.Name)
+		op, entity := codegen.CRUDShape(m) // unary, not forge:custom
 		if op == "" || entity == "" {
 			continue
 		}

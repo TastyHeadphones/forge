@@ -31,6 +31,11 @@ so a reader of that package sees it, with its reason, where `//forge:exclude-con
 already works. It opts out of the ORM projection only — migrations, codegen and the database
 stay on.
 
+With no ORM there is no generic CRUD to wire, so every rpc is custom on the server: a
+CRUD-named one (`CreateTask` over a `tasks` table) gets a pb-through stub and a scaffold test
+row like any other, for your data layer to implement. To keep the ORM and opt ONE rpc out,
+mark it `// forge:custom` instead (`forge project annotations --kind method`).
+
 forge reads it from non-test, non-generated `.go` files **directly in** `internal/db/`. A line
 that merely mentions it in prose, a `_gen.go` file, a `_test.go` file, or another package does
 not count. `forge project features` shows `orm` off with `(//forge:no-orm in internal/db)`.

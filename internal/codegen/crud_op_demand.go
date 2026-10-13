@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // CRUD op demand: which generated ops (and conversion helpers) a handler
@@ -131,6 +133,75 @@ func isServiceReceiver(recv *ast.FieldList) bool {
 	}
 	ident, ok := star.X.(*ast.Ident)
 	return ok && ident.Name == "Service"
+}
+
+// CRUDProjectionReference is one place a handler package still uses
+// something forge generates for an rpc only while that rpc is CRUD.
+type CRUDProjectionReference struct {
+	// At is `file:line` within the handler package.
+	At string
+	// Symbol is what it uses: the op (`crudCreateTaskOp`) or, for a Create
+	// rpc, its create-request test factory (`NewCreateTaskRequest`).
+	Symbol string
+}
+
+// CRUDProjectionReferences reports, per method (keyed by Go method name), the
+// first place the handler package at dir uses a symbol forge generates for
+// that rpc only while it is CRUD: its op (crud<Method>Op), and for a
+// Create-named rpc its create-request factory (New<Request>), which the
+// scaffolded lifecycle test calls. Tests are read too — a test calling either
+// breaks `go test` as surely as a handler breaks the build. Forge's own
+// generated files (handlersGeneratedFiles, *_gen.go, *_gen_test.go) are not
+// read: they DECLARE these symbols, they are not demand for them. Methods
+// nothing references are absent. A missing dir is no references.
+//
+// It answers the question a `// forge:custom` rpc raises when it was CRUD
+// before: forge stops generating both, so code still using them fails after
+// the whole generate ran.
+func CRUDProjectionReferences(dir string, methods []Method) (map[string]CRUDProjectionReference, error) {
+	want := map[string]string{} // symbol → Go method name
+	for _, m := range methods {
+		want[crudOpName(m.GoName())] = m.GoName()
+		if op, _ := parseCRUDOperation(m.Name); op == "create" {
+			want["New"+naming.GoCamelCase(m.InputType)] = m.GoName() // createRequestFactoryName
+		}
+	}
+	out := map[string]CRUDProjectionReference{}
+	if len(want) == 0 {
+		return out, nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return out, nil
+		}
+		return nil, err
+	}
+	fset := token.NewFileSet()
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || handlersGeneratedFiles[name] ||
+			strings.HasSuffix(name, "_gen.go") || strings.HasSuffix(name, "_gen_test.go") {
+			continue
+		}
+		file, perr := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.SkipObjectResolution)
+		if perr != nil {
+			continue // the validate build reports a broken file far better
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			id, ok := n.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			if m, hit := want[id.Name]; hit {
+				if _, seen := out[m]; !seen {
+					out[m] = CRUDProjectionReference{At: fmt.Sprintf("%s:%d", name, fset.Position(id.Pos()).Line), Symbol: id.Name}
+				}
+			}
+			return true
+		})
+	}
+	return out, nil
 }
 
 // crudOpName is the generated op constructor for a CRUD RPC, given the

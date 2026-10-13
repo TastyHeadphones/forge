@@ -118,8 +118,12 @@ An rpc is CRUD only when it is unary and named exactly `Create<E>`, `Get<E>`,
 `Update<E>`, `Delete<E>` or `List<Es>`, where `<E>` is an entity: a table in the
 applied schema AND a proto message of that name. Everything else is custom and
 yours — including `UpdateJobStatus`, `CreateInvoiceFromEstimate` and
-`ListJobsByCrew`, so never rename an rpc to dodge CRUD detection. A custom
-mutation's generated hook invalidates every query on its service. Depth: `proto`.
+`ListJobsByCrew`, so never rename an rpc to dodge CRUD detection. When an rpc
+is CRUD in name only (`CreateTask` also wires dependencies), put `// forge:custom`
+above it: it gets a stub instead of CRUD wiring, and once every CRUD-named rpc of
+a table carries it, the table is no entity at all (no ORM struct, no page). A
+custom mutation's generated hook invalidates every query on its service. Depth:
+`proto`.
 
 Which marker for a field forge must not let clients write — `forge:read-only`,
 `forge:computed`, `forge:generated`, `forge:guards`, `forge:immutable` — is a
