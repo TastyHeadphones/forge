@@ -25,6 +25,9 @@ import (
 
 	"github.com/reliant-labs/forge/pkg/observe/metrics"
 
+	// Linked for its side effect: internal/metrics declares this binary's
+	// instruments as package-level vars, and a package nothing imports adds
+	// nothing to the registry this command prints.
 	_ "{{.Module}}/internal/metrics"
 )
 
