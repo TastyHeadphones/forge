@@ -118,9 +118,9 @@ func TestResolveCrossPkgInterface_HappyPath(t *testing.T) {
 		params  string
 		results string
 	}{
-		"GetByID": {params: "ctx context.Context, id string", results: "(*repo.User, error)"},
-		"List":    {params: "ctx context.Context", results: "([]repo.User, error)"},
-		"Delete":  {params: "ctx context.Context, id string", results: "error"},
+		"GetByID": {params: "context.Context, string", results: "(*repo.User, error)"},
+		"List":    {params: "context.Context", results: "([]repo.User, error)"},
+		"Delete":  {params: "context.Context, string", results: "error"},
 	}
 	got := map[string]InterfaceMethod{}
 	for _, m := range res.Methods {
@@ -398,7 +398,7 @@ func TestGenerateBootstrapTesting_CrossPackageStub(t *testing.T) {
 		{"stub struct is declared",
 			"type stubBillingRepo struct{}"},
 		{"stub method GetByID is emitted with qualified types",
-			"GetByID(ctx context.Context, id string) (*repo.User, error)"},
+			"GetByID(context.Context, string) (*repo.User, error)"},
 	}
 	for _, a := range assertions {
 		if !strings.Contains(content, a.want) {

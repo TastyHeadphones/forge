@@ -10,6 +10,7 @@ import "text/template"
 // re-deriving Imports / InterfaceNames.
 type templateData struct {
 	Package          string
+	Receiver         string // every mock method's receiver; see mockReceiver
 	Imports          []ImportDef
 	Interfaces       []InterfaceDef
 	InterfaceNames   map[string]bool   // local interface names (for zeroValue)
@@ -20,6 +21,12 @@ type templateData struct {
 // template (Recorder embed + MockNotSet). Holding it in one place keeps
 // the "is contractkit needed" guard in the generator easy to audit.
 const contractkitImport = "github.com/reliant-labs/forge/pkg/contractkit"
+
+// mockReceiver is the receiver every generated mock method declares. A
+// contract parameter of the same name is renamed in the mock rather than
+// this changing per method (MethodDef.withBodyScopedNames), so the receiver
+// reads the same in every mock forge writes.
+const mockReceiver = "m"
 
 // mockTmpl generates mock_gen.go with function-field mocks.
 //
@@ -58,10 +65,10 @@ type {{ $iface.MockName }} struct {
 
 {{ range $m := $iface.Methods -}}
 // {{ $m.Name }} records the call and delegates to {{ $m.Name }}Func when set.
-func (m *{{ $iface.MockName }}) {{ $m.Name }}({{ $m.ParamSignature }}){{ with $m.ResultSignature }} {{ . }}{{ end }} {
-	m.Recorder.Record("{{ $m.Name }}"{{ with $m.RecordArgs }}, {{ . }}{{ end }})
-	if m.{{ $m.Name }}Func != nil {
-		{{ if $m.HasResults }}return {{ end }}m.{{ $m.Name }}Func({{ $m.CallArgs }}){{ if not $m.HasResults }}
+func ({{ $.Receiver }} *{{ $iface.MockName }}) {{ $m.Name }}({{ $m.ParamSignature }}){{ with $m.ResultSignature }} {{ . }}{{ end }} {
+	{{ $.Receiver }}.Recorder.Record("{{ $m.Name }}"{{ with $m.RecordArgs }}, {{ . }}{{ end }})
+	if {{ $.Receiver }}.{{ $m.Name }}Func != nil {
+		{{ if $m.HasResults }}return {{ end }}{{ $.Receiver }}.{{ $m.Name }}Func({{ $m.CallArgs }}){{ if not $m.HasResults }}
 		return{{ end }}
 	}
 {{ if $m.HasResults }}	return {{ $m.ZeroResults $iface.MockName $.InterfaceNames $.PrimitiveAliases }}

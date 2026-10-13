@@ -25,6 +25,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/reliant-labs/forge/internal/checksums"
 )
@@ -733,10 +734,24 @@ func renderMock(cf *File, opts Options) ([]byte, error) {
 		}
 	}
 
+	// Each mock method is rendered from a copy whose parameter names cannot
+	// shadow what the template's body spells: the receiver and the
+	// contractkit qualifier (see withBodyScopedNames). cf.Interfaces itself
+	// keeps the contract's names; the decorator renders from it too.
+	ifaces := make([]InterfaceDef, len(cf.Interfaces))
+	for i, iface := range cf.Interfaces {
+		ifaces[i] = iface
+		ifaces[i].Methods = make([]MethodDef, len(iface.Methods))
+		for j, m := range iface.Methods {
+			ifaces[i].Methods[j] = m.withBodyScopedNames(mockReceiver, "contractkit")
+		}
+	}
+
 	data := templateData{
 		Package:          cf.Package,
+		Receiver:         mockReceiver,
 		Imports:          imports,
-		Interfaces:       cf.Interfaces,
+		Interfaces:       ifaces,
 		InterfaceNames:   interfaceNames,
 		PrimitiveAliases: cf.PrimitiveAliases,
 	}
@@ -814,6 +829,100 @@ func concreteParamName(p ParamDef, index int) string {
 		return fmt.Sprintf("p%d", index)
 	}
 	return p.Name
+}
+
+// withBodyScopedNames returns a copy of m that is safe to render as a method
+// WITH a body, given the identifiers that body references (bodyIdents).
+//
+// contract.go declares interface methods, which have no body, so a parameter
+// there may be named anything: `m`, `ctx`, `err`, `contractkit`, or the
+// package a sibling parameter's type comes from (`user user.User`). A
+// generated mock or decorator method puts those parameters in ONE scope with
+// its receiver, its locals, and every package qualifier and predeclared
+// identifier its body spells. A parameter that shadows one of them either
+// fails to compile (`m redeclared`, `user.User is not a type`) or, worse,
+// compiles and forwards the wrong value. So every such parameter is renamed
+// to a positional pN, the name an unnamed or blank parameter already gets.
+// Renaming is invisible to callers: a method's parameter names are not part
+// of its type.
+//
+// Result names are dropped for the same reason. No generated body assigns a
+// named result, so a name there can only collide (a result named `m` with
+// the receiver, `r0` with the decorator's capture variable).
+func (m MethodDef) withBodyScopedNames(bodyIdents ...string) MethodDef {
+	reserved := make(map[string]bool, len(goUniverse)+len(bodyIdents))
+	for _, id := range goUniverse {
+		reserved[id] = true
+	}
+	for _, id := range bodyIdents {
+		reserved[id] = true
+	}
+	// Every identifier the method's own types spell: package qualifiers
+	// (zero values and closure signatures name the result types), local
+	// type names (`Result{}`), and predeclared ones.
+	for _, list := range [][]ParamDef{m.Params, m.Results} {
+		for _, p := range list {
+			for _, id := range typeExprIdents(p.TypeExpr) {
+				reserved[id] = true
+			}
+		}
+	}
+
+	out := m
+	out.Params = make([]ParamDef, len(m.Params))
+	copy(out.Params, m.Params)
+	out.Results = make([]ParamDef, len(m.Results))
+	for i, r := range m.Results {
+		out.Results[i] = ParamDef{TypeExpr: r.TypeExpr, Variadic: r.Variadic}
+	}
+
+	// Keep every contract name that is free, then give each remaining
+	// parameter the first positional name nothing else holds. Two passes, so
+	// a kept name can never be handed out again as some later pN.
+	used := map[string]bool{}
+	rename := make([]bool, len(out.Params))
+	for i, p := range out.Params {
+		if p.Name == "" || p.Name == "_" || reserved[p.Name] {
+			rename[i] = true
+			continue
+		}
+		used[p.Name] = true
+	}
+	for i := range out.Params {
+		if !rename[i] {
+			continue
+		}
+		name := fmt.Sprintf("p%d", i)
+		for used[name] || reserved[name] {
+			name += "_"
+		}
+		used[name] = true
+		out.Params[i].Name = name
+	}
+	return out
+}
+
+// goUniverse is Go's universe scope: every predeclared identifier. A
+// parameter may legally take any of these names, and a generated body may
+// spell any of them (`nil`, `false`, `*new(pkg.T)`, `func(...) error`).
+var goUniverse = []string{
+	"any", "bool", "byte", "comparable", "complex64", "complex128", "error",
+	"float32", "float64", "int", "int8", "int16", "int32", "int64", "rune",
+	"string", "uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
+	"true", "false", "iota", "nil",
+	"append", "cap", "clear", "close", "complex", "copy", "delete", "imag",
+	"len", "make", "max", "min", "new", "panic", "print", "println", "real",
+	"recover",
+}
+
+// typeExprIdents returns every identifier in a rendered type expression:
+// package qualifiers, type names, and the names inside a func type's own
+// parameter list. Over-collecting is harmless — it can only rename a
+// parameter that did not strictly need it.
+func typeExprIdents(typeExpr string) []string {
+	return strings.FieldsFunc(typeExpr, func(r rune) bool {
+		return !(r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r))
+	})
 }
 
 // ResultSignature returns the Go result type list, e.g. "(string, error)" or "error".

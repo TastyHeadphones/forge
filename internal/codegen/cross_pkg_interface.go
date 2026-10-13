@@ -165,16 +165,11 @@ func ResolveCrossPkgInterface(handlerDir, pkgAlias, typeName string) (CrossPkgIn
 		}
 		m := InterfaceMethod{Name: fn.Name()}
 
-		// Params: render each tuple element with our qualifier.
+		// Params: each tuple element's type, rendered with our qualifier
+		// and never its name (see InterfaceMethod.Params).
 		var paramParts []string
 		for j := 0; j < sig.Params().Len(); j++ {
-			p := sig.Params().At(j)
-			tStr := types.TypeString(p.Type(), qualifier)
-			name := p.Name()
-			if name == "" {
-				name = fmt.Sprintf("p%d", j)
-			}
-			paramParts = append(paramParts, name+" "+tStr)
+			paramParts = append(paramParts, types.TypeString(sig.Params().At(j).Type(), qualifier))
 		}
 		// Variadic last param: types.Signature.Variadic() is true
 		// when the last param is a slice rendered as `...T`. We have
