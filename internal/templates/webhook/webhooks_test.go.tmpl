@@ -9,14 +9,18 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+{{- if .ConfigImport}}
 
-	"{{.Module}}/pkg/config"
+	{{with .ConfigImportAlias}}{{.}} {{end}}"{{.ConfigImport}}"
+{{- end}}
 )
 
 func TestWebhook{{.Name | pascalCase}}RejectsNonPOST(t *testing.T) {
 	svc, err := New(Deps{
 		Logger: slog.Default(),
+{{- if .ConfigImport}}
 		Config: &config.Config{},
+{{- end}}
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -33,7 +37,9 @@ func TestWebhook{{.Name | pascalCase}}RejectsNonPOST(t *testing.T) {
 func TestWebhook{{.Name | pascalCase}}RejectsMissingEventID(t *testing.T) {
 	svc, err := New(Deps{
 		Logger: slog.Default(),
+{{- if .ConfigImport}}
 		Config: &config.Config{},
+{{- end}}
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -52,7 +58,9 @@ func TestWebhook{{.Name | pascalCase}}RejectsMissingEventID(t *testing.T) {
 func TestWebhook{{.Name | pascalCase}}DeduplicatesEvents(t *testing.T) {
 	svc, err := New(Deps{
 		Logger: slog.Default(),
+{{- if .ConfigImport}}
 		Config: &config.Config{},
+{{- end}}
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -80,7 +88,9 @@ func TestWebhook{{.Name | pascalCase}}DeduplicatesEvents(t *testing.T) {
 func TestWebhook{{.Name | pascalCase}}IdempotencyRoundTrip(t *testing.T) {
 	svc, err := New(Deps{
 		Logger: slog.Default(),
+{{- if .ConfigImport}}
 		Config: &config.Config{},
+{{- end}}
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

@@ -5,14 +5,18 @@ import (
 	"log/slog"
 	"testing"
 	"time"
+{{- if .HasConfig}}
 
 	"{{.Module}}/pkg/config"
+{{- end}}
 )
 
 func TestWorkerStartStop(t *testing.T) {
 	w := New(Deps{
 		Logger: slog.Default(),
+{{- if .HasConfig}}
 		Config: &config.Config{},
+{{- end}}
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -52,7 +56,9 @@ func TestWorkerStartStop(t *testing.T) {
 func TestWorkerRunOnceAcceptsContext(t *testing.T) {
 	w := New(Deps{
 		Logger: slog.Default(),
+{{- if .HasConfig}}
 		Config: &config.Config{},
+{{- end}}
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())

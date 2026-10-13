@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+{{- if .HasConfig}}
 
 	"{{.Module}}/pkg/config"
+{{- end}}
 )
 
 func TestHealthCheck(t *testing.T) {
@@ -25,7 +27,9 @@ func TestHealthCheck(t *testing.T) {
 	c := &client{
 		deps: Deps{
 			Logger: slog.Default(),
+{{- if .HasConfig}}
 			Config: &config.Config{},
+{{- end}}
 		},
 		http:    server.Client(),
 		baseURL: server.URL,
@@ -45,7 +49,9 @@ func TestHealthCheckFailure(t *testing.T) {
 	c := &client{
 		deps: Deps{
 			Logger: slog.Default(),
+{{- if .HasConfig}}
 			Config: &config.Config{},
+{{- end}}
 		},
 		http:    server.Client(),
 		baseURL: server.URL,

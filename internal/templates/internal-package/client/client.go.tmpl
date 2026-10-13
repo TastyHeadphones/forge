@@ -9,14 +9,18 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+{{- if .HasConfig}}
 
 	"{{.Module}}/pkg/config"
+{{- end}}
 )
 
 // Deps contains the dependencies for the {{.Name}} client.
 type Deps struct {
 	Logger *slog.Logger
+{{- if .HasConfig}}
 	Config *config.Config
+{{- end}}
 
 	// HTTPClient is injected so tests can swap in an httptest-backed
 	// transport. Production wiring passes `infra.DefaultClient()` (see

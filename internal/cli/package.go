@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/generator/contract"
 	"github.com/reliant-labs/forge/internal/templates"
@@ -195,11 +196,16 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 		Module     string
 		Flavor     string
 		LogLevel   string
+		// HasConfig: the package's Deps takes Config, and its files import
+		// <module>/pkg/config, only when the project has typed config — the
+		// rule service.go follows. A project adopted in place has none.
+		HasConfig bool
 	}{
 		Name:       name,
 		ImportPath: name,
 		Module:     cfg.ModulePath,
 		Flavor:     flavor,
+		HasConfig:  codegen.ProjectHasTypedConfig(root),
 		// Seed the owned observe_chain.go seam's success-log level from the
 		// project's observability config (default: slog.LevelDebug).
 		LogLevel: cfg.Observability.SlogLevelExpr(),

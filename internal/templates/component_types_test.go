@@ -34,10 +34,12 @@ func TestWorkerTemplatesRenderDefault(t *testing.T) {
 		DatabaseDriver string
 		OrmEnabled     bool
 		Schedule       string
+		HasConfig      bool
 	}{
-		Name:    "processor",
-		Package: "processor",
-		Module:  "example.com/myapp",
+		HasConfig: true,
+		Name:      "processor",
+		Package:   "processor",
+		Module:    "example.com/myapp",
 	}
 
 	content, err := WorkerTemplates().Render("worker.go.tmpl", data)
@@ -91,10 +93,12 @@ func TestWorkerTemplatesRenderTest(t *testing.T) {
 		DatabaseDriver string
 		OrmEnabled     bool
 		Schedule       string
+		HasConfig      bool
 	}{
-		Name:    "processor",
-		Package: "processor",
-		Module:  "example.com/myapp",
+		HasConfig: true,
+		Name:      "processor",
+		Package:   "processor",
+		Module:    "example.com/myapp",
 	}
 
 	content, err := WorkerTemplates().Render("worker_test.go.tmpl", data)
@@ -135,11 +139,13 @@ func TestWorkerCronTemplatesRender(t *testing.T) {
 		DatabaseDriver string
 		OrmEnabled     bool
 		Schedule       string
+		HasConfig      bool
 	}{
-		Name:     "cleanup",
-		Package:  "cleanup",
-		Module:   "example.com/myapp",
-		Schedule: "0 * * * *",
+		HasConfig: true,
+		Name:      "cleanup",
+		Package:   "cleanup",
+		Module:    "example.com/myapp",
+		Schedule:  "0 * * * *",
 	}
 
 	content, err := WorkerCronTemplates().Render("worker.go.tmpl", data)
@@ -201,11 +207,13 @@ func TestWorkerCronTemplatesRenderTest(t *testing.T) {
 		DatabaseDriver string
 		OrmEnabled     bool
 		Schedule       string
+		HasConfig      bool
 	}{
-		Name:     "cleanup",
-		Package:  "cleanup",
-		Module:   "example.com/myapp",
-		Schedule: "0 * * * *",
+		HasConfig: true,
+		Name:      "cleanup",
+		Package:   "cleanup",
+		Module:    "example.com/myapp",
+		Schedule:  "0 * * * *",
 	}
 
 	content, err := WorkerCronTemplates().Render("worker_test.go.tmpl", data)

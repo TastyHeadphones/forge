@@ -3,8 +3,10 @@ package generator
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
 )
@@ -31,6 +33,12 @@ func GenerateWebhookFiles(root, modulePath, serviceName, webhookName string) err
 		ServiceName:    serviceName,
 		ServicePackage: svcPkg,
 		Module:         modulePath,
+		// The test builds the SERVICE's Deps, so it passes a Config exactly
+		// when that Deps takes one, from the package it names.
+		ConfigImport: codegen.DetectDepsConfigImport(svcDir),
+	}
+	if data.ConfigImport != "" && path.Base(data.ConfigImport) != "config" {
+		data.ConfigImportAlias = "config"
 	}
 
 	// -- webhook handler --

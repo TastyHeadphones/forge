@@ -6,8 +6,10 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
+{{- if .HasConfig}}
 
 	"{{.Module}}/pkg/config"
+{{- end}}
 )
 
 // tracer is the OTel tracer for this worker, named after the package so
@@ -17,7 +19,9 @@ var tracer = otel.Tracer("internal/workers/{{.Name}}")
 // Deps contains the dependencies for the {{.Name}} worker.
 type Deps struct {
 	Logger *slog.Logger
+{{- if .HasConfig}}
 	Config *config.Config
+{{- end}}
 }
 
 // Worker implements the background processing for {{.Name}}.

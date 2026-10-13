@@ -13,6 +13,7 @@ type observePkgData struct {
 	ImportPath string
 	Module     string
 	Flavor     string
+	HasConfig  bool
 }
 
 // observeSeamData mirrors the template data runPackageNew builds for the

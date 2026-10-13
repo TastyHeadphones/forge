@@ -249,6 +249,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `forge generate`'s progress line names
     `internal/handlers/mocks/<svc>_mock_gen.go`, the file it writes, not
     `<svc>_mock.go`. Both now read `codegen.MockRelPath`.
+- **Scaffolded packages, workers and webhook tests name a config only when
+  there is one.** `service.go` takes `Config` only in a project with typed
+  config (config protos, or a `pkg/config` declaring `Config`); the package
+  (default, client, eventbus), worker (poll and cron) and webhook-test
+  templates still imported `<module>/pkg/config` unconditionally, so in a
+  project adopted in place, reliant's, each failed `go mod tidy` and rolled
+  generate back. Packages and workers now follow the same rule
+  (`codegen.ProjectHasTypedConfig`). A webhook test builds an existing
+  service's Deps, so it follows that Deps instead: it passes a `Config` only
+  when the service takes one, imported from the package the service names.
 - **A failed `forge generate` that changed no Go file no longer builds the
   project to report on its rollback.** After reverting a failed run, generate
   ran `go build ./...` over the restored tree to say whether it compiles. It

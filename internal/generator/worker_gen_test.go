@@ -95,8 +95,8 @@ func TestGenerateWorkerFilesCron(t *testing.T) {
 // that ship.
 //
 // The module is compiled standalone (its own go.mod, no forge/pkg
-// dependency) by rewriting the two project-local imports the template emits
-// away; what is under test is the go.mod requirement, not the template body.
+// dependency, no typed config); what is under test is the go.mod
+// requirement, not the template body.
 func TestGenerateWorkerFilesCron_CompilesAgainstProjectModule(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds a module (go get + go build); -short runs the string-level assertions only")
@@ -122,18 +122,8 @@ func TestGenerateWorkerFilesCron_CompilesAgainstProjectModule(t *testing.T) {
 		t.Fatalf("go.mod does not require %s after scaffolding a cron worker:\n%s", cronModulePath, gomod)
 	}
 
-	// Strip the project-local config import so the worker package can build
-	// on its own; the cron dependency is what this test is about.
-	workerDir := filepath.Join(root, "internal", "workers", "cleanup")
-	src := readFile(t, filepath.Join(workerDir, "worker.go"))
-	src = strings.Replace(src, "\n\t\"example.com/cronmod/pkg/config\"\n", "\n", 1)
-	src = strings.Replace(src, "Config *config.Config", "Config *struct{}", 1)
-	if err := os.WriteFile(filepath.Join(workerDir, "worker.go"), []byte(src), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(filepath.Join(workerDir, "worker_test.go")); err != nil {
-		t.Fatal(err)
-	}
+	// The module has no typed config, so the worker names none and builds
+	// as scaffolded; the cron dependency is what this test is about.
 
 	out, err := exec.Command("go", "-C", root, "build", "./internal/workers/cleanup").CombinedOutput()
 	if err != nil {
