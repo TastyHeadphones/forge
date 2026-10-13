@@ -219,38 +219,30 @@ Properties you can rely on:
   refused at `Open` and at boot on every database, so the first test run
   fails. `forge lint` reports it at review time as `invalid-adopts-directive`.
 
-Generate the list from the goose files; never type it. goose's version is the
-filename's numeric prefix:
+Cut the baseline with `forge db squash --from-dsn`, from a throwaway database
+the WHOLE goose history built (`goose up` on an empty database):
 
 ```bash
-ls <goose-dir>/*.sql | xargs -n1 basename | cut -d_ -f1 | sort -n | xargs -n8 | sed 's/^/-- forge:adopts goose /'
+forge db squash --from-dsn 'postgres://…/goose_built?sslmode=disable' --to <version>_baseline
 ```
 
-Build the baseline body with `pg_dump --schema-only --no-owner
---no-privileges` from a throwaway database the goose history built, excluding
-`goose_db_version`. Then strip pg_dump's session prelude and psql commands,
-keeping function-body validation off for the baseline's own transaction:
+It writes both halves from that one database, so they cannot disagree:
 
-```bash
-{ echo "SELECT pg_catalog.set_config('check_function_bodies', 'false', true);"
-  grep -v -e '^SET ' -e '^SELECT pg_catalog.set_config' -e '^\\' dump.sql; }
-```
+- the `-- forge:adopts goose …` lines: every version goose recorded as applied
+  there, read as the migrator reads goose's table (the latest row for a version
+  decides; version 0 is goose's own);
+- the body: pg_dump's output, from a container of the server's major version,
+  without `goose_db_version` or forge's bookkeeping, and without pg_dump's
+  session prelude or psql meta-commands. Those break the migrator.
+  `set_config('search_path', '', false)` persists on its session, so the next
+  migration fails with `relation "…" does not exist` and AutoMigrate hands its
+  pool an empty `search_path`; `\restrict` is not SQL. Squash reads the dump
+  the way postgres lexes it, so a function body or a string is never cut.
 
-Leaving them in breaks things, and measurably. The migrator runs the
-baseline on its own session, so `set_config('search_path', '', false)`
-persists on that session. The next migration in the same run then fails with
-`relation "…" does not exist`, and under `AutoMigrate` the connection returns
-to the app's pool with an empty `search_path`. `\restrict` (pg_dump ≥ 16.10
-and its sibling minor releases) is a psql command, so it fails as SQL.
-
-The first line replaces the prelude's `SET check_function_bodies = false`.
-pg_dump writes functions before tables, so without it a `LANGUAGE sql`
-function whose body names a table fails with `relation "public.…" does not
-exist`. Its third argument makes it transaction-local, so it ends with the
-baseline. `grep` is line-based: check that no function body or string in the
-dump has a line beginning with `SET ` or `\`, which it would delete.
-`forge db squash` does all of this for a golang-migrate history, reading the
-dump the way postgres lexes it, so its output has no such caveat.
+It lists the rows the baseline carries (every one lands in every fresh
+database) and any table named like another tool's history, which
+`--exclude-table` leaves out. Its header names the history and nothing else,
+so re-cutting the same database writes the same bytes.
 
 Prove the baseline before shipping it. Build one database with the last goose
 release, and let the new binary adopt it. Build a second fresh database from

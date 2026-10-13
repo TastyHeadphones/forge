@@ -173,7 +173,9 @@ again.
   golang-migrate").
 - **Databases you must keep:** squash goose's history into ONE baseline as
   the first migration, and declare in its header the history it replaces:
-  `-- forge:adopts goose <every goose version>`. The migrator adopts each goose
+  `-- forge:adopts goose <every goose version>`. `reliant forge db squash
+  --from-dsn <dsn>` writes both from a throwaway database the whole goose
+  history built (`goose up` on an empty database). The migrator adopts each goose
   database the first time it meets it, on the normal `db migrate up` /
   `AutoMigrate` path. It records the baseline as applied without running it
   when goose's applied set is exactly the listed one, and refuses with
