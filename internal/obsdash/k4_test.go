@@ -1,0 +1,476 @@
+package obsdash
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/pkg/release"
+)
+
+func goldenDashboard(t *testing.T, name string, d Dashboard) {
+	t.Helper()
+	sp := Spec{Version: SpecVersion, Project: "shop", Dashboards: []Dashboard{d}, SavedSearches: []SavedSearch{}}
+	files, err := RenderHyperDX(sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || files[0].File != name+"_gen.json" {
+		t.Fatalf("files = %+v", files)
+	}
+	golden(t, name+"_gen.json", files[0].Content)
+	if errs := validateHyperDXDashboard(files[0].Content); len(errs) > 0 {
+		t.Errorf("%s fails the HyperDX schema mirror:\n%s", name, strings.Join(errs, "\n"))
+	}
+	b, _ := marshalDashboardFile(d)
+	golden(t, name+"_gen.spec.json", b)
+	if _, err := ParseDashboard(name, b); err != nil {
+		t.Errorf("%s does not validate as a spec dashboard:\n%v", name, err)
+	}
+}
+
+func TestWorkloadsDashboardGolden(t *testing.T) {
+	d := BuildWorkloads("shop")
+	goldenDashboard(t, "shop-workloads", d)
+
+	panels := map[string]Panel{}
+	for _, p := range d.Panels {
+		panels[p.ID] = p
+	}
+	// The customer-metadata surface of owner decision 4: usage against requests
+	// and limits, restarts and why, the versions that ran, and events.
+	for id, metric := range map[string]string{
+		"cpu-vs-request":    "k8s.container.cpu_request_utilization",
+		"cpu-vs-limit":      "k8s.container.cpu_limit_utilization",
+		"memory-vs-request": "k8s.container.memory_request_utilization",
+		"memory-vs-limit":   "k8s.container.memory_limit_utilization",
+		"restarts":          "k8s.container.restarts",
+	} {
+		p, ok := panels[id]
+		if !ok || len(p.Series) != 1 || p.Series[0].Field != metric || p.Signal != Metrics {
+			t.Errorf("panel %s = %+v, want a metrics series over %s", id, p, metric)
+		}
+	}
+	if p := panels["restarts-by-exit-reason"]; len(p.GroupBy) != 1 || p.GroupBy[0] != "metric.attr.k8s.container.last_terminated_reason" {
+		t.Errorf("restarts-by-exit-reason groups by %v", p.GroupBy)
+	}
+	if p := panels["cpu-by-image-tag"]; len(p.GroupBy) != 1 || p.GroupBy[0] != "resource.attr.container.image.tag" {
+		t.Errorf("cpu-by-image-tag groups by %v", p.GroupBy)
+	}
+	for _, id := range []string{"events", "container-terminations"} {
+		if p := panels[id]; p.Kind != KindSearch || p.Signal != Logs {
+			t.Errorf("%s = %+v, want a log search", id, p)
+		}
+	}
+	if len(d.Annotations) != 0 {
+		t.Error("BuildWorkloads declares no annotations itself; Build adds them to every dashboard with a time series")
+	}
+}
+
+func TestReleasesDashboardGolden(t *testing.T) {
+	d := withReleaseMarkers(BuildReleases("shop"))
+	goldenDashboard(t, "shop-releases", d)
+
+	if len(d.Annotations) != 1 || d.Annotations[0].Source != AnnotationReleases {
+		t.Fatalf("annotations = %+v, want the releases source", d.Annotations)
+	}
+	var lines, table int
+	for _, p := range d.Panels {
+		switch p.Kind {
+		case KindLine:
+			lines++
+			if len(p.GroupBy) != 1 || p.GroupBy[0] != "resource.attr.service.version" {
+				t.Errorf("%s groups by %v, want service.version", p.ID, p.GroupBy)
+			}
+		case KindTable:
+			table++
+			if len(p.GroupBy) != 1 || p.GroupBy[0] != "resource.attr.service.version" {
+				t.Errorf("%s groups by %v, want service.version", p.ID, p.GroupBy)
+			}
+		}
+	}
+	if lines < 4 || table != 1 {
+		t.Errorf("releases dashboard has %d line panels and %d comparison tables", lines, table)
+	}
+}
+
+func TestNoGeneratedDashboardDrawsAHeatmap(t *testing.T) {
+	custom := customSchema(t)
+	in := fixture()
+	in.Metrics = &custom
+	files, err := RenderHyperDX(Build(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if strings.Contains(string(f.Content), `"displayType": "heatmap"`) {
+			t.Errorf("%s draws a heatmap; owner decision 7 skips them", f.File)
+		}
+	}
+}
+
+func TestReleaseMarkersAreDeclaredWhereATimeSeriesExists(t *testing.T) {
+	custom := customSchema(t)
+	in := fixture()
+	in.Metrics = &custom
+	for _, d := range Build(in).Dashboards {
+		hasLine := false
+		for _, p := range d.Panels {
+			hasLine = hasLine || p.Kind == KindLine
+		}
+		got := len(d.Annotations) == 1 && d.Annotations[0].Source == AnnotationReleases
+		if hasLine != got {
+			t.Errorf("%s: has a line panel = %v, declares release markers = %v", d.ID, hasLine, got)
+		}
+	}
+}
+
+func TestBuildAddsTheWorkloadsAndReleasesDashboards(t *testing.T) {
+	var ids []string
+	for _, d := range Build(fixture()).Dashboards {
+		ids = append(ids, d.ID)
+	}
+	if got, want := strings.Join(ids, ","), "overview,service-billing,service-orders,workloads,releases,frontend"; got != want {
+		t.Fatalf("dashboards = %s, want %s", got, want)
+	}
+}
+
+func TestHyperDXRendererIgnoresAnnotations(t *testing.T) {
+	d := BuildReleases("shop")
+	a, err := RenderHyperDX(Spec{Project: "shop", Dashboards: []Dashboard{d}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Annotations = []Annotation{{Source: AnnotationReleases}}
+	b, err := RenderHyperDX(Spec{Project: "shop", Dashboards: []Dashboard{d}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(a[0].Content) != string(b[0].Content) {
+		t.Error("an annotation changed the HyperDX rendering; HyperDX has no such concept")
+	}
+}
+
+// ── bundle set ──────────────────────────────────────────────────────────────
+
+func writeProject(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if _, err := Write(dir, fixture(), &checksums.FileChecksums{}); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func writeOwned(t *testing.T, dir, name, body string) {
+	t.Helper()
+	p := filepath.Join(dir, DashboardsDir, name)
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+const ownedOverview = `{
+  "id": "overview",
+  "title": "Mine",
+  "panels": [
+    {"id": "p1", "title": "Orders", "kind": "number", "signal": "traces",
+     "series": [{"label": "n", "agg": "count"}]}
+  ]
+}
+`
+
+func collect(t *testing.T, dir string, schema []byte) BundleSet {
+	t.Helper()
+	set, err := CollectBundleSet(BundleSetInput{ProjectDir: dir, Project: "shop", MetricsSchema: schema})
+	if err != nil {
+		t.Fatalf("CollectBundleSet: %v", err)
+	}
+	return set
+}
+
+func paths(set BundleSet) []string {
+	var out []string
+	for _, f := range BundleFiles(set) {
+		out = append(out, f.Path)
+	}
+	return out
+}
+
+func TestBundleSetCarriesEveryGeneratedDashboard(t *testing.T) {
+	dir := writeProject(t)
+	set := collect(t, dir, nil)
+	got := strings.Join(paths(set), "\n")
+	for _, want := range []string{
+		"observability/dashboards/shop-overview_gen.json",
+		"observability/dashboards/shop-service-orders_gen.json",
+		"observability/dashboards/shop-service-billing_gen.json",
+		"observability/dashboards/shop-workloads_gen.json",
+		"observability/dashboards/shop-releases_gen.json",
+		"observability/dashboards/shop-frontend_gen.json",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("bundle lacks %s; has:\n%s", want, got)
+		}
+	}
+	for _, d := range set.Dashboards {
+		if d.Source != SourceGenerated {
+			t.Errorf("%s source = %s, want gen", d.Path, d.Source)
+		}
+		if !strings.HasPrefix(d.Path, release.BundleDashboardsPath+"/") {
+			t.Errorf("%s is outside %s", d.Path, release.BundleDashboardsPath)
+		}
+	}
+}
+
+func TestBundleSetDrawsCustomMetricsFromTheSchema(t *testing.T) {
+	dir := writeProject(t)
+	schema, _ := json.Marshal(customSchema(t))
+
+	without := strings.Join(paths(collect(t, dir, nil)), "\n")
+	if strings.Contains(without, "custom-metrics") {
+		t.Error("a custom-metrics dashboard appeared without a schema")
+	}
+
+	set := collect(t, dir, schema)
+	got := strings.Join(paths(set), "\n")
+	if !strings.Contains(got, "observability/dashboards/shop-custom-metrics_gen.json") {
+		t.Fatalf("no custom-metrics dashboard in:\n%s", got)
+	}
+	if !strings.Contains(got, release.BundleMetricsSchemaPath) {
+		t.Errorf("the metrics schema is not in the bundle:\n%s", got)
+	}
+	if string(set.MetricsSchema) != string(schema) {
+		t.Error("the shipped schema is not the bytes the build produced")
+	}
+}
+
+func TestAUserFileOfTheSameNameReplacesTheGeneratedOne(t *testing.T) {
+	dir := writeProject(t)
+	writeOwned(t, dir, "shop-overview.json", ownedOverview)
+
+	set := collect(t, dir, nil)
+	var found *BundleDashboard
+	for i, d := range set.Dashboards {
+		if d.Name == "shop-overview" {
+			if found != nil {
+				t.Fatalf("shop-overview ships twice: %s and %s", found.Path, d.Path)
+			}
+			found = &set.Dashboards[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("shop-overview is missing")
+	}
+	if found.Source != SourceUser || found.Dashboard.Title != "Mine" || found.Path != "observability/dashboards/shop-overview.json" {
+		t.Errorf("shipped %+v, want the user's file", found)
+	}
+	if string(found.Data) != ownedOverview {
+		t.Error("the user's file was not shipped byte for byte")
+	}
+	if strings.Contains(strings.Join(paths(set), "\n"), "shop-overview_gen.json") {
+		t.Error("the generated twin shipped beside the file that overrides it")
+	}
+}
+
+func TestAUserFileWithANewNameShipsBesideTheGeneratedSet(t *testing.T) {
+	dir := writeProject(t)
+	writeOwned(t, dir, "checkout.json", strings.Replace(ownedOverview, `"overview"`, `"checkout"`, 1))
+	set := collect(t, dir, nil)
+	got := strings.Join(paths(set), "\n")
+	if !strings.Contains(got, "observability/dashboards/checkout.json") || !strings.Contains(got, "shop-overview_gen.json") {
+		t.Errorf("want checkout.json and the generated set, got:\n%s", got)
+	}
+}
+
+func TestAHyperDXFileStaysLocalAndOverridesNothing(t *testing.T) {
+	dir := writeProject(t)
+	writeOwned(t, dir, "shop-overview.json", `{"name":"x","tags":[],"tiles":[{"id":"a"}]}`)
+	set := collect(t, dir, nil)
+	got := strings.Join(paths(set), "\n")
+	if !strings.Contains(got, "shop-overview_gen.json") {
+		t.Errorf("a HyperDX file replaced the generated dashboard in the bundle:\n%s", got)
+	}
+	if len(set.Notes) != 1 || !strings.Contains(set.Notes[0], "HyperDX") {
+		t.Errorf("notes = %v, want one HyperDX note", set.Notes)
+	}
+}
+
+func TestADashboardIdIsUniqueAcrossTheBundle(t *testing.T) {
+	dir := writeProject(t)
+	writeOwned(t, dir, "other.json", ownedOverview) // id "overview" again
+	_, err := CollectBundleSet(BundleSetInput{ProjectDir: dir, Project: "shop"})
+	if err == nil || !strings.Contains(err.Error(), `dashboard id "overview"`) {
+		t.Fatalf("err = %v, want a duplicate-id error", err)
+	}
+}
+
+func TestBundleSetIsEmptyForAProjectWithNothingToShip(t *testing.T) {
+	set := collect(t, t.TempDir(), nil)
+	if len(BundleFiles(set)) != 0 {
+		t.Errorf("files = %v", paths(set))
+	}
+}
+
+func TestBundleSetIsDeterministic(t *testing.T) {
+	dir := writeProject(t)
+	schema, _ := json.Marshal(customSchema(t))
+	a, b := BundleFiles(collect(t, dir, schema)), BundleFiles(collect(t, dir, schema))
+	if len(a) != len(b) {
+		t.Fatal("different file sets")
+	}
+	for i := range a {
+		if a[i].Path != b[i].Path || string(a[i].Data) != string(b[i].Data) {
+			t.Errorf("%s differs between two collections", a[i].Path)
+		}
+	}
+}
+
+func TestEveryGeneratedDashboardPassesTheValidator(t *testing.T) {
+	custom := customSchema(t)
+	in := fixture()
+	in.Metrics = &custom
+	for _, d := range Build(in).Dashboards {
+		b, _ := marshalDashboardFile(d)
+		if _, err := ParseDashboard(d.ID, b); err != nil {
+			t.Errorf("%s: %v", d.ID, err)
+		}
+	}
+}
+
+// ── validation ──────────────────────────────────────────────────────────────
+
+func TestValidationFailuresNameFileLineAndColumn(t *testing.T) {
+	src := `{
+  "id": "checkout",
+  "title": "Checkout",
+  "bogus": 1,
+  "panels": [
+    {"id": "a", "title": "A", "kind": "line", "signal": "traces",
+     "series": [{"label": "p", "agg": "quantile", "quantile": 1.5, "field": "span.duration"}]},
+    {"id": "a", "title": "B", "kind": "heatmap", "signal": "traces"},
+    {"id": "c", "title": "C", "kind": "line", "signal": "metrics",
+     "series": [{"label": "m", "agg": "sum", "field": "orders_created"}]},
+    {"id": "d", "title": "D", "kind": "number", "signal": "traces",
+     "where": [{"field": "metric.attr.x", "op": "eq", "value": "1"}],
+     "series": [{"label": "n", "agg": "count"}]}
+  ]
+}
+`
+	_, err := ParseDashboard("deploy/observability/dashboards/checkout.json", []byte(src))
+	if err == nil {
+		t.Fatal("an invalid dashboard validated")
+	}
+	if len(ProblemsOf(err)) < 6 {
+		t.Fatalf("err carries %d problems, want at least 6:\n%v", len(ProblemsOf(err)), err)
+	}
+	want := map[string]string{
+		"bogus":                        "4:3:",
+		"panels[0].series[0].quantile": "7:",
+		"panels[1].id":                 "8:",
+		"panels[1].kind":               "8:",
+		"panels[2].series[0]":          "10:",
+		"panels[3].where[0].field":     "12:",
+	}
+	got := err.Error()
+	for path, pos := range want {
+		line := ""
+		for _, l := range strings.Split(got, "\n") {
+			if strings.Contains(l, ": "+path+": ") {
+				line = l
+			}
+		}
+		if line == "" {
+			t.Errorf("no problem reported at %s; all:\n%s", path, got)
+			continue
+		}
+		if !strings.HasPrefix(line, "deploy/observability/dashboards/checkout.json:"+pos) {
+			t.Errorf("%s reported as %q, want a position starting %s", path, line, pos)
+		}
+	}
+	for _, frag := range []string{
+		`unknown field "bogus"`, "level in (0, 1]", `duplicate panel id "a"`, `"heatmap" is not one of`,
+		`needs "metricType"`, `field "metric.attr.x" is not valid on traces`,
+	} {
+		if !strings.Contains(got, frag) {
+			t.Errorf("missing %q in:\n%s", frag, got)
+		}
+	}
+}
+
+func TestSyntaxErrorsAreLocated(t *testing.T) {
+	_, err := ParseDashboard("d.json", []byte("{\n  \"id\": \"x\",\n  \"title\": \n}\n"))
+	if err == nil || !strings.HasPrefix(err.Error(), "d.json:4:") {
+		t.Fatalf("err = %v, want a syntax error at line 4", err)
+	}
+	_, err = ParseDashboard("d.json", []byte(`[]`))
+	if err == nil || !strings.Contains(err.Error(), "one JSON object") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestValidationRejectsWhatTheEnginesWouldRefuse(t *testing.T) {
+	panel := func(extra string) string {
+		return `{"id":"x","title":"X","panels":[{"id":"p","title":"P",` + extra + `}]}`
+	}
+	cases := []struct{ name, src, want string }{
+		{"no panels", `{"id":"x","title":"X","panels":[]}`, "at least one panel"},
+		{"bad id", `{"id":"has space","title":"X","panels":[{"id":"p","title":"P","kind":"number","signal":"traces","series":[{"label":"n","agg":"count"}]}]}`, "not a valid id"},
+		{"too many series", panel(`"kind":"line","signal":"traces","series":[` + strings.Repeat(`{"label":"a","agg":"count"},`, 10) + `{"label":"z","agg":"count"}]`), "1 to 10 series"},
+		{"ratio needs two", panel(`"kind":"line","signal":"traces","ratio":true,"series":[{"label":"a","agg":"count"}]`), "exactly 2 series"},
+		{"ratio on a table", panel(`"kind":"table","signal":"traces","ratio":true,"series":[{"label":"a","agg":"count"},{"label":"b","agg":"count"}]`), "ratio applies to a line"},
+		{"search with series", panel(`"kind":"search","signal":"logs","columns":["timestamp"],"series":[{"label":"a","agg":"count"}]`), "takes no series"},
+		{"search without columns", panel(`"kind":"search","signal":"logs"`), "needs columns"},
+		{"bad regex", panel(`"kind":"number","signal":"traces","where":[{"field":"span.name","op":"match","value":"(["}],"series":[{"label":"a","agg":"count"}]`), "RE2"},
+		{"gte non number", panel(`"kind":"number","signal":"traces","where":[{"field":"span.duration","op":"gte","value":"slow"}],"series":[{"label":"a","agg":"count"}]`), "number"},
+		{"in without values", panel(`"kind":"number","signal":"traces","where":[{"field":"span.name","op":"in"}],"series":[{"label":"a","agg":"count"}]`), "non-empty"},
+		{"metric quantile non histogram", panel(`"kind":"line","signal":"metrics","series":[{"label":"a","agg":"quantile","quantile":0.9,"field":"m","metricType":"gauge"}]`), "histogram"},
+		{"metric count", panel(`"kind":"line","signal":"metrics","series":[{"label":"a","agg":"count","field":"m","metricType":"sum"}]`), "not defined over a metric"},
+		{"sum without field", panel(`"kind":"number","signal":"traces","series":[{"label":"a","agg":"sum"}]`), "needs a \"field\""},
+		{"width out of grid", panel(`"kind":"number","signal":"traces","width":30,"series":[{"label":"a","agg":"count"}]`), "grid columns"},
+		{"too many group by", panel(`"kind":"line","signal":"traces","groupBy":["service.name","span.name","span.kind","span.status"],"series":[{"label":"a","agg":"count"}]`), "over the 3 allowed"},
+		{"unknown annotation", `{"id":"x","title":"X","annotations":[{"source":"deploys"}],"panels":[{"id":"p","title":"P","kind":"number","signal":"traces","series":[{"label":"a","agg":"count"}]}]}`, "is not one of: releases"},
+		{"wrong spec version", `{"version":"forge.dashboards/v9","id":"x","title":"X","panels":[{"id":"p","title":"P","kind":"number","signal":"traces","series":[{"label":"a","agg":"count"}]}]}`, "spec version"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseDashboard("f.json", []byte(tc.src))
+			if err == nil {
+				t.Fatalf("validated; want an error containing %q", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("err = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestAnInvalidUserFileFailsTheBundleSetWithItsLocation(t *testing.T) {
+	dir := writeProject(t)
+	writeOwned(t, dir, "broken.json", "{\n  \"id\": \"broken\",\n  \"title\": \"B\",\n  \"panels\": [\n    {\"id\": \"p\", \"title\": \"P\", \"kind\": \"cube\", \"signal\": \"traces\"}\n  ]\n}\n")
+	_, err := CollectBundleSet(BundleSetInput{ProjectDir: dir, Project: "shop"})
+	if err == nil {
+		t.Fatal("an invalid file was accepted")
+	}
+	if !strings.Contains(err.Error(), "deploy/observability/dashboards/broken.json:5:") {
+		t.Errorf("err = %v, want broken.json:5:<col>", err)
+	}
+}
+
+func TestAnAnnotatedUserDashboardRoundTrips(t *testing.T) {
+	src := `{
+  "id": "mine", "title": "Mine",
+  "annotations": [{"source": "releases", "label": "Deploys"}],
+  "panels": [{"id": "p", "title": "P", "kind": "line", "signal": "traces", "series": [{"label": "n", "agg": "count"}]}]
+}`
+	d, err := ParseDashboard("mine.json", []byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Annotations) != 1 || d.Annotations[0].Source != AnnotationReleases || d.Annotations[0].Label != "Deploys" {
+		t.Errorf("annotations = %+v", d.Annotations)
+	}
+}

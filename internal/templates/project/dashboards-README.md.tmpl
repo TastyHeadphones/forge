@@ -22,6 +22,14 @@ To change one, copy it to the same name without `_gen`
 twin. Any other `*.json` you add is yours too. forge never writes or deletes a
 file here that does not end in `_gen.json`.
 
+## Shipping with a release
+
+`forge env build <env> --release <v>` also carries the renderer-neutral form of
+every dashboard in the release bundle (`observability/dashboards/`), for the
+Reliant console. A file here with a `panels` array (rather than HyperDX's
+`tiles`) is shipped as it is, and one named like a generated dashboard replaces
+it. `forge observe dashboards check` validates them and lists what would ship.
+
 Tiles name their source (`Logs`, `Traces`, `Metrics`); the local stack binds
 the names to this database's source ids for you.
 

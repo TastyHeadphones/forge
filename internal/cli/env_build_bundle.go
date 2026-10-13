@@ -148,6 +148,14 @@ type bundleBuildInputs struct {
 	// bundle that was planned" a different object from "the bundle that was
 	// promoted".
 	Now time.Time
+	// OutputDir is the build output directory the metrics schema artifact is
+	// read from. "" means bin, the build's default.
+	OutputDir string
+	// StrictObservability makes a dashboard the project owns that does not
+	// validate fail the write. The build and release-cut path sets it; a deploy
+	// that builds nothing only warns, so a broken working-tree file cannot
+	// block deploying a release that was cut before it was broken.
+	StrictObservability bool
 	// errOut is where warnings go. nil means stderr.
 	errOut io.Writer
 }
@@ -203,14 +211,20 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 		return bundleWriteOutcome{Env: env, Skipped: true}, nil
 	}
 
+	observability, err := bundleObservabilityFiles(projectDir, in)
+	if err != nil {
+		return bundleWriteOutcome{}, err
+	}
+
 	built, err := bundle.Build(ctx, bundle.BuildInput{
-		Project:    doc.Project,
-		Env:        env,
-		Release:    in.Release,
-		Pins:       in.Pins,
-		Provenance: doc.Provenance,
-		Shape:      bundleShapeInputOf(doc),
-		CreatedAt:  createdAt,
+		Project:       doc.Project,
+		Env:           env,
+		Release:       in.Release,
+		Pins:          in.Pins,
+		Provenance:    doc.Provenance,
+		Shape:         bundleShapeInputOf(doc),
+		CreatedAt:     createdAt,
+		Observability: observability,
 	})
 	if err != nil {
 		return bundleWriteOutcome{}, err

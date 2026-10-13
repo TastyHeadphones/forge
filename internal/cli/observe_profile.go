@@ -34,6 +34,7 @@ func newObserveCmd() *cobra.Command {
 	cmd.AddCommand(newObserveProfileCmd())
 	cmd.AddCommand(newObserveAlertsCmd())
 	cmd.AddCommand(newObserveMetricsCmd())
+	cmd.AddCommand(newObserveDashboardsCmd())
 	return cmdutil.StrictGroup(cmd)
 }
 

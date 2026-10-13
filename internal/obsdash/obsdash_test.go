@@ -62,7 +62,7 @@ func TestDashboardSetFollowsTheProject(t *testing.T) {
 	for _, d := range sp.Dashboards {
 		ids = append(ids, d.ID)
 	}
-	if got, want := strings.Join(ids, ","), "overview,service-billing,service-orders,frontend"; got != want {
+	if got, want := strings.Join(ids, ","), "overview,service-billing,service-orders,workloads,releases,frontend"; got != want {
 		t.Fatalf("dashboards = %s, want %s", got, want)
 	}
 
@@ -284,7 +284,7 @@ func TestCustomMetricsDashboardIsOmittedWithoutCustomMetrics(t *testing.T) {
 	for _, d := range Build(in).Dashboards {
 		ids = append(ids, d.ID)
 	}
-	if got, want := strings.Join(ids, ","), "overview,service-billing,service-orders,custom-metrics,frontend"; got != want {
+	if got, want := strings.Join(ids, ","), "overview,service-billing,service-orders,custom-metrics,workloads,releases,frontend"; got != want {
 		t.Errorf("dashboards = %s, want %s", got, want)
 	}
 }

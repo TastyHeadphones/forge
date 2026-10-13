@@ -46,6 +46,26 @@ Copy `x_gen.json` to `x.json`, give it a new `name`, edit it. While `x.json`
 exists forge stops writing (and removes a pristine) `x_gen.json`. Any other
 `*.json` in the directory is yours and is never touched.
 
+## Dashboards in the release
+
+`forge env build <env> --release <v>` puts the dashboards into the release bundle, so the Reliant console shows the set that belongs to the release that is running (and a rollback shows the older one):
+
+| In the bundle | What |
+|---|---|
+| `observability/dashboards/<project>-<id>_gen.json` | each dashboard of `dashboard-spec_gen.json`, plus `<project>-custom-metrics_gen.json` drawn from the build's metrics schema |
+| `observability/dashboards/<name>.json` | a dashboard you own |
+| `observability/metrics-schema.json` | the schema, `forge.metrics/v1` |
+
+They ride in the manifests layer, outside every `manifests/<cluster>/` tree, so nothing is applied from them.
+
+A file you own is one dashboard object in the spec vocabulary (an `id`, a `title`, `filters`, `annotations` and a `panels` array; the objects of `dashboard-spec_gen.json`'s `dashboards`). Name it like a generated dashboard to replace that one: `shop-overview.json` replaces `shop-overview_gen.json`. A file with `tiles` is HyperDX's format; it is for the local stack, ships nowhere and replaces nothing. Ad-hoc console edits are saved as code by writing the dashboard JSON here and committing it.
+
+Every file is validated at the cut, and `forge observe dashboards check` runs the same checks and lists what would ship. Errors read `deploy/observability/dashboards/x.json:12:7: panels[2].kind: "cube" is not one of: number, line, table, search`.
+
+`annotations: [{"source": "releases"}]` on a dashboard asks the console to draw a marker for every promotion on its time-series panels. Generated dashboards declare it.
+
+The *Workloads* dashboard (CPU/memory against requests and limits, restarts and exit reason, image versions, Kubernetes events) and the *Releases* dashboard (request, error and latency by `service.version`) are generated for every project. They read node-derived and release data, so they are empty under `forge env up`.
+
 ## Alerts
 
 Dashboards embed no alerts (HyperDX 2.40 validates an alert declared in a provisioned file and never evaluates it, hyperdx PR #3233). Alerting is declared in KCL instead: `forge.AlertRule`, with four generated defaults in `alert-defaults_gen.json`. Depth: `observability/alerts`.

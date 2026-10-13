@@ -81,6 +81,7 @@ const (
 	UnitMillis  Unit = "ms"
 	UnitBytes   Unit = "bytes"
 	UnitPercent Unit = "percent" // values are fractions in [0,1]
+	UnitSeconds Unit = "s"
 )
 
 // Op is a predicate operator.
@@ -172,13 +173,47 @@ type Filter struct {
 	Signal Signal `json:"signal,omitempty"`
 }
 
+// AnnotationSource names where a dashboard's time-series markers come from.
+type AnnotationSource string
+
+// The annotation sources. The spec only DECLARES a source; the renderer draws
+// it from data it owns (the Reliant console reads the release ledger).
+const (
+	// AnnotationReleases marks every promotion of a release into the
+	// environment on the dashboard's time-series panels.
+	AnnotationReleases AnnotationSource = "releases"
+)
+
+// Annotation is a marker series drawn over every KindLine panel of a dashboard.
+// HyperDX has no such concept, so RenderHyperDX ignores it.
+type Annotation struct {
+	Source AnnotationSource `json:"source"`
+	Label  string           `json:"label,omitempty"`
+}
+
 // Dashboard is an ordered list of panels under a shared set of filters.
 type Dashboard struct {
-	ID          string   `json:"id"`
-	Title       string   `json:"title"`
-	Description string   `json:"description,omitempty"`
-	Filters     []Filter `json:"filters,omitempty"`
-	Panels      []Panel  `json:"panels"`
+	ID          string       `json:"id"`
+	Title       string       `json:"title"`
+	Description string       `json:"description,omitempty"`
+	Filters     []Filter     `json:"filters,omitempty"`
+	Annotations []Annotation `json:"annotations,omitempty"`
+	Panels      []Panel      `json:"panels"`
+}
+
+// withReleaseMarkers declares the releases annotation on d when it has a
+// time-series panel to draw it on and does not declare one already.
+func withReleaseMarkers(d Dashboard) Dashboard {
+	if len(d.Annotations) > 0 {
+		return d
+	}
+	for _, p := range d.Panels {
+		if p.Kind == KindLine {
+			d.Annotations = []Annotation{{Source: AnnotationReleases, Label: "Releases"}}
+			break
+		}
+	}
+	return d
 }
 
 // SavedSearch is a named log search a service owner returns to.
@@ -276,10 +311,15 @@ func Build(in Input) Spec {
 		}
 	}
 
+	sp.Dashboards = append(sp.Dashboards, BuildWorkloads(in.Project), BuildReleases(in.Project))
+
 	fes := append([]string(nil), in.Frontends...)
 	sort.Strings(fes)
 	if len(fes) > 0 {
 		sp.Dashboards = append(sp.Dashboards, buildFrontend(in))
+	}
+	for i := range sp.Dashboards {
+		sp.Dashboards[i] = withReleaseMarkers(sp.Dashboards[i])
 	}
 	return sp
 }
