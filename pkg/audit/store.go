@@ -15,7 +15,7 @@
 //   - the READ-SIDE ListAuditEvents RPC + its Connect handler — own the proto
 //     and the handler, backing it with this [Store].
 //
-// The observability skill's "Audit log (recipe)" shows the full wiring; the
+// The observability/audit-log skill shows the full wiring; the
 // short version is:
 //
 //	// write side — one line in the interceptor chain (see audit.Interceptor):

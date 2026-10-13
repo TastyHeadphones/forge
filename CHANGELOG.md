@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The `observability` skill loads whole again.** It had grown to 24,390
+  bytes, over the 24,000-byte load cap, so a loader truncated its tail (the
+  sub-skill pointers and the rules). The DB-persisted audit-trail recipe on
+  `forge/pkg/audit` (the table, the DB-backed interceptor, the scoped
+  `ListAuditEvents` read RPC) moved to its own sub-skill,
+  `observability/audit-log`. The parent keeps a one-paragraph pointer that
+  says when to load it, and is now 21,946 bytes.
+
 - **A `migratekit.Migrator` is one Postgres session, so concurrent
   `db migrate up` runs work behind a session-mode PgBouncer.** A Migrator held
   its run-lock connection and a second session that golang-migrate's pgx driver
