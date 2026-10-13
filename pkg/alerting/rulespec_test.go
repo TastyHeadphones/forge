@@ -14,8 +14,11 @@ import (
 
 func TestDurationJSON(t *testing.T) {
 	var s RuleSpec
-	if err := json.Unmarshal([]byte(`{"alert":"a","expr":"SELECT 1","for":"5m","interval":90}`), &s); err != nil {
+	if err := json.Unmarshal([]byte(`{"alert":"a","expr":"SELECT 1","for":"5m","interval":90,"keep_firing_for":"10m"}`), &s); err != nil {
 		t.Fatal(err)
+	}
+	if s.KeepFiringFor.Std() != 10*time.Minute {
+		t.Fatalf("keep_firing_for = %v", s.KeepFiringFor.Std())
 	}
 	if s.For.Std() != 5*time.Minute || s.Interval.Std() != 90*time.Second {
 		t.Fatalf("for=%v interval=%v", s.For.Std(), s.Interval.Std())
@@ -132,5 +135,20 @@ func TestFileRuleSourceLoadsReloadsAndKeepsLastGood(t *testing.T) {
 	now = now.Add(2 * time.Second)
 	if rules, _ = f.Rules(ctx, "self"); len(rules) != 0 {
 		t.Fatalf("an empty document must clear the rules: %d", len(rules))
+	}
+}
+
+func TestRuleSpecDecodesForgesShapeAlert(t *testing.T) {
+	// forge's release.ShapeAlert serializes to RuleSpec; the extras (default_id)
+	// are ignored, and keep_firing_for is honoured.
+	set, err := ParseRulesDocument([]byte(`{"alerts":[{"alert":"HighErrorRate","expr":"SELECT service, 1 AS value FROM t",
+	  "for":"5m0s","interval":"1m0s","keep_firing_for":"10m0s","labels":{"severity":"critical"},
+	  "annotations":{"summary":"x"},"source":"default","default_id":"service-error-rate"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := set[0].Rule("t", "e", nil)
+	if r.KeepFiringFor != 10*time.Minute || r.For != 5*time.Minute || r.Source != SourceDefault {
+		t.Fatalf("rule = %+v", r)
 	}
 }

@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`alerting.RuleSpec.KeepFiringFor` (`keep_firing_for`)**: holds a firing alert open that long after its series stops returning, like Prometheus's rule field of the same name. The shape's `alerts[]` (#684) declares it, so the evaluator now honours it instead of silently ignoring it. The one-evaluation flap damping every rule already had is the floor.
 - **`alerting.QueryOptions.Limits` and `chquery.Scan`**: the per-query limits without `readonly`, and the row reader behind `chquery.Run`, for a `Querier` that runs as an impersonated ClickHouse user (`EXECUTE AS`). Such a Querier cannot send `readonly` (a readonly session refuses the `EXECUTE AS` statement itself); the target user's profile contains the query instead. `Settings()` is now `Limits()` plus `readonly = 2`.
 
 - **Alert rules, declared per env: `forge.AlertRule`, `forge.AlertRoute`,
