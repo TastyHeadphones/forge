@@ -1745,14 +1745,24 @@ schema KubeconfigPolicyRule:
                        for every group.
       * `resources`  — resource plurals ("namespaces", "tiers", "*").
       * `verbs`      — verbs granted ("get", "list", "create", "*").
+      * `resource_names` — limit the rule to these named objects (the
+                       `resourceNames` field). Default [] (every object of the
+                       resources). The way to grant `bind` or `escalate`
+                       on two specific roles, or `get` on one Secret,
+                       without a separate hand-written ClusterRole.
+                       Kubernetes cannot restrict `list`, `watch`,
+                       `create` or `deletecollection` by name.
     """
     api_groups: [str] = [""]
     resources: [str]
     verbs: [str]
+    resource_names: [str] = []
 
     check:
         len(resources) > 0, "KubeconfigPolicyRule.resources is required"
         len(verbs) > 0, "KubeconfigPolicyRule.verbs is required"
+        all n in resource_names { n != "" }, \
+            "KubeconfigPolicyRule.resource_names must not contain an empty name (an empty entry matches no object, so the rule would silently grant nothing)"
 
 
 schema KubeconfigServiceAccount:
@@ -3216,6 +3226,11 @@ schema HelmChart:
                         "cert-manager" — cert-manager's CRDs at `version`.
       * `cluster`   — which cluster to install this chart into, in a
                       multi-cluster env. See below.
+      * `namespace_labels` / `namespace_annotations` — labels and
+                      annotations forge puts on the Namespace it creates
+                      for the chart. See NAMESPACE METADATA below.
+      * `prune`     — whether a re-apply deletes the chart's objects that
+                      left the render. Default True. See PRUNING below.
 
     CLUSTER TARGETING. An operator must be installed where the custom
     resources it reconciles actually land. In a multi-cluster env those
@@ -3244,6 +3259,46 @@ schema HelmChart:
     A `cluster` naming a Cluster the env does not declare is an ERROR at
     deploy time, not a fallback to the primary — the failure this closes
     is a chart that installs nowhere useful and reports success.
+
+    NAMESPACE METADATA. `helm template` never emits the chart's Namespace,
+    so forge creates it. `namespace_labels` / `namespace_annotations` are
+    written onto that Namespace, which is the only place a chart author can
+    declare Pod Security Admission for it:
+
+        namespace_labels = {
+            "pod-security.kubernetes.io/enforce" = "restricted"
+            "pod-security.kubernetes.io/enforce-version" = "latest"
+        }
+
+    They are applied with server-side apply, so they CONVERGE: a re-apply
+    sets exactly the declared keys, removes a key you stop declaring, and
+    leaves every key another manager set (the apiserver's
+    `kubernetes.io/metadata.name`, a mesh's injection label) alone. The
+    namespace is shared state, though: two envs that install the same chart
+    into one cluster must declare the SAME metadata, or each re-apply
+    strips what the other set. Keys under `forge.dev/` are forge's own and
+    are refused.
+
+    PRUNING. forge applies a chart's objects but a plain `kubectl apply`
+    never deletes, so an object a chart version stops rendering (a
+    NetworkPolicy, a ClusterRole) used to stay live forever. forge now
+    stamps every object a chart renders with `forge.dev/chart-owner =
+    <project>.<env>` and, after a successful apply of the chart, deletes
+    the objects carrying that stamp that the new render no longer contains.
+    It deletes only what it can prove it applied, and never:
+
+      * a CRD, a Namespace, or a kind that holds data (PersistentVolume,
+        PersistentVolumeClaim, StatefulSet, Secret) — kept, and reported
+        (a Secret is never even listed);
+      * an object another controller owns (`ownerReferences`);
+      * an object annotated `kustomize.toolkit.fluxcd.io/prune: disabled`
+        (the SAME escape hatch a Flux bundle honours);
+      * anything from a chart whose render came out empty or unparseable.
+
+    `prune = False` turns the step off for a chart whose live objects are
+    hand-managed. A `--target` apply of another workload renders no chart
+    and prunes nothing. Objects dropped from a chart BEFORE forge began
+    stamping carry no owner and are never deleted: remove those by hand once.
     """
     name: str
     chart: str = ""
@@ -3278,9 +3333,31 @@ schema HelmChart:
     # `forge.dev/workload = <name>`, so `--target` and overrides see them).
     # A bundled chart owns no CRDs, so `crds` must stay empty.
     delivery: "bootstrap" | "bundle" = "bootstrap"
+    # Labels / annotations on the Namespace forge creates for this chart
+    # (NAMESPACE METADATA above). Only a delivery 'bootstrap' chart has a
+    # forge-created Namespace: a 'bundle' chart's namespace is declared as a
+    # forge.Manifests object instead.
+    namespace_labels: {str: str} = {}
+    namespace_annotations: {str: str} = {}
+    # Whether a re-apply deletes the chart's objects that left the render
+    # (PRUNING above). Meaningful for delivery 'bootstrap' only: a bundle
+    # chart is pruned by whatever reconciles the bundle.
+    prune: bool = True
 
     check:
         name, "HelmChart.name is required (the --target selector)"
+        delivery != "bundle" or (not namespace_labels and not namespace_annotations), \
+            "HelmChart '${name}': a delivery 'bundle' chart has no forge-created Namespace to label - declare the Namespace as a forge.Manifests object, or keep the chart on delivery 'bootstrap'"
+        delivery != "bundle" or prune, \
+            "HelmChart '${name}': prune = False has no effect on a delivery 'bundle' chart (the reconciler of the bundle prunes it) - drop it, or keep the chart on delivery 'bootstrap'"
+        all k, _v in namespace_labels { regex.match(k, "^([a-z0-9]([-a-z0-9.]*[a-z0-9])?/)?[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$") and len(k) <= 317 }, \
+            "HelmChart '${name}'.namespace_labels has a key that is not a valid Kubernetes label key"
+        all _k, v in namespace_labels { regex.match(v, "^([A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?)?$") and len(v) <= 63 }, \
+            "HelmChart '${name}'.namespace_labels has a value that is not a valid Kubernetes label value (at most 63 characters, alphanumerics, '-', '_' and '.', starting and ending alphanumeric)"
+        all k, _v in namespace_labels { not k.startswith("forge.dev/") and k != "kubernetes.io/metadata.name" }, \
+            "HelmChart '${name}'.namespace_labels may not set forge.dev/* or kubernetes.io/metadata.name: forge and the apiserver own those"
+        all k, _v in namespace_annotations { k and not k.startswith("forge.dev/") }, \
+            "HelmChart '${name}'.namespace_annotations keys must be non-empty and outside forge.dev/*, which forge owns"
         delivery != "bundle" or not crds, "HelmChart '${name}': a delivery 'bundle' chart ships no CRDs (they are platform state a bundle prune must not own) - drop `crds`, or keep the chart on delivery 'bootstrap'"
         version, "HelmChart.version is required (a platform dep is always version-pinned)"
         namespace, "HelmChart.namespace is required (helm template -n <namespace>)"

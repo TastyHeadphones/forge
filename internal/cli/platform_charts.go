@@ -104,9 +104,9 @@ var applyPlatformChartFn = cluster.ApplyHelmChart
 
 // installPlatformCharts installs the given charts in order. Idempotent: the
 // install is a render-and-apply of a version-pinned chart.
-func installPlatformCharts(ctx context.Context, entities *KCLEntities, installs []platformChartInstall) error {
+func installPlatformCharts(ctx context.Context, entities *KCLEntities, installs []platformChartInstall, owner string) error {
 	for _, in := range installs {
-		specs, err := helmChartSpecsFromEntities(ctx, []HelmChartEntity{in.Chart}, entities.Clusters)
+		specs, err := helmChartSpecsFromEntities(ctx, []HelmChartEntity{in.Chart}, entities.Clusters, owner)
 		if err != nil {
 			return err
 		}
@@ -124,7 +124,7 @@ func installPlatformCharts(ctx context.Context, entities *KCLEntities, installs 
 // ensureEnvPlatformChartsInstalled is the `forge cluster up` half: bootstrap
 // every declared platform chart that lands in one of the env's k3d clusters.
 // Silent no-op when the env declares none.
-func ensureEnvPlatformChartsInstalled(ctx context.Context, env string, entities *KCLEntities, clusters []ClusterEntity) error {
+func ensureEnvPlatformChartsInstalled(ctx context.Context, env, project string, entities *KCLEntities, clusters []ClusterEntity) error {
 	k3dContexts := map[string]bool{}
 	for _, c := range clusters {
 		if c.Provider != "" && c.Provider != "k3d" {
@@ -139,7 +139,7 @@ func ensureEnvPlatformChartsInstalled(ctx context.Context, env string, entities 
 		return nil
 	}
 	fmt.Printf("\n[up] platform phase — installing %d declared chart(s) for env %s\n", len(installs), env)
-	return installPlatformCharts(ctx, entities, installs)
+	return installPlatformCharts(ctx, entities, installs, cluster.ChartOwner(project, env))
 }
 
 // splitPlatformChartTargets separates `--target` names into declared platform

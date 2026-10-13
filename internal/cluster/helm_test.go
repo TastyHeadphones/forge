@@ -63,7 +63,7 @@ metadata:
     app.kubernetes.io/name: webhook
 spec: {}`
 
-	got := stampAppLabel(in, "cert-manager")
+	got := stampAppLabel(in, "cert-manager", "")
 
 	// The chart's own sub-component label ("webhook") is what its selectors
 	// key on; routing must not rewrite it.
@@ -170,18 +170,18 @@ func TestSelectHelmChartsByGroup_UniformExclusiveRule(t *testing.T) {
 // chart's target Namespace (helm template never emits it) and stampAppLabel
 // rides it on the chart's --target group.
 func TestNamespaceManifest_EmittedAndStamped(t *testing.T) {
-	ns := namespaceManifest("cert-manager")
+	ns := namespaceManifest("cert-manager", nil, nil)
 	m, ok := parseDoc(ns)
 	if !ok || m.Kind != "Namespace" || m.Metadata.Name != "cert-manager" {
 		t.Fatalf("namespaceManifest must emit a Namespace named cert-manager; got:\n%s", ns)
 	}
 	// Empty namespace => no manifest.
-	if got := namespaceManifest(""); got != "" {
+	if got := namespaceManifest("", nil, nil); got != "" {
 		t.Errorf("empty namespace must emit nothing; got %q", got)
 	}
 
 	// Stamped, the Namespace must select under the chart's --target.
-	stamped := stampAppLabel(ns, "cert-manager")
+	stamped := stampAppLabel(ns, "cert-manager", "")
 	kept := SelectManifestsByGroup(stamped, []string{"cert-manager"})
 	km, ok := parseDoc(kept)
 	if !ok || km.Kind != "Namespace" {

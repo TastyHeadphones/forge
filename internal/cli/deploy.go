@@ -1377,7 +1377,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 
 	// Env's declared platform deps (forge.HelmChart) rendered into
 	// cluster.HelmChartSpec values. See resolveDeployHelmSpecs.
-	helmSpecs, err := resolveDeployHelmSpecs(ctx, entities, targets)
+	helmSpecs, err := resolveDeployHelmSpecs(ctx, entities, targets, cluster.ChartOwner(projectNameOf(cfg), envName))
 	if err != nil {
 		return err
 	}
@@ -2074,7 +2074,7 @@ func resolveDeployKubectlContext(ctx context.Context, cfg *config.ProjectConfig,
 // charts whose Name ∈ targets. Returns nil when the env declares no charts (or
 // none are selected). The CRD-bundle network fetch only runs for the charts
 // actually selected here.
-func resolveDeployHelmSpecs(ctx context.Context, entities *KCLEntities, targets []string) ([]cluster.HelmChartSpec, error) {
+func resolveDeployHelmSpecs(ctx context.Context, entities *KCLEntities, targets []string, owner string) ([]cluster.HelmChartSpec, error) {
 	if entities == nil {
 		return nil, nil
 	}
@@ -2085,7 +2085,7 @@ func resolveDeployHelmSpecs(ctx context.Context, entities *KCLEntities, targets 
 	// The env's declared clusters are passed so a chart naming a cluster this
 	// env does not declare is REFUSED here rather than silently applied to the
 	// primary. See validateChartCluster.
-	return helmChartSpecsFromEntities(ctx, selected, entities.Clusters)
+	return helmChartSpecsFromEntities(ctx, selected, entities.Clusters, owner)
 }
 
 // deployPreflightEnvInput carries the env-derived inputs runDeployPreflightForEnv

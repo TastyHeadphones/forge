@@ -62,6 +62,32 @@ turns that on via `values`.
 > re-derive it, do not increment:
 > `helm show chart oci://ghcr.io/fluxcd-community/charts/flux2 --version <v> | grep appVersion`
 
+### Namespace labels, and what a re-apply prunes
+
+`flux-system` is created by forge (`helm template` never emits a chart's
+Namespace), so its metadata is declared on the chart:
+
+```kcl
+forge.flux_chart() | {
+    namespace_labels = {
+        "pod-security.kubernetes.io/enforce" = "restricted"
+        "pod-security.kubernetes.io/enforce-version" = "latest"
+    }
+}
+```
+
+They converge under server-side apply: a changed value is updated, a key you
+stop declaring is removed, a key another manager set is left alone.
+
+A re-apply also **deletes the objects the chart stopped rendering**: every object
+is stamped `forge.dev/chart-owner=<project>.<env>`, and after the chart's apply
+succeeds the ones carrying that stamp that the new render lacks are removed. It
+keeps (and reports) CRDs, Namespaces and stateful kinds (PV, PVC, StatefulSet,
+Secret); anything annotated `kustomize.toolkit.fluxcd.io/prune: disabled`; and
+anything with `ownerReferences`. `prune = False` turns it off for a chart.
+Objects dropped before forge began stamping are never deleted: remove those by
+hand once.
+
 Detection of "this env already provides Flux" is **by chart reference, never by
 name**: a chart's `name` is the `--target` selector its author picks freely, so a
 name heuristic would let a naming choice decide whether a colliding second Flux

@@ -411,7 +411,7 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 		return gerr
 	}
 
-	charts, cerr := renderEnvCharts(ctx, entities, groups, opts)
+	charts, cerr := renderEnvCharts(ctx, entities, groups, opts, cluster.ChartOwner(store.Meta().Name, envName))
 	if cerr != nil {
 		return cerr
 	}

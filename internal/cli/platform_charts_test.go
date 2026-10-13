@@ -38,7 +38,7 @@ func captureChartInstalls(t *testing.T) *[]string {
 func TestEnsureEnvPlatformChartsInstalled_InstallsDeclaredFluxFirst(t *testing.T) {
 	got := captureChartInstalls(t)
 	e, clusters := platformTestEnv()
-	if err := ensureEnvPlatformChartsInstalled(context.Background(), "e2e", e, clusters); err != nil {
+	if err := ensureEnvPlatformChartsInstalled(context.Background(), "e2e", "proj", e, clusters); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"gitops@k3d-a", "envoy-gateway@k3d-a", "cnpg@k3d-a"}
@@ -51,7 +51,7 @@ func TestEnsureEnvPlatformChartsInstalled_SkipsNonK3dClusters(t *testing.T) {
 	got := captureChartInstalls(t)
 	e, _ := platformTestEnv()
 	clusters := []ClusterEntity{{Name: "prod", Context: "k3d-a", Provider: "gke"}}
-	if err := ensureEnvPlatformChartsInstalled(context.Background(), "e2e", e, clusters); err != nil {
+	if err := ensureEnvPlatformChartsInstalled(context.Background(), "e2e", "proj", e, clusters); err != nil {
 		t.Fatal(err)
 	}
 	if len(*got) != 0 {
@@ -67,7 +67,7 @@ func TestFollowPromote_TargetPlatformChartInstallsWithoutPointer(t *testing.T) {
 	if !reflect.DeepEqual(charts, []string{"cnpg"}) || len(rest) != 0 {
 		t.Fatalf("split = %v / %v", charts, rest)
 	}
-	if err := installPlatformCharts(context.Background(), e, platformChartInstalls(e, charts, nil)); err != nil {
+	if err := installPlatformCharts(context.Background(), e, platformChartInstalls(e, charts, nil), ""); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(*got, []string{"cnpg@k3d-a"}) {

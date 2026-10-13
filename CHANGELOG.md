@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BEHAVIOR CHANGE: a re-apply of a `forge.HelmChart` now deletes the objects
+  the chart stopped rendering.** forge applies a chart with `kubectl apply`,
+  which never deletes, so an object a chart version dropped (the Flux chart's
+  ClusterRoles and NetworkPolicies are the case that surfaced it) stayed live forever,
+  including security objects: an `allow-webhooks` NetworkPolicy and a
+  `cluster-reconciler-impersonator` ClusterRole and binding had to be deleted by
+  hand. forge now stamps every object a chart renders with
+  `forge.dev/chart-owner=<project>.<env>` and, after a chart's apply fully
+  succeeds, deletes the objects carrying that stamp (and that chart's
+  `forge.dev/workload`) that the new render no longer contains. It never
+  deletes a CRD, a Namespace, or a PersistentVolume / PersistentVolumeClaim /
+  StatefulSet / Secret (kept, and reported); an object annotated
+  `kustomize.toolkit.fluxcd.io/prune: disabled` (the same escape hatch a Flux
+  bundle honours); an object with `ownerReferences`; or anything from a chart
+  whose render is empty or unreadable. `prune = False` on the `forge.HelmChart`
+  turns it off for that chart. Objects a chart dropped BEFORE this version carry
+  no stamp and are never deleted: remove those by hand once. A `--target` apply
+  of something else renders no chart and prunes nothing. See
+  `migrations/v0.1.45/helm-chart-prune`.
+
 ### Added
 
 - **`//forge:resolves-caller` declares a project's own caller resolver.** The
@@ -27,6 +49,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can read the same declaration. `forge project audit --json` lists them under
   `caller_resolvers`, and `forge project annotations --kind go` documents the
   marker.
+- **`forge.HelmChart.namespace_labels` / `namespace_annotations`.** Labels and
+  annotations on the Namespace forge creates for a chart, so Pod Security
+  Admission (`pod-security.kubernetes.io/enforce=restricted`) can be declared on
+  `flux-system`. They converge under server-side apply: a changed value is
+  updated, a key you stop declaring is removed, and a key another manager set
+  is left alone. `forge.dev/*` and `kubernetes.io/metadata.name` are refused.
+  Not available on a `delivery = "bundle"` chart, which has no forge-created
+  Namespace.
+- **`forge.KubeconfigPolicyRule.resource_names`.** Limits a minted rule to named
+  objects (`resourceNames`): `bind` on exactly two ClusterRoles, `get` on
+  one Secret. It replaces a hand-written ClusterRole beside the mint.
 
 - **Dashboards ship in the release.** A release bundle now carries every
   dashboard the project declares at `observability/dashboards/`, beside the

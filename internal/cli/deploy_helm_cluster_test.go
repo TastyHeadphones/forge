@@ -39,7 +39,7 @@ func TestHelmChartSpecs_UndeclaredClusterIsRefused(t *testing.T) {
 		{Name: "cp-daemon", Context: "k3d-cp-daemon"},
 	}
 
-	_, err := helmChartSpecsFromEntities(context.Background(), charts, declared)
+	_, err := helmChartSpecsFromEntities(context.Background(), charts, declared, "")
 	if err == nil {
 		t.Fatal("a chart targeting an undeclared cluster must be refused, not applied " +
 			"to the primary — silently installing an operator on the wrong cluster " +
@@ -70,7 +70,7 @@ func TestHelmChartSpecs_BareClusterNameIsRefused(t *testing.T) {
 	}}
 	declared := []ClusterEntity{{Name: "cp-daemon", Context: "k3d-cp-daemon"}}
 
-	if _, err := helmChartSpecsFromEntities(context.Background(), charts, declared); err == nil {
+	if _, err := helmChartSpecsFromEntities(context.Background(), charts, declared, ""); err == nil {
 		t.Fatal("a chart cluster given as the bare cluster NAME must be refused: forge " +
 			"applies with `kubectl --context`, and the context is k3d-<name>")
 	}
@@ -90,7 +90,7 @@ func TestHelmChartSpecs_DeclaredClusterIsAccepted(t *testing.T) {
 		{Name: "cp-daemon", Context: "k3d-cp-daemon"},
 	}
 
-	specs, err := helmChartSpecsFromEntities(context.Background(), charts, declared)
+	specs, err := helmChartSpecsFromEntities(context.Background(), charts, declared, "")
 	if err != nil {
 		t.Fatalf("a chart targeting a declared cluster must be accepted: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestHelmChartSpecs_NoClusterNeedsNoDeclaredClusters(t *testing.T) {
 		{Name: "flux", Version: "2.19.1", Namespace: "flux-system"},
 	}
 
-	specs, err := helmChartSpecsFromEntities(context.Background(), charts, nil)
+	specs, err := helmChartSpecsFromEntities(context.Background(), charts, nil, "")
 	if err != nil {
 		t.Fatalf("charts declaring no cluster must resolve with no declared clusters "+
 			"(staging/prod declare none): %v", err)
@@ -127,5 +127,42 @@ func TestHelmChartSpecs_NoClusterNeedsNoDeclaredClusters(t *testing.T) {
 			t.Errorf("chart %q must carry no cluster so the apply uses the env's primary "+
 				"context; got %q", s.Name, s.Cluster)
 		}
+	}
+}
+
+// The declared namespace metadata, the prune setting and the owner reach the
+// spec. Prune is a pointer on the entity so a contract that omits it reads as
+// the schema default (on); a spec built by hand defaults to OFF, so it can
+// never delete anything it did not mean to.
+func TestHelmChartSpecs_NamespaceMetadataPruneAndOwnerReachTheSpec(t *testing.T) {
+	off := false
+	charts := []HelmChartEntity{
+		{
+			Name: "flux", Version: "2.19.1", Namespace: "flux-system",
+			NamespaceLabels:      map[string]string{"pod-security.kubernetes.io/enforce": "restricted"},
+			NamespaceAnnotations: map[string]string{"owner": "sre"},
+		},
+		{Name: "legacy", Version: "1", Namespace: "legacy", Prune: &off},
+	}
+	specs, err := helmChartSpecsFromEntities(context.Background(), charts, nil, "acme.prod")
+	if err != nil {
+		t.Fatalf("helmChartSpecsFromEntities: %v", err)
+	}
+	if got := specs[0].NamespaceLabels["pod-security.kubernetes.io/enforce"]; got != "restricted" {
+		t.Errorf("namespace labels did not reach the spec: %v", specs[0].NamespaceLabels)
+	}
+	if specs[0].NamespaceAnnotations["owner"] != "sre" {
+		t.Errorf("namespace annotations did not reach the spec: %v", specs[0].NamespaceAnnotations)
+	}
+	for _, s := range specs {
+		if s.Owner != "acme.prod" {
+			t.Errorf("%s: owner = %q, want acme.prod", s.Name, s.Owner)
+		}
+	}
+	if !specs[0].Prune {
+		t.Error("an entity that does not mention prune must default to pruning")
+	}
+	if specs[1].Prune {
+		t.Error("prune = false must reach the spec")
 	}
 }

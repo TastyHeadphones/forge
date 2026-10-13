@@ -71,6 +71,20 @@ kubeconfig's `server`:
 `in-cluster` requires `service_account`: a pod cannot present the operator's
 credential whatever the address.
 
+Limit a rule to named objects with `resource_names` (rendered as `resourceNames`):
+
+```kcl
+forge.KubeconfigPolicyRule {
+    api_groups = ["rbac.authorization.k8s.io"]
+    resources = ["clusterroles"]
+    verbs = ["bind"]
+    resource_names = ["hub-reconciler", "hub-source"]
+}
+```
+
+Kubernetes cannot restrict `list`, `watch`, `create` or `deletecollection` by
+name, so do not rely on `resource_names` to bound those.
+
 Scope the grant with `namespaces` on the ServiceAccount — the rules become a
 Role in each listed namespace instead of a cluster-wide ClusterRole. Prefer
 that whenever the consumer's reach is known.
