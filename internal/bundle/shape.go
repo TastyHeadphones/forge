@@ -63,6 +63,9 @@ type ShapeInput struct {
 	// already in shape vocabulary (see release.ShapeAlert).
 	Alerts      []release.ShapeAlert
 	AlertRoutes []release.ShapeAlertRoute
+	// ObservabilityPolicy is the env's observability opt-out, or nil when it
+	// opts out of nothing.
+	ObservabilityPolicy *release.ShapeObservabilityPolicy
 
 	// Applier is the env's declared applier (release.ApplierForge), or "".
 	Applier string
@@ -99,6 +102,7 @@ func ProjectShape(in ShapeInput) (release.Shape, error) {
 		ControlPlaneSecrets: in.ControlPlaneSecrets,
 		Alerts:              in.Alerts,
 		AlertRoutes:         in.AlertRoutes,
+		ObservabilityPolicy: in.ObservabilityPolicy,
 		Applier:             in.Applier,
 	}.Canonical()
 	if err := shape.Validate(); err != nil {

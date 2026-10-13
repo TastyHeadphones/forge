@@ -214,7 +214,7 @@ func forwarderConfig(o *ObservabilityEntity) (string, error) {
 	spec := deploy.ObservabilityAgentSpec{
 		Endpoint: hostReachableEndpoint(o.Destination.Endpoint),
 		Protocol: o.Destination.Protocol,
-		Signals:  deploy.ObservabilitySignals(o.Signals),
+		Signals:  deploy.ObservabilitySignals{Traces: o.Signals.Traces, Metrics: o.Signals.Metrics, Logs: o.Signals.Logs, Profiles: o.Signals.Profiles},
 	}
 	if h := o.Destination.HeadersSecret; h != nil {
 		spec.HeadersSecret = &deploy.ObservabilitySecretKey{Name: h.Name, Key: h.Key}

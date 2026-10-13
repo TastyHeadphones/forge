@@ -343,6 +343,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		ControlPlaneSecrets: shapeControlPlaneSecretsOf(entities),
 		Alerts:              alerts,
 		AlertRoutes:         alertRoutes,
+		ObservabilityPolicy: shapeObservabilityPolicyOf(entities),
 		Applier:             shapeApplierOf(entities),
 	})
 	if err != nil {
@@ -530,6 +531,20 @@ func shapeControlPlaneSecretsOf(e *KCLEntities) []release.ShapeControlPlaneSecre
 		})
 	}
 	return out
+}
+
+// shapeObservabilityPolicyOf projects what the env opted OUT of. Nil when the
+// env declares no observability or opts out of nothing: the shape then encodes
+// as it did before the field, and absence means "everything on".
+func shapeObservabilityPolicyOf(e *KCLEntities) *release.ShapeObservabilityPolicy {
+	if e == nil || e.Observability == nil || e.Observability.Policy == nil {
+		return nil
+	}
+	p := e.Observability.Policy
+	if p.Enabled && len(p.Disabled) == 0 && len(p.OptIn) == 0 {
+		return nil
+	}
+	return &release.ShapeObservabilityPolicy{Enabled: p.Enabled, Disabled: p.Disabled, OptIn: p.OptIn}
 }
 
 // shapeApplierOf projects the env's declared applier. Only a DECLARATION is

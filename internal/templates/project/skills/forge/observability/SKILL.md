@@ -283,6 +283,43 @@ app-specific read-side (the table + the RPC) is code you own.
   interceptor, request-ID forwarding, timeout — then
   `genconnect.NewXClient(stack.HTTPClient, baseURL, stack.ClientOptions...)`.
 
+## Opting out (hosted observability is opt-out)
+
+Observability is ON by default for every deployed env, and you can switch off
+all of it or any category. **Disabled data is never collected or stored, so it is
+never billed.** (Daemons are not metered for observability; deployments are.)
+
+```kcl
+observability = forge.Observability {enabled = False}        # everything
+
+observability = forge.Observability {                        # per category
+    signals = forge.ObservabilitySignals {logs = False, metadata = False}
+}
+```
+
+| Category (`signals.<x>`) | What stops |
+|---|---|
+| `traces`, `metrics`, `logs`, `profiles` | the app's SDK exporter: `OTEL_<SIGNAL>_EXPORTER=none` |
+| `metadata` | **customer metadata**, collected by the platform's node agent without the app's help: pod CPU/memory against limits, restarts and last exit reason, Kubernetes events, image and version |
+| `browser` | the frontend SDK: `OTEL_ENDPOINT=off` in every frontend's runtime config (and its build variable), over anything you set |
+
+**Session replay is the one opt-IN category** (`signals.replay`, default `False`). The
+browser SDK records DOM events only when the frontend is built with
+`NEXT_PUBLIC_OTEL_REPLAY` / `VITE_OTEL_REPLAY`, and the platform drops them (browser logs of
+scope `rum.rr-web`) unless `replay = True`. It is recorded in the shape as
+`observability_policy.opt_in = ["replay"]`.
+
+`enabled = False` renders `OTEL_SDK_DISABLED=true` on every workload plus the
+browser switch. Author-set `OTEL_*` values still win.
+
+The resolved opt-out is recorded in the release shape as
+`observability_policy: {enabled, disabled: [...]}` (omitted when you opt out of
+nothing). The platform enforces it **at the source**: it labels the env's
+namespace `reliant.dev/obs-disabled: "logs,metadata"`, the node agent drops
+those namespaces' logs and customer metadata before export, the operator injects
+no OTLP endpoint or token when everything is off, and `/_otel` answers 204
+without forwarding. Re-enabling takes effect on the next deploy.
+
 ## Rules
 
 - Run `forge env status dev` after `forge env up dev` to verify observability before investigating issues.

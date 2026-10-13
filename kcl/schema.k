@@ -3565,6 +3565,19 @@ schema ObservabilitySignals:
     metrics: bool = True
     logs: bool = True
     profiles?: bool
+    # Customer metadata: per-workload container data the platform's node agent
+    # collects without the app's help (pod CPU/memory against limits, restarts
+    # and last exit reason, Kubernetes events, image and version). `False` opts
+    # out: the platform stops collecting it at the source.
+    metadata: bool = True
+    # The browser SDK (frontends). `False` renders OTEL_ENDPOINT=off into every
+    # frontend's runtime config and the platform's /_otel ingest drops it.
+    browser: bool = True
+    # Session replay is OPT-IN (the only category that defaults off). The browser
+    # SDK records DOM events only when the frontend is built with
+    # {NEXT_PUBLIC_,VITE_}OTEL_REPLAY; the platform drops those events (browser
+    # logs of instrumentation scope `rum.rr-web`) unless this is True.
+    replay: bool = False
 
 schema ObservabilitySampling:
     """Trace sampling. The ratio is HEAD sampling in the SDK: every workload
@@ -3789,6 +3802,21 @@ schema Observability:
 
     UNSET = telemetry off, cleanly: no endpoint is injected and nothing is
     rendered. `enabled = False` is the same, spelled where it can be flipped.
+
+    OPTING OUT (hosted observability is on by default; nothing is collected or
+    stored, so nothing is billed, for what is switched off):
+
+        observability = forge.Observability {enabled = False}               # everything
+        observability = forge.Observability {                              # per category
+            signals = forge.ObservabilitySignals {logs = False, metadata = False}
+        }
+
+    The categories are traces, metrics, logs, profiles, metadata (customer
+    metadata, collected by the platform's node agent) and browser. Apps get
+    `OTEL_<SIGNAL>_EXPORTER=none` per disabled signal, or `OTEL_SDK_DISABLED=true`
+    when `enabled = False`; frontends get `OTEL_ENDPOINT=off` when `browser` or
+    everything is disabled. The resolved policy is recorded in the release shape
+    (`observability_policy`), which the platform enforces at the source.
 
     Apps keep emitting OTLP to a local endpoint and never learn the backend:
 
