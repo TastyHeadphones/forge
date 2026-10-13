@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// Limits bound what one rule and one tenant may cost.
+// Limits bound what one rule and one owner may cost.
 type Limits struct {
 	// MinInterval is the floor on a rule's interval.
 	MinInterval time.Duration
@@ -22,13 +22,13 @@ type Limits struct {
 	// MaxInstancesPerRule: a result with more rows than this is an error, and the
 	// rule's existing instances are left untouched for that evaluation.
 	MaxInstancesPerRule int
-	// MaxRulesPerTenant: rules past this count (in name order) are not evaluated.
-	MaxRulesPerTenant int
+	// MaxRulesPerOwner: rules past this count (in name order) are not evaluated.
+	MaxRulesPerOwner int
 }
 
 // DefaultLimits are conservative.
 func DefaultLimits() Limits {
-	return Limits{MinInterval: time.Minute, MaxExecutionTime: 20 * time.Second, MaxInstancesPerRule: 200, MaxRulesPerTenant: 100}
+	return Limits{MinInterval: time.Minute, MaxExecutionTime: 20 * time.Second, MaxInstancesPerRule: 200, MaxRulesPerOwner: 100}
 }
 
 func (l Limits) withDefaults() Limits {
@@ -42,8 +42,8 @@ func (l Limits) withDefaults() Limits {
 	if l.MaxInstancesPerRule <= 0 {
 		l.MaxInstancesPerRule = d.MaxInstancesPerRule
 	}
-	if l.MaxRulesPerTenant <= 0 {
-		l.MaxRulesPerTenant = d.MaxRulesPerTenant
+	if l.MaxRulesPerOwner <= 0 {
+		l.MaxRulesPerOwner = d.MaxRulesPerOwner
 	}
 	return l
 }
@@ -98,12 +98,12 @@ func (e *Evaluator) EffectiveInterval(r Rule) time.Duration {
 	return r.Interval
 }
 
-// Select applies the per-tenant rule cap and orders rules by key, so which rules
+// Select applies the per-owner rule cap and orders rules by key, so which rules
 // the cap drops is deterministic.
 func (e *Evaluator) Select(rules []Rule) (kept []Rule, dropped int) {
 	sort.Slice(rules, func(i, j int) bool { return rules[i].String() < rules[j].String() })
-	if len(rules) > e.limits.MaxRulesPerTenant {
-		return rules[:e.limits.MaxRulesPerTenant], len(rules) - e.limits.MaxRulesPerTenant
+	if len(rules) > e.limits.MaxRulesPerOwner {
+		return rules[:e.limits.MaxRulesPerOwner], len(rules) - e.limits.MaxRulesPerOwner
 	}
 	return rules, 0
 }
@@ -142,7 +142,7 @@ func (e *Evaluator) run(ctx context.Context, rule Rule) ([]series, error) {
 	}
 	qctx, cancel := context.WithTimeout(ctx, e.limits.MaxExecutionTime+5*time.Second)
 	defer cancel()
-	rows, err := e.querier.Query(qctx, rule.Tenant, rule.Expr, QueryOptions{
+	rows, err := e.querier.Query(qctx, rule.Owner, rule.Expr, QueryOptions{
 		MaxExecutionTime: e.limits.MaxExecutionTime,
 		MaxResultRows:    e.limits.MaxInstancesPerRule + 1,
 	})
@@ -208,12 +208,12 @@ func (e *StoreError) Error() string {
 }
 func (e *StoreError) Unwrap() error { return e.Err }
 
-// tenantState caches a tenant's stored instances between ticks.
-type tenantState struct {
+// ownerState caches an owner's stored instances between ticks.
+type ownerState struct {
 	mu        sync.Mutex
 	loaded    bool
 	instances map[RuleKey][]Instance
-	// due is when each rule next runs; per tenant, so tenants evaluate in
+	// due is when each rule next runs; per owner, so owners evaluate in
 	// parallel without sharing a map.
 	due map[RuleKey]time.Time
 }

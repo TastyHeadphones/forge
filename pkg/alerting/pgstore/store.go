@@ -61,7 +61,7 @@ type Store struct {
 // queries are the statements with the schema prefix already applied, built once
 // from constants so no SQL is assembled at call time.
 type queries struct {
-	load, tenants, upsert, del, insertEvent, events, prune string
+	load, owners, upsert, del, insertEvent, events, prune string
 }
 
 var _ alerting.StateStore = (*Store)(nil)
@@ -77,31 +77,31 @@ func New(db *sql.DB, schema string) (*Store, error) {
 	}
 	r := strings.NewReplacer("{{t}}", prefix, "{{cols}}", instanceCols)
 	return &Store{db: db, q: queries{
-		load:        r.Replace(`SELECT {{cols}} FROM {{t}}alert_instances WHERE tenant = $1 ORDER BY env, rule, fingerprint`),
-		tenants:     r.Replace(`SELECT DISTINCT tenant FROM {{t}}alert_instances ORDER BY tenant`),
+		load:        r.Replace(`SELECT {{cols}} FROM {{t}}alert_instances WHERE owner = $1 ORDER BY env, rule, fingerprint`),
+		owners:      r.Replace(`SELECT DISTINCT owner FROM {{t}}alert_instances ORDER BY owner`),
 		upsert:      r.Replace(upsertSQL),
-		del:         r.Replace(`DELETE FROM {{t}}alert_instances WHERE tenant=$1 AND env=$2 AND rule=$3 AND fingerprint=$4`),
-		insertEvent: r.Replace(`INSERT INTO {{t}}alert_events (tenant, env, rule, fingerprint, labels, transition, value, at) VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8)`),
-		events: r.Replace(`SELECT tenant, env, rule, fingerprint, labels, transition, value, at FROM {{t}}alert_events
-WHERE tenant = $1 AND ($2 = '' OR env = $2) AND at >= $3 ORDER BY at DESC, id DESC LIMIT $4`),
+		del:         r.Replace(`DELETE FROM {{t}}alert_instances WHERE owner=$1 AND env=$2 AND rule=$3 AND fingerprint=$4`),
+		insertEvent: r.Replace(`INSERT INTO {{t}}alert_events (owner, env, rule, fingerprint, labels, transition, value, at) VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8)`),
+		events: r.Replace(`SELECT owner, env, rule, fingerprint, labels, transition, value, at FROM {{t}}alert_events
+WHERE owner = $1 AND ($2 = '' OR env = $2) AND at >= $3 ORDER BY at DESC, id DESC LIMIT $4`),
 		prune: r.Replace(`DELETE FROM {{t}}alert_events WHERE at < $1`),
 	}}, nil
 }
 
-const instanceCols = `tenant, env, rule, fingerprint, labels, annotations, state, active_at, firing_at, cleared_at, resolved_at, resolve_sent, last_eval_at, last_value`
+const instanceCols = `owner, env, rule, fingerprint, labels, annotations, state, active_at, firing_at, cleared_at, resolved_at, resolve_sent, last_eval_at, last_value`
 
 const upsertSQL = `
 INSERT INTO {{t}}alert_instances ({{cols}})
 VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8,$9,$10,$11,$12,$13,$14)
-ON CONFLICT (tenant, env, rule, fingerprint) DO UPDATE SET
+ON CONFLICT (owner, env, rule, fingerprint) DO UPDATE SET
     labels = EXCLUDED.labels, annotations = EXCLUDED.annotations, state = EXCLUDED.state,
     active_at = EXCLUDED.active_at, firing_at = EXCLUDED.firing_at, cleared_at = EXCLUDED.cleared_at,
     resolved_at = EXCLUDED.resolved_at, resolve_sent = EXCLUDED.resolve_sent,
     last_eval_at = EXCLUDED.last_eval_at, last_value = EXCLUDED.last_value`
 
-// LoadTenant implements alerting.StateStore.
-func (s *Store) LoadTenant(ctx context.Context, tenant string) ([]alerting.Instance, error) {
-	rows, err := s.db.QueryContext(ctx, s.q.load, tenant)
+// LoadOwner implements alerting.StateStore.
+func (s *Store) LoadOwner(ctx context.Context, owner string) ([]alerting.Instance, error) {
+	rows, err := s.db.QueryContext(ctx, s.q.load, owner)
 	if err != nil {
 		return nil, fmt.Errorf("pgstore: loading instances: %w", err)
 	}
@@ -114,7 +114,7 @@ func (s *Store) LoadTenant(ctx context.Context, tenant string) ([]alerting.Insta
 			state                     string
 			firing, cleared, resolved sql.NullTime
 		)
-		if err := rows.Scan(&in.Tenant, &in.Env, &in.Name, &in.Fingerprint, &labels, &annotations, &state, &in.ActiveAt,
+		if err := rows.Scan(&in.Owner, &in.Env, &in.Name, &in.Fingerprint, &labels, &annotations, &state, &in.ActiveAt,
 			&firing, &cleared, &resolved, &in.ResolveSent, &in.LastEvalAt, &in.LastValue); err != nil {
 			return nil, fmt.Errorf("pgstore: scanning instance: %w", err)
 		}
@@ -131,11 +131,11 @@ func (s *Store) LoadTenant(ctx context.Context, tenant string) ([]alerting.Insta
 	return out, rows.Err()
 }
 
-// Tenants implements alerting.StateStore.
-func (s *Store) Tenants(ctx context.Context) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, s.q.tenants)
+// Owners implements alerting.StateStore.
+func (s *Store) Owners(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, s.q.owners)
 	if err != nil {
-		return nil, fmt.Errorf("pgstore: listing tenants: %w", err)
+		return nil, fmt.Errorf("pgstore: listing owners: %w", err)
 	}
 	defer rows.Close()
 	var out []string
@@ -167,14 +167,14 @@ func (s *Store) Apply(ctx context.Context, ch alerting.Changes) error {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, s.q.upsert,
-			in.Tenant, in.Env, in.Name, in.Fingerprint, string(labels), string(annotations), string(in.State), in.ActiveAt,
+			in.Owner, in.Env, in.Name, in.Fingerprint, string(labels), string(annotations), string(in.State), in.ActiveAt,
 			nullTime(in.FiringAt), nullTime(in.ClearedAt), nullTime(in.ResolvedAt), in.ResolveSent, in.LastEvalAt, in.LastValue); err != nil {
 			return fmt.Errorf("pgstore: upserting instance: %w", err)
 		}
 	}
 	for _, r := range ch.Delete {
 		if _, err := tx.ExecContext(ctx, s.q.del,
-			r.Tenant, r.Env, r.Name, r.Fingerprint); err != nil {
+			r.Owner, r.Env, r.Name, r.Fingerprint); err != nil {
 			return fmt.Errorf("pgstore: deleting instance: %w", err)
 		}
 	}
@@ -184,7 +184,7 @@ func (s *Store) Apply(ctx context.Context, ch alerting.Changes) error {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, s.q.insertEvent,
-			e.Tenant, e.Env, e.Name, e.Fingerprint, string(labels), string(e.Transition), e.Value, e.At); err != nil {
+			e.Owner, e.Env, e.Name, e.Fingerprint, string(labels), string(e.Transition), e.Value, e.At); err != nil {
 			return fmt.Errorf("pgstore: recording event: %w", err)
 		}
 	}
@@ -197,7 +197,7 @@ func (s *Store) Events(ctx context.Context, q alerting.EventQuery) ([]alerting.E
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
-	rows, err := s.db.QueryContext(ctx, s.q.events, q.Tenant, q.Env, q.Since, limit)
+	rows, err := s.db.QueryContext(ctx, s.q.events, q.Owner, q.Env, q.Since, limit)
 	if err != nil {
 		return nil, fmt.Errorf("pgstore: listing events: %w", err)
 	}
@@ -209,7 +209,7 @@ func (s *Store) Events(ctx context.Context, q alerting.EventQuery) ([]alerting.E
 			labels     []byte
 			transition string
 		)
-		if err := rows.Scan(&e.Tenant, &e.Env, &e.Name, &e.Fingerprint, &labels, &transition, &e.Value, &e.At); err != nil {
+		if err := rows.Scan(&e.Owner, &e.Env, &e.Name, &e.Fingerprint, &labels, &transition, &e.Value, &e.At); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(labels, &e.Labels); err != nil {

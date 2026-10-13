@@ -183,6 +183,11 @@ func saveScaffoldLedgerLocked(root string) {
 	led := scaffoldLedgers[abs]
 	reported := scaffoldAbsentReported[abs]
 	full := filepath.Join(abs, ScaffoldedFile)
+	// The ledger is a committed state file and a write the run made, like
+	// hashes.json (saveStateFile): journal it, so a failed generate restores
+	// it with everything else instead of leaving the run's births recorded
+	// for files the rollback deleted.
+	RecordPreWriteAbs(full)
 	if len(led) == 0 && len(reported) == 0 {
 		_ = os.Remove(full)
 		return
@@ -238,13 +243,11 @@ func RecordScaffold(root, relPath string) {
 }
 
 // ForgetScaffold drops relPath's birth record, returning the path to the
-// "never scaffolded" state so the next run scaffolds it fresh.
+// "never scaffolded" state so the next run scaffolds it fresh — the
+// deliberate reset `forge project rescaffold` takes.
 //
-// The caller that matters is the rollback journal: a failed `forge
-// generate` DELETES the scaffold files it created this run, and a birth
-// record surviving that deletion would permanently suppress a file that
-// never actually shipped — the run would have consumed the project's one
-// chance to be born. See RestoreRollback.
+// A failed `forge generate` does not need it: the rollback journal restores
+// the ledger file itself to its pre-run bytes (see RestoreRollbackReport).
 func ForgetScaffold(root, relPath string) {
 	scaffoldMu.Lock()
 	defer scaffoldMu.Unlock()

@@ -124,7 +124,7 @@ func defaultAlertQueryRunner(ctx context.Context, sql string, settings map[strin
 }
 
 // clickhouseAlertQuerier is an alerting.Querier over an alertQueryRunner. The
-// tenant is ignored: the local ClickStack holds one project's data.
+// owner key is ignored: the local ClickStack holds one project's data.
 type clickhouseAlertQuerier struct{ run alertQueryRunner }
 
 func (q clickhouseAlertQuerier) Query(ctx context.Context, _ string, query string, opts alerting.QueryOptions) ([]alerting.Row, error) {

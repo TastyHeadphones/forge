@@ -4,10 +4,11 @@
 
 package alerting_test
 
-// Real Postgres (DATABASE_URL: use a database of your own) + a real ClickHouse
-// 26.8 container. Gated by the `integration` tag and by -short.
+// Real Postgres (a scratch database from pkg/pgtest: embedded, or the server
+// FORGE_TEST_POSTGRES_URL names) + a real ClickHouse 26.8 container. Gated by
+// the `integration` tag and by -short.
 //
-//	DATABASE_URL=postgres://... go test -tags integration ./pkg/alerting/...
+//	go test -tags integration ./pkg/alerting/...
 
 import (
 	"context"
@@ -18,7 +19,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"os/exec"
 	"sync"
 	"testing"
@@ -28,6 +28,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/reliant-labs/forge/pkg/lease"
+	"github.com/reliant-labs/forge/pkg/pgtest"
 
 	"github.com/reliant-labs/forge/pkg/alerting"
 	"github.com/reliant-labs/forge/pkg/alerting/chquery"
@@ -84,14 +85,14 @@ func openCH(addr, database string) (clickhouse.Conn, error) {
 	return clickhouse.Open(&clickhouse.Options{Addr: []string{addr}, Auth: clickhouse.Auth{Database: database, Username: "alerts", Password: "pw"}, DialTimeout: 5 * time.Second})
 }
 
-// perTenant maps the opaque tenant key to a connection on that tenant's own
-// ClickHouse database: the shape of every multi-tenant Querier.
-type perTenant map[string]chquery.Conn
+// perOwner maps the opaque owner key to a connection on that owner's own
+// ClickHouse database: the shape of every multi-owner Querier.
+type perOwner map[string]chquery.Conn
 
-func (p perTenant) Query(ctx context.Context, tenant, q string, o alerting.QueryOptions) ([]alerting.Row, error) {
-	c, ok := p[tenant]
+func (p perOwner) Query(ctx context.Context, owner, q string, o alerting.QueryOptions) ([]alerting.Row, error) {
+	c, ok := p[owner]
 	if !ok {
-		return nil, fmt.Errorf("unknown tenant %q", tenant)
+		return nil, fmt.Errorf("unknown owner %q", owner)
 	}
 	return chquery.Run(ctx, c, q, o)
 }
@@ -118,7 +119,7 @@ func (s *amSink) snapshot() []map[string]any {
 
 type staticRules map[string][]alerting.Rule
 
-func (s staticRules) Tenants(context.Context) ([]string, error) {
+func (s staticRules) Owners(context.Context) ([]string, error) {
 	var out []string
 	for t := range s {
 		out = append(out, t)
@@ -140,19 +141,23 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 
 func TestClickHousePostgresEndToEnd(t *testing.T) {
 	addr := startClickHouse(t)
-	dsn := os.Getenv("DATABASE_URL")
-	if testing.Short() || dsn == "" {
-		t.Skip("needs DATABASE_URL (a database of your own) and no -short")
+	// A scratch database of this test's own on pgtest's shared server, dropped
+	// when the test ends. pgtest decides which server: the one
+	// FORGE_TEST_POSTGRES_URL names, or embedded postgres.
+	dsn, dropDB, err := pgtest.NewURL()
+	if err != nil {
+		t.Fatalf("provision a scratch Postgres database: %v", err)
 	}
+	t.Cleanup(dropDB)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// ── ClickHouse: one database per tenant ──
+	// ── ClickHouse: one database per owner ──
 	admin, err := openCH(addr, "default")
 	if err != nil {
 		t.Fatal(err)
 	}
-	tenants := perTenant{}
+	owners := perOwner{}
 	for _, org := range []string{"org-a", "org-b"} {
 		db := "t_" + map[string]string{"org-a": "a", "org-b": "b"}[org]
 		for _, q := range []string{
@@ -167,7 +172,7 @@ func TestClickHousePostgresEndToEnd(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		tenants[org] = c
+		owners[org] = c
 	}
 	exec := func(q string) {
 		t.Helper()
@@ -210,7 +215,7 @@ func TestClickHousePostgresEndToEnd(t *testing.T) {
 	const expr = "SELECT service, quantile(0.95)(dur) AS value FROM spans GROUP BY service HAVING value > 800"
 	mk := func(org string) alerting.Rule {
 		return alerting.Rule{
-			RuleKey: alerting.RuleKey{Tenant: org, Env: "prod", Name: "slow-service"}, Expr: expr, Interval: 100 * time.Millisecond,
+			RuleKey: alerting.RuleKey{Owner: org, Env: "prod", Name: "slow-service"}, Expr: expr, Interval: 100 * time.Millisecond,
 			Labels:      map[string]string{"severity": "critical", "reliant_org_id": "org-b"}, // an attempted spoof
 			Annotations: map[string]string{"summary": "{{ $labels.service }} p95 {{ $value }}ms"},
 			Identity:    map[string]string{"reliant_org_id": org, "reliant_env_id": "prod"},
@@ -219,7 +224,7 @@ func TestClickHousePostgresEndToEnd(t *testing.T) {
 	rules := staticRules{"org-a": {mk("org-a")}, "org-b": {mk("org-b")}}
 
 	ev, err := alerting.NewEvaluator(alerting.EvaluatorDeps{
-		Querier: tenants, Notifier: alerting.NewAlertmanagerNotifier(nil, srv.URL), Store: store,
+		Querier: owners, Notifier: alerting.NewAlertmanagerNotifier(nil, srv.URL), Store: store,
 		Limits: alerting.Limits{MinInterval: 100 * time.Millisecond, MaxExecutionTime: 10 * time.Second},
 	})
 	if err != nil {
@@ -278,7 +283,7 @@ func TestClickHousePostgresEndToEnd(t *testing.T) {
 		}
 	}
 	// exactly one replica evaluates org-a: re-sends are one per interval, not two.
-	stored, _ := store.LoadTenant(ctx, "org-a")
+	stored, _ := store.LoadOwner(ctx, "org-a")
 	if len(stored) != 1 || stored[0].State != alerting.StateFiring {
 		t.Fatalf("stored = %+v", stored)
 	}
@@ -295,10 +300,10 @@ func TestClickHousePostgresEndToEnd(t *testing.T) {
 		return false
 	})
 	waitFor(t, "the resolved row to be cleaned up", func() bool {
-		s, _ := store.LoadTenant(ctx, "org-a")
+		s, _ := store.LoadOwner(ctx, "org-a")
 		return len(s) == 0
 	})
-	ev2, err := store.Events(ctx, alerting.EventQuery{Tenant: "org-a", Env: "prod", Since: time.Now().Add(-time.Hour), Limit: 50})
+	ev2, err := store.Events(ctx, alerting.EventQuery{Owner: "org-a", Env: "prod", Since: time.Now().Add(-time.Hour), Limit: 50})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +314,7 @@ func TestClickHousePostgresEndToEnd(t *testing.T) {
 	if seen[alerting.TransitionFiring] != 1 || seen[alerting.TransitionResolved] != 1 {
 		t.Fatalf("history = %v (two replicas must not double-record a transition)", seen)
 	}
-	if evB, _ := store.Events(ctx, alerting.EventQuery{Tenant: "org-b", Since: time.Now().Add(-time.Hour)}); len(evB) != 0 {
+	if evB, _ := store.Events(ctx, alerting.EventQuery{Owner: "org-b", Since: time.Now().Add(-time.Hour)}); len(evB) != 0 {
 		t.Fatalf("org-b history = %v", evB)
 	}
 }

@@ -10,7 +10,7 @@ import (
 
 func testRule() Rule {
 	return Rule{
-		RuleKey:  RuleKey{Tenant: "org-a", Env: "prod", Name: "slow"},
+		RuleKey:  RuleKey{Owner: "org-a", Env: "prod", Name: "slow"},
 		Identity: map[string]string{"reliant_org_id": "org-a", "reliant_env_id": "prod"},
 	}
 }
@@ -115,7 +115,7 @@ func TestFingerprintIsStableAndScoped(t *testing.T) {
 		t.Fatal("fingerprint depends on map order")
 	}
 	if a == fingerprint(RuleKey{"t2", "e", "r"}, map[string]string{"x": "1", "y": "2"}) {
-		t.Fatal("fingerprint must differ across tenants")
+		t.Fatal("fingerprint must differ across owners")
 	}
 	if a == fingerprint(RuleKey{"t", "e", "r"}, map[string]string{"x": "1", "y": "3"}) {
 		t.Fatal("fingerprint must differ across values")

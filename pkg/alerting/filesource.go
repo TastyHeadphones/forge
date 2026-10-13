@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// FileRuleSource is a single-tenant RuleSource that reads a rules document
+// FileRuleSource is a single-owner RuleSource that reads a rules document
 // (RulesDocument, JSON) from a path, typically a mounted ConfigMap rendered by
 // forge from the env's declared alerts. It is how a self-hosted, in-cluster
 // evaluator gets its rules through the normal release path.
@@ -23,9 +23,9 @@ import (
 type FileRuleSource struct {
 	// Path of the rules document.
 	Path string
-	// Tenant and Env key every rule. Tenant may be any non-empty opaque
+	// Owner and Env key every rule. Owner may be any non-empty opaque
 	// string; it only has to match what the Querier expects.
-	Tenant, Env string
+	Owner, Env string
 	// Identity is stamped on every rule (see Rule.Identity).
 	Identity map[string]string
 	// Recheck is how often to stat the file. Default 5s.
@@ -44,17 +44,17 @@ var _ RuleSource = (*FileRuleSource)(nil)
 
 const fileWarnEvery = time.Minute
 
-// Tenants implements RuleSource.
-func (f *FileRuleSource) Tenants(context.Context) ([]string, error) {
+// Owners implements RuleSource.
+func (f *FileRuleSource) Owners(context.Context) ([]string, error) {
 	if len(f.current()) == 0 {
 		return nil, nil
 	}
-	return []string{f.Tenant}, nil
+	return []string{f.Owner}, nil
 }
 
-// Rules implements RuleSource. A tenant other than f.Tenant has none.
-func (f *FileRuleSource) Rules(_ context.Context, tenant string) ([]Rule, error) {
-	if tenant != f.Tenant {
+// Rules implements RuleSource. An owner other than f.Owner has none.
+func (f *FileRuleSource) Rules(_ context.Context, owner string) ([]Rule, error) {
+	if owner != f.Owner {
 		return nil, nil
 	}
 	return f.current(), nil
@@ -101,7 +101,7 @@ func (f *FileRuleSource) refreshLocked(now time.Time) {
 	}
 	rules := make([]Rule, len(set))
 	for i, s := range set {
-		rules[i] = s.Rule(f.Tenant, f.Env, f.Identity)
+		rules[i] = s.Rule(f.Owner, f.Env, f.Identity)
 	}
 	if f.info != nil || len(rules) > 0 {
 		f.logger().Info("alert rules loaded", "path", f.Path, "rules", len(rules))

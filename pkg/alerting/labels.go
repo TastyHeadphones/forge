@@ -150,7 +150,7 @@ func buildSeries(rule Rule, rows []Row) ([]series, error) {
 // fingerprint identifies a label set within a rule.
 func fingerprint(k RuleKey, labels map[string]string) string {
 	h := sha256.New()
-	for _, p := range []string{k.Tenant, k.Env, k.Name} {
+	for _, p := range []string{k.Owner, k.Env, k.Name} {
 		h.Write([]byte(p))
 		h.Write([]byte{0xff})
 	}

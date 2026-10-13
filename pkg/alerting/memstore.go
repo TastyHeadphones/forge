@@ -23,13 +23,13 @@ func NewMemoryStore() *MemoryStore {
 
 var _ StateStore = (*MemoryStore)(nil)
 
-// LoadTenant implements StateStore.
-func (m *MemoryStore) LoadTenant(_ context.Context, tenant string) ([]Instance, error) {
+// LoadOwner implements StateStore.
+func (m *MemoryStore) LoadOwner(_ context.Context, owner string) ([]Instance, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var out []Instance
 	for _, in := range m.instances {
-		if in.Tenant == tenant {
+		if in.Owner == owner {
 			out = append(out, in)
 		}
 	}
@@ -37,13 +37,13 @@ func (m *MemoryStore) LoadTenant(_ context.Context, tenant string) ([]Instance, 
 	return out, nil
 }
 
-// Tenants implements StateStore.
-func (m *MemoryStore) Tenants(context.Context) ([]string, error) {
+// Owners implements StateStore.
+func (m *MemoryStore) Owners(context.Context) ([]string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	set := map[string]bool{}
 	for _, in := range m.instances {
-		set[in.Tenant] = true
+		set[in.Owner] = true
 	}
 	out := make([]string, 0, len(set))
 	for t := range set {
@@ -79,7 +79,7 @@ func (m *MemoryStore) Events(_ context.Context, q EventQuery) ([]Event, error) {
 	var out []Event
 	for i := len(m.events) - 1; i >= 0 && len(out) < limit; i-- {
 		e := m.events[i]
-		if e.Tenant == q.Tenant && (q.Env == "" || e.Env == q.Env) && !e.At.Before(q.Since) {
+		if e.Owner == q.Owner && (q.Env == "" || e.Env == q.Env) && !e.At.Before(q.Since) {
 			out = append(out, e)
 		}
 	}

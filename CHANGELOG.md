@@ -135,6 +135,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the output, and the next generate wrote `deploy/observability/**`. The
   `features:` block was refused, so nothing could turn them back off (P3b
   friction F15).
+
   - `features:` in forge.yaml now pins any feature on or off, whatever the
     tree derives, for example `features: {observability: false}`. A pin is
     never normalized away on write, so no later change to the tree overrides
@@ -161,12 +162,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whose consequences pins already reach one by one, and it would contradict
   the tree. A `kind: cli` project with handlers would have handler codegen
   running while `forge scaffold` refused it.
+
 - **Two branches that each add a service merge or rebase without a person
   resolving forge's files.** Every such branch changes the same files: the
   birth ledger, `.forge/hashes.json`, the descriptor, the aggregated
   dashboard spec, alert defaults and saved searches, and the generated
   service mounts. In the P3b pilot's 33 parallel lanes each one conflicted on
   every rebase (F16). The `forge-generated` merge driver now settles them:
+
   - `.forge/scaffolded.json`, `hashes.json` and `disowned.json` merge key by
     key (`checksums.MergeStateFile`) and are rendered exactly as forge writes
     them.
@@ -194,12 +197,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   One file can still conflict: a forge project's own `internal/app/compose.go`,
   where `forge generate` injects each component. Take either side and run
   `forge generate`, which re-injects the other side's component.
+
 - **A service adopted into a project without typed config compiles, and a
   failed generate names what is missing.** Before, the handler scaffold
   imported `<module>/pkg/config` and required `Deps.Config` in every project,
   even one with no config protos and no `pkg/config` (reliant, adopting
   services in place). `go mod tidy` then failed, generate rolled back, and
   the error said "fix go.mod or go.sum" (P3b friction F13).
+
   - `service.go` imports and wires `Config` only when the project has typed
     config: config protos under `proto/config`, or a `pkg/config` that
     declares `Config`. The harness already followed `Deps.Config` (#702). A
@@ -222,6 +227,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     own `pkg/middleware` has no `ContextWithClaims` (P3b F14), the error
     names that seam and the one function to add. It no longer calls the
     failure a forge codegen bug.
+
 - **The test harness's auto-stubs refuse an unprogrammed call instead of
   answering `(nil, nil)`, and a test can program them.** The harness stubs
   every required interface-typed Deps field so `NewTest<Svc>(t)` constructs.
@@ -321,7 +327,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   postgres runs as one implicit transaction. So reliant's goose files holding
   several `CREATE INDEX CONCURRENTLY` statements failed `migrate up` with
   SQLSTATE 25001 and left the schema dirty, as would an `ALTER TYPE … ADD
-  VALUE` followed by a row using the value (55P04). Each statement now becomes
+VALUE` followed by a row using the value (55P04). Each statement now becomes
   its own migration (`<name>_part1`, `_part2`, …), cut where goose cuts them —
   a line ending in `;`, or a `StatementBegin`/`StatementEnd` block — so each
   runs exactly as goose ran it, and a failure part-way leaves only that
@@ -341,9 +347,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   statement (`forge db migration new <name>`). It covers every statement
   postgres refuses inside a transaction block that a migration could hold:
   `CREATE`/`DROP INDEX CONCURRENTLY`, `REINDEX … CONCURRENTLY` and `REINDEX
-  SCHEMA|DATABASE|SYSTEM`, `DETACH PARTITION … CONCURRENTLY`, `VACUUM`, a
+SCHEMA|DATABASE|SYSTEM`, `DETACH PARTITION … CONCURRENTLY`, `VACUUM`, a
   table-less `CLUSTER`, `CREATE`/`DROP DATABASE`/`TABLESPACE`, `ALTER DATABASE
-  … SET TABLESPACE`, `ALTER SYSTEM`, `DISCARD ALL`, and the subscription
+… SET TABLESPACE`, `ALTER SYSTEM`, `DISCARD ALL`, and the subscription
   statements that touch a replication slot. `ALTER TYPE … ADD VALUE` is not
   among them: postgres has allowed it in a transaction since 12, and nothing
   forge provisions or tests is older than 16. Using the added value in the
@@ -368,7 +374,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   squashed forge history is declared and adopted — see "A squashed forge
   history is adopted" under Added — that is: a database the squashed
   migrations built adopts the baseline), preview each database with `forge db
-  migrate status` and a `migrate up` against a copy, and never force. The
+migrate status` and a `migrate up` against a copy, and never force. The
   tests check each of those claims against the migrator. The header also dropped the wall-clock
   time and the absolute `--from-dir`: it names the squashed migrations' count
   and version range, so a re-squash with the same `--image` is byte-for-byte
@@ -378,15 +384,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generate.** forge births enum columns as TEXT holding value names, and the
   CRUD projection mapped only that, so a column the author declared integer,
   storing the wire number (reliant's `tasks.status INTEGER NOT NULL DEFAULT
-  1`), failed generate with `no conversion between wire kind enum and column
-  type INT4`. SQL is the schema: an integer column of any width (or
+1`), failed generate with `no conversion between wire kind enum and column
+type INT4`. SQL is the schema: an integer column of any width (or
   `INTEGER[]` for a repeated enum) now stores the number. The write path
   routes an unset enum exactly as the TEXT path does (the column's literal
   DEFAULT, NULL for a nullable column), the read path casts the stored number
   back (proto3 enums are open, so an undeclared number passes through as it
   would on the wire; one outside int32 is refused), and a list filter binds
   `int32(req.Status)` rather than the name Postgres would compare as `integer
-  = text`. Birth still writes TEXT + CHECK.
+= text`. Birth still writes TEXT + CHECK.
 
 - **The `observability` skill loads whole again.** It had grown to 24,390
   bytes, over the 24,000-byte load cap, so a loader truncated its tail (the
@@ -423,7 +429,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session pooler with two server connections (reliant's prod pool per
   PgBouncer replica), two concurrent runs deadlocked until `query_wait_timeout`
   killed one: `open migrator: failed to open database: driver: bad
-  connection`. `Open` now checks one connection out of its own pool (capped at
+connection`. `Open` now checks one connection out of its own pool (capped at
   one) and binds golang-migrate to it, as `AutoMigrate` does since the
   one-connection fix; `Up`, `Force` and `State` all run on it, and a waiter
   holds that session and nothing else. `forge db migrate *` and every
@@ -587,12 +593,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `AutoMigrate`, which cannot know its binary's commands, names
   `forge db migrate force N` from a checkout of the release (new
   `migratekit.ForceCommand`, tested to resolve) and the binary's own `db
-  migrate force N` where it has one. The `db` and `db/deploy-migrations`
+migrate force N` where it has one. The `db` and `db/deploy-migrations`
   skills, `docs/concepts.md` and the `forge db squash` doc stop naming the
   golang-migrate CLI or crediting its lock. `db.go` is scaffolded once, so an
   existing project gains `force` by copying it from a fresh scaffold.
 
 ### Changed
+
+- **`pkg/alerting` keys its partitions by `Owner`.** The package's opaque
+  partition key now uses the word forge already uses for whose a row is
+  (`forge:owner`), instead of a vocabulary forge removed: `RuleKey.Owner`,
+  `EventQuery.Owner`, `Limits.MaxRulesPerOwner`, `FileRuleSource.Owner`,
+  `RuleSource.Owners`, `StateStore.Owners` and `StateStore.LoadOwner`. In the
+  `pgstore` schema, `alert_instances` and `alert_events` are keyed on an
+  `owner` column and their indexes are named for it. A consumer that copied
+  `pgstore.SchemaSQL` into its own migrations renames that column in both
+  tables in a new migration.
 
 - **`forge generate` validates without linking, and loads the tree once.**
   The validate step ran `go build -o /dev/null ./...`, which links every main
@@ -658,7 +674,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **A squashed forge history is adopted, not refused: `-- forge:adopts forge
-  <versions>`.** After `forge db squash` replaced a forge history with one
+<versions>`.** After `forge db squash` replaced a forge history with one
   baseline, every database that history built was refused, and misleadingly:
   "schema at 20260101000002, AHEAD of the newest migration this binary embeds
   (20260201000000)" for a baseline numbered above the history, and "MISSING …
@@ -734,7 +750,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   invalidates at service scope, no list-filter lint. It makes no entity, so
   marking every CRUD-named rpc of a table is the per-entity opt-out: the table
   stays plain schema, with no ORM struct in `internal/db` (no `Task
-  redeclared` against a project's own `Task`), page or seed root. A comment
+redeclared` against a project's own `Task`), page or seed root. A comment
   marker, like `forge:unmanaged`, because who implements a handler is not a
   fact about the API contract and must not cost the `forge.proto` import.
   Generate refuses a near-miss spelling, the marker on a service or message,
@@ -781,7 +797,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   forge's own setters keep to `env_var`: the KCL env map and the secret store
   key name it alone. Flag help now lists the env vars that set a flag,
   permanent aliases included (`--environment string   … [env: RELIANT_ENV,
-  NODE_ENV]`). A required-field error names every alias. `forge generate`
+NODE_ENV]`). A required-field error names every alias. `forge generate`
   refuses an alias that repeats any env var or alias another field of the same
   process reads (a command config counts its binary's root config), repeats
   the field's own `env_var`, has no `env_var` beside it, is not a variable
@@ -793,7 +809,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Alert rules, declared per env: `forge.AlertRule`, `forge.AlertRoute`,
   `forge.AlertDefault`.** On `forge.Observability.alerts = forge.Alerts {rules,
-  defaults, routes}`. A rule is the Prometheus shape with the condition inside
+defaults, routes}`. A rule is the Prometheus shape with the condition inside
   `expr`, a single native ClickHouse SELECT over the OpenTelemetry tables whose
   every row is a firing instance (non-`value` columns are labels, `value` the
   sample); `severity` is a label (critical | warning | info, default warning).
@@ -832,16 +848,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rule's `expr` is one ClickHouse SELECT; every row it returns is a firing
   instance, its non-value columns the labels and its `value` column the sample.
   The package owns the server-side guard (single SELECT, no table functions
-  that read outside the tenant, `readonly=2`, `max_execution_time`,
+  that read outside the owner's database, `readonly=2`, `max_execution_time`,
   `max_result_rows`), label protection (`reliant_*` is stripped from rules and
   columns; the `RuleSource` supplies identity labels, applied last), the
   inactive → pending → firing → resolved state machine with one-evaluation flap
   damping, a jittered scheduler sharded over `pkg/lease`, and an Alertmanager v2
   client. It knows nothing of orgs, billing or any particular database: the
-  tenant is an opaque string, and `Querier`, `RuleSource`, `Notifier` and
+  owner key (whose data a rule queries) is an opaque string, and `Querier`,
+  `RuleSource`, `Notifier` and
   `StateStore` are interfaces declared in the package. Ships `RuleSpec` (the
   rule model), `FileRuleSource` (hot-reloaded rules file, keeps the last good
-  rules), `chquery` (single-tenant ClickHouse `Querier`), `pgstore` (Postgres
+  rules), `chquery` (a ClickHouse `Querier` for one owner), `pgstore` (Postgres
   `StateStore` and its schema) and `MemoryStore`.
 
 - **`Bundle.applier = "forge"`: a declared self-applied platform env.** A real
@@ -1016,7 +1033,7 @@ github.com/reliant-labs/forge/cmd/forge@<pin> <same args>` that needs no
   in-place scaffold into an empty directory, keep `error`. The `migration`
   skill and `docs/concepts.md` now document both defaults and when to flip.
 - **`forge lint` runs every lane flag it is given.** `forge lint --conventions
-  --contract` ran whichever lane came first in the dispatch chain, skipped the
+--contract` ran whichever lane came first in the dispatch chain, skipped the
   other without a word, and printed ✅ — a green verdict over a lane that never
   executed (text mode, `--quiet`/`--scope`, `--json` and `--gate-json` alike).
   Every named lane now runs, each exactly as it runs alone, and one verdict
@@ -1033,7 +1050,7 @@ github.com/reliant-labs/forge/cmd/forge@<pin> <same args>` that needs no
   the way it vendors `buf/validate/validate.proto`: the first run whose protos
   import it and that finds no copy writes forge's own (with the `forgepb`
   `go_package`); an existing copy is never rewritten, so `forge lint
-  --vendored-protos` stays the drift guard. Because a project's own Go template
+--vendored-protos` stays the drift guard. Because a project's own Go template
   may target all of `proto/`, generate now refuses one whose `protoc-gen-go`
   would compile a vendored proto — a second Go registration of a descriptor
   `forgepb` (or protovalidate) already registers panics every binary at init —
@@ -1046,7 +1063,7 @@ github.com/reliant-labs/forge/cmd/forge@<pin> <same args>` that needs no
   pg_dump's session prelude, so the baseline ran
   `SELECT pg_catalog.set_config('search_path', '', false)` on the migrator's
   session: the next migration in the same run failed with `relation "x" does
-  not exist`, and `AutoMigrate` handed the connection back to the app's pool
+not exist`, and `AutoMigrate` handed the connection back to the app's pool
   with an empty `search_path`. Its line filter for psql meta-commands also
   deleted any line beginning with `\` inside a function body or an inserted
   value. squash now reads the dump the way postgres lexes it (quotes, `E''`
@@ -1062,7 +1079,7 @@ github.com/reliant-labs/forge/cmd/forge@<pin> <same args>` that needs no
   `FORGE_CONFIG`.** Every forge-built binary read `FORGE_CONFIG`, so a shell that
   set it for one forge app made every other forge binary started from that
   shell load that app's file and die at startup (`FORGE_CONFIG=/x.yaml reliant
-  server worker` → `config file "/x.yaml" does not exist`), including a daemon
+server worker` → `config file "/x.yaml" does not exist`), including a daemon
   a desktop app launches with the login environment. The variable is now
   `<BINARY>_CONFIG`, derived from `(forge.v1.binary_config).binary`
   (`RELIANT_CONFIG`, `IDP_PROVISION_ONESHOT_CONFIG`) and shared by a binary's
@@ -1073,7 +1090,7 @@ github.com/reliant-labs/forge/cmd/forge@<pin> <same args>` that needs no
   `config.ConfigPathEnv` is removed from `forge/pkg/config`. The variable is
   recorded on the `--config` flag, so `--help` names it, and a missing file now
   says where its path came from (`(from env RELIANT_CONFIG) ... point
-  RELIANT_CONFIG at a readable file, or unset it`). New in `pkg/config`:
+RELIANT_CONFIG at a readable file, or unset it`). New in `pkg/config`:
   `ConfigPathEnvFor(binary)`, and `RegisterConfigFlag(cmd, env)`, which
   registers `--config` with a chosen variable — called on a binary's root
   before the generated `Register*Flags`, it is the override. `forge generate`
@@ -1090,8 +1107,8 @@ github.com/reliant-labs/forge/cmd/forge@<pin> <same args>` that needs no
   the ones registered on the command path through the cobra-level
   `Register*` functions (recorded on the command), so a key none of them
   declares is still a loud error, now naming them all (`unknown key
-  "jwks_ulr": no config this command loads has such a field (ApiServerConfig,
-  ReliantConfig)`), and nested keys stay strict. One file serves one process:
+"jwks_ulr": no config this command loads has such a field (ApiServerConfig,
+ReliantConfig)`), and nested keys stay strict. One file serves one process:
   `server worker` refuses a key only `server api` reads. A key two loaded
   configs both declare is refused at load, and `forge generate` refuses a root
   and a command config of one binary that share a top-level field name, as it

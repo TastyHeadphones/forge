@@ -25,7 +25,7 @@ func (printNotifier) Notify(_ context.Context, alerts []alerting.Alert) error {
 	return nil
 }
 
-// A single-tenant deployment: a rules file, one ClickHouse, in-memory state.
+// A single-owner deployment: a rules file, one ClickHouse, in-memory state.
 // Swap oneRow for chquery.New(conn), printNotifier for
 // alerting.NewAlertmanagerNotifier(nil, "http://alertmanager:9093"), and the
 // MemoryStore for pgstore.New(db, "") to run it for real.

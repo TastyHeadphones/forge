@@ -37,7 +37,7 @@ GROUP BY service HAVING value > 500"""
 
 Rules follow the Prometheus shape, with the condition **inside** `expr`: `alert`, `expr`, `for`, `interval`, `keep_firing_for`, `labels`, `annotations`. There is no separate query/condition object.
 
-- `expr` is **one ClickHouse SELECT** (or `WITH … SELECT`) over the OpenTelemetry tables: `otel_metrics_sum`, `otel_metrics_gauge`, `otel_metrics_histogram`, `otel_traces`, `otel_logs`. The tenant database is already selected.
+- `expr` is **one ClickHouse SELECT** (or `WITH … SELECT`) over the OpenTelemetry tables: `otel_metrics_sum`, `otel_metrics_gauge`, `otel_metrics_histogram`, `otel_traces`, `otel_logs`. Your project's database is already selected.
 - **Every row it returns is a firing instance.** Columns other than `value` become the instance's labels; `value` (numeric) is the sample. Put the threshold in the query: `… GROUP BY service HAVING value > 0.05`. A query that returns no rows is healthy.
 - `for` holds the condition before it fires (default `5m`). It is a KCL keyword, so write it quoted: `"for" = "10m"`.
 - `interval` is the evaluation period, floor `1m`. `keep_firing_for` holds a cleared alert.
@@ -54,7 +54,7 @@ Each is an error naming the rule, at `forge env render` / `shape` / `deploy`, no
 | `for` / `interval` / `keep_firing_for` not a duration (`90s`, `5m`, `1h30m`; no `d` or `w`) | the evaluator parses them with Go |
 | `interval` under `1m` | evaluation floor |
 | `expr` not starting with SELECT/WITH, or containing `;` | one read-only statement |
-| labels `alertname`, `reliant_*` | set by the platform, so a rule cannot impersonate its tenant |
+| labels `alertname`, `reliant_*` | set by the platform, so a rule cannot claim another project's identity |
 | `severity` other than critical / warning / info | |
 | two rules with one `alert` in an env; a rule named like a default | unique per env |
 | a route `receiver` that is a URL, a token, or contains `hooks.slack.com` | a route names a receiver; its secret is entered in the control plane console |

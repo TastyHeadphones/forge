@@ -21,21 +21,21 @@ type SchedulerDeps struct {
 	// Locker shards evaluation across replicas. Nil runs every shard in this
 	// process, which is right for a single replica.
 	Locker Locker
-	// Shards is how many lease-owned partitions tenants hash into. Default 16.
+	// Shards is how many lease-owned partitions owners hash into. Default 16.
 	Shards int
 	// LeasePrefix names the leases: "<prefix>/shard/<n>". Default "alerting".
 	LeasePrefix string
 	// Tick is how often a shard looks for due rules. Default 10s.
 	Tick time.Duration
-	// Concurrency bounds tenants evaluated at once within a shard. Default 4.
+	// Concurrency bounds owners evaluated at once within a shard. Default 4.
 	Concurrency int
 	Logger      *slog.Logger
 }
 
-// Scheduler evaluates every tenant's rules on their intervals.
+// Scheduler evaluates every owner's rules on their intervals.
 //
-// Tenants hash into Shards partitions and each partition is a lease, so exactly
-// one replica evaluates a tenant at a time and a replica that dies hands its
+// Owners hash into Shards partitions and each partition is a lease, so exactly
+// one replica evaluates an owner at a time and a replica that dies hands its
 // partitions over within the lease's retry interval. Every replica contends for
 // every shard, each starting after a random delay so partitions spread across
 // replicas rather than the fastest one taking all.
@@ -74,10 +74,10 @@ func NewScheduler(d SchedulerDeps) (*Scheduler, error) {
 	return &Scheduler{d: d}, nil
 }
 
-// ShardOf is the partition a tenant belongs to.
-func (s *Scheduler) ShardOf(tenant string) int {
+// ShardOf is the partition an owner belongs to.
+func (s *Scheduler) ShardOf(owner string) int {
 	h := fnv.New32a()
-	_, _ = h.Write([]byte(tenant))
+	_, _ = h.Write([]byte(owner))
 	return int(h.Sum32() % uint32(s.d.Shards))
 }
 
@@ -111,7 +111,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 // runShard is restartable: all of its state is rebuilt from the store each time
 // the lease is won, so a handover loses nothing but the in-memory due times.
 func (s *Scheduler) runShard(ctx context.Context, shard int) error {
-	cache := map[string]*tenantState{}
+	cache := map[string]*ownerState{}
 	t := time.NewTicker(s.d.Tick)
 	defer t.Stop()
 	for {
@@ -124,46 +124,46 @@ func (s *Scheduler) runShard(ctx context.Context, shard int) error {
 	}
 }
 
-func (s *Scheduler) tick(ctx context.Context, shard int, cache map[string]*tenantState) {
-	tenants, err := s.tenants(ctx, shard)
+func (s *Scheduler) tick(ctx context.Context, shard int, cache map[string]*ownerState) {
+	owners, err := s.owners(ctx, shard)
 	if err != nil {
 		if ctx.Err() == nil {
-			s.d.Logger.WarnContext(ctx, "alerting: listing tenants failed", "shard", shard, "error", err)
+			s.d.Logger.WarnContext(ctx, "alerting: listing owners failed", "shard", shard, "error", err)
 		}
 		return
 	}
 	sem := make(chan struct{}, s.d.Concurrency)
 	var wg sync.WaitGroup
-	for _, tenant := range tenants {
-		st := cache[tenant]
+	for _, owner := range owners {
+		st := cache[owner]
 		if st == nil {
-			st = &tenantState{}
-			cache[tenant] = st
+			st = &ownerState{}
+			cache[owner] = st
 		}
 		sem <- struct{}{}
 		wg.Add(1)
-		go func(tenant string, st *tenantState) {
+		go func(owner string, st *ownerState) {
 			defer wg.Done()
 			defer func() { <-sem }()
 			defer func() {
 				if r := recover(); r != nil {
-					s.d.Logger.ErrorContext(ctx, "alerting: tenant evaluation panicked", "tenant", tenant, "panic", r)
+					s.d.Logger.ErrorContext(ctx, "alerting: owner evaluation panicked", "owner", owner, "panic", r)
 				}
 			}()
-			s.tickTenant(ctx, tenant, st)
-		}(tenant, st)
+			s.tickOwner(ctx, owner, st)
+		}(owner, st)
 	}
 	wg.Wait()
 }
 
-// tenants is the shard's tenants: those with rules and those with leftover state
+// owners is the shard's owners: those with rules and those with leftover state
 // (their rules were all removed, so their instances need retiring).
-func (s *Scheduler) tenants(ctx context.Context, shard int) ([]string, error) {
-	withRules, err := s.d.Rules.Tenants(ctx)
+func (s *Scheduler) owners(ctx context.Context, shard int) ([]string, error) {
+	withRules, err := s.d.Rules.Owners(ctx)
 	if err != nil {
 		return nil, err
 	}
-	withState, err := s.d.Store.Tenants(ctx)
+	withState, err := s.d.Store.Owners(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -178,13 +178,13 @@ func (s *Scheduler) tenants(ctx context.Context, shard int) ([]string, error) {
 	return out, nil
 }
 
-func (s *Scheduler) tickTenant(ctx context.Context, tenant string, st *tenantState) {
+func (s *Scheduler) tickOwner(ctx context.Context, owner string, st *ownerState) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	due := st.due
-	log := s.d.Logger.With("tenant", tenant)
+	log := s.d.Logger.With("owner", owner)
 
-	rules, err := s.d.Rules.Rules(ctx, tenant)
+	rules, err := s.d.Rules.Rules(ctx, owner)
 	if err != nil {
 		log.WarnContext(ctx, "alerting: listing rules failed", "error", err)
 		return
@@ -194,7 +194,7 @@ func (s *Scheduler) tickTenant(ctx context.Context, tenant string, st *tenantSta
 		due = st.due
 	}
 	if !st.loaded {
-		all, err := s.d.Store.LoadTenant(ctx, tenant)
+		all, err := s.d.Store.LoadOwner(ctx, owner)
 		if err != nil {
 			log.WarnContext(ctx, "alerting: loading state failed", "error", err)
 			return
@@ -208,14 +208,14 @@ func (s *Scheduler) tickTenant(ctx context.Context, tenant string, st *tenantSta
 
 	kept, dropped := s.d.Eval.Select(rules)
 	if dropped > 0 {
-		log.WarnContext(ctx, "alerting: tenant is over its rule cap; excess rules are not evaluated", "dropped", dropped)
+		log.WarnContext(ctx, "alerting: owner is over its rule cap; excess rules are not evaluated", "dropped", dropped)
 	}
 	live := make(map[RuleKey]bool, len(kept))
 	now := time.Now()
 	for _, r := range kept {
 		live[r.RuleKey] = true
-		if r.Tenant != tenant {
-			log.ErrorContext(ctx, "alerting: RuleSource returned a rule for another tenant; skipped", "rule", r.String())
+		if r.Owner != owner {
+			log.ErrorContext(ctx, "alerting: RuleSource returned a rule for another owner; skipped", "rule", r.String())
 			continue
 		}
 		if t, ok := due[r.RuleKey]; ok && now.Before(t) {
