@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`pkg/alerting`: a SQL alert-rule evaluator in the Prometheus shape.** A
+  rule's `expr` is one ClickHouse SELECT; every row it returns is a firing
+  instance, its non-value columns the labels and its `value` column the sample.
+  The package owns the server-side guard (single SELECT, no table functions
+  that read outside the tenant, `readonly=2`, `max_execution_time`,
+  `max_result_rows`), label protection (`reliant_*` is stripped from rules and
+  columns; the `RuleSource` supplies identity labels, applied last), the
+  inactive → pending → firing → resolved state machine with one-evaluation flap
+  damping, a jittered scheduler sharded over `pkg/lease`, and an Alertmanager v2
+  client. It knows nothing of orgs, billing or any particular database: the
+  tenant is an opaque string, and `Querier`, `RuleSource`, `Notifier` and
+  `StateStore` are interfaces declared in the package. Ships `RuleSpec` (the
+  rule model), `FileRuleSource` (hot-reloaded rules file, keeps the last good
+  rules), `chquery` (single-tenant ClickHouse `Querier`), `pgstore` (Postgres
+  `StateStore` and its schema) and `MemoryStore`.
+
 - **`Bundle.applier = "forge"`: a declared self-applied platform env.** A real
   environment forge applies on purpose and permanently, for an env whose own
   control plane must not apply it (control-plane's `prod`: a hub applying the
