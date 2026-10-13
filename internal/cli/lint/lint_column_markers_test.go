@@ -197,3 +197,44 @@ COMMENT ON COLUMN invoices.total_cents IS 'forge:immutible';
 		t.Error("missing fix_hint")
 	}
 }
+
+// A COMMENT ON COLUMN whose object is schema-qualified and quoted
+// (`"public"."invoices".total_cents`) is still read: the pattern used to stop
+// at the first quote and miss the statement, so a misspelled marker there
+// went unreported.
+func TestCollectColumnMarkerFindings_QualifiedQuotedObject(t *testing.T) {
+	dir := writeColumnMarkersFixture(t, "0001_qualified.up.sql", `
+COMMENT ON COLUMN "public"."invoices".total_cents IS 'forge:immutible';
+COMMENT ON CONSTRAINT invoices_customer_id_fkey ON public."invoices" IS 'forge:reff';
+`)
+	findings, err := collectColumnMarkerFindings(dir)
+	if err != nil {
+		t.Fatalf("collectColumnMarkerFindings: %v", err)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("expected 2 findings (column and constraint), got %d: %+v", len(findings), findings)
+	}
+}
+
+// The read-only-fields schema replay resolves a schema-qualified, quoted
+// table in CREATE, ALTER and COMMENT ON COLUMN to one table — the pg_dump
+// shape — rather than to a table named after the schema.
+func TestApplyMigrationColumns_SchemaQualified(t *testing.T) {
+	live := map[string]map[string]sqlColumn{}
+	sql := `CREATE TABLE public.invoices (id text PRIMARY KEY);
+ALTER TABLE ONLY "public"."invoices" ADD COLUMN total_cents bigint NOT NULL DEFAULT 0;
+COMMENT ON COLUMN public."invoices".total_cents IS 'forge:fill=handler';
+`
+	applyMigrationColumns(live, sql)
+	applyFillMarkers(live, sql)
+	if _, ok := live["public"]; ok {
+		t.Fatalf("a schema was read as a table: %v", live)
+	}
+	col, ok := live["invoices"]["total_cents"]
+	if !ok {
+		t.Fatalf("invoices.total_cents not replayed: %v", live)
+	}
+	if !col.FillDeclared {
+		t.Errorf("forge:fill on a qualified COMMENT ON COLUMN was not applied: %+v", col)
+	}
+}

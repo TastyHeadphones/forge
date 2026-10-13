@@ -101,6 +101,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/sqlident"
 )
 
 // rawSQLRPC is one authenticated RPC whose query forge could not verify,
@@ -136,7 +138,9 @@ var looksLikeSQLRE = regexp.MustCompile(`(?is)\bselect\b[\s\S]*\bfrom\b|\binsert
 // subquery alias — because the result is INTERSECTED with the declared
 // owner set before anything is reported. A spurious name that nobody
 // declared owned falls out; a real one that is declared does not.
-var sqlTableRefRE = regexp.MustCompile(`(?is)\b(?:from|join|into|update)\s+"?([a-z_][a-z0-9_]*)"?`)
+// The name may be schema-qualified and quoted (`public.vehicles`); the
+// table is its last part, resolved by sqlident the way postgres would.
+var sqlTableRefRE = regexp.MustCompile(`(?is)\b(?:from|join|into|update)\s+(` + sqlident.Qualified + `)`)
 
 // sqlLiteralsByDecl maps each function declaration in a handler package
 // to the SQL-shaped strings its body can reach: literals written inline,
@@ -306,8 +310,8 @@ func classifyHandlerSQL(queries []string, ownerTables map[string]string) (sqlOwn
 	filtered := map[string]bool{}
 	for _, q := range queries {
 		lower := strings.ToLower(q)
-		for _, m := range sqlTableRefRE.FindAllStringSubmatch(lower, -1) {
-			table := m[1]
+		for _, m := range sqlTableRefRE.FindAllStringSubmatch(q, -1) {
+			table := sqlident.Last(m[1])
 			column, owned := ownerTables[table]
 			if !owned {
 				continue

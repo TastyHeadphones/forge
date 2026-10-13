@@ -34,6 +34,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/sqlident"
 	"github.com/reliant-labs/forge/pkg/schemadef"
 )
 
@@ -42,11 +43,11 @@ import (
 // captured text is the comment body (quotes doubled per postgres escaping
 // are left as-is — marker names never contain a quote, so this is fine for
 // marker detection).
-var commentOnColumnRe = regexp.MustCompile(`(?is)\bcomment\s+on\s+column\s+("?[\w.]+"?)\s+is\s+'((?:[^']|'')*)'`)
+var commentOnColumnRe = regexp.MustCompile(`(?is)\bcomment\s+on\s+column\s+(` + sqlident.Qualified + `)\s+is\s+'((?:[^']|'')*)'`)
 
 // commentOnConstraintRe matches
 // `COMMENT ON CONSTRAINT <name> ON <table> IS '...'`.
-var commentOnConstraintRe = regexp.MustCompile(`(?is)\bcomment\s+on\s+constraint\s+("?[\w]+"?)\s+on\s+("?[\w]+"?)\s+is\s+'((?:[^']|'')*)'`)
+var commentOnConstraintRe = regexp.MustCompile(`(?is)\bcomment\s+on\s+constraint\s+(` + sqlident.Part + `)\s+on\s+(` + sqlident.Qualified + `)\s+is\s+'((?:[^']|'')*)'`)
 
 // forgeTokenRe extracts the whole `forge:...` token (up to the next
 // whitespace) out of a comment body, for reporting the exact offending

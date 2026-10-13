@@ -145,3 +145,46 @@ func TestCollectShapes_TagsUnmanagedServiceRPCs(t *testing.T) {
 		t.Errorf("managed service's rpc tagged unmanaged: %q", d)
 	}
 }
+
+// TestScanMigrations_SchemaQualifiedTables pins F19: pg_dump writes every
+// table schema-qualified (`CREATE TABLE public.tasks`), and the scanner read
+// that as a table named `public` — every table, in a dump-style baseline.
+// The table is the last part of the name, quoted or not; the schema rides
+// along as detail.
+func TestScanMigrations_SchemaQualifiedTables(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "db", "migrations", "00001_baseline.up.sql")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sql := `CREATE TABLE public.tasks (
+    id text NOT NULL
+);
+CREATE TABLE "public"."orders" (id text);
+CREATE TABLE public."Users" (id text);
+CREATE TABLE IF NOT EXISTS app.items (id text);
+CREATE TABLE plain (id text);
+`
+	if err := os.WriteFile(p, []byte(sql), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, s := range scanMigrations(dir) {
+		got[s.Name] = s.Detail
+	}
+	want := map[string]string{
+		"tasks":  "schema=public",
+		"orders": "schema=public",
+		"Users":  "schema=public",
+		"items":  "schema=app",
+		"plain":  "",
+	}
+	for name, detail := range want {
+		if d, ok := got[name]; !ok || d != detail {
+			t.Errorf("table %q: detail %q (found %v), want %q; all: %v", name, d, ok, detail, got)
+		}
+	}
+	if _, ok := got["public"]; ok {
+		t.Errorf("a schema was read as a table name: %v", got)
+	}
+}

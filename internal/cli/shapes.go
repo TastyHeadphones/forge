@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/sqlident"
 	"github.com/reliant-labs/forge/kcl"
 )
 
@@ -69,7 +70,7 @@ var (
 	reProtoMessage = regexp.MustCompile(`^message\s+(\w+)\s*\{`)
 	reProtoEnum    = regexp.MustCompile(`^enum\s+(\w+)\s*\{`)
 	reProtoService = regexp.MustCompile(`^service\s+(\w+)\s*\{`)
-	reSQLTable     = regexp.MustCompile(`(?i)^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"?(\w+)"?`)
+	reSQLTable     = regexp.MustCompile(`(?i)^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(` + sqlident.Qualified + `)`)
 	reGoMethod     = regexp.MustCompile(`^func\s+\(s\s+\*Service\)\s+(\w+)\s*\(`)
 	reUnwiredStub  = regexp.MustCompile(`forge:gen unwired-stub symbol=(\S+)`)
 	reTSHook       = regexp.MustCompile(`^export\s+(?:const|function)\s+(use\w+)`)
@@ -322,7 +323,15 @@ func scanMigrations(root string) []shape {
 	var out []shape
 	eachLine(root, ".up.sql", func(rel string, n int, line string) {
 		if m := reSQLTable.FindStringSubmatch(line); m != nil {
-			out = append(out, shape{"table", m[1], rel, n, ""})
+			// pg_dump qualifies every table (`public.tasks`); the table is
+			// the last part, and a schema is kept as detail rather than
+			// read as the name.
+			parts := sqlident.Parts(m[1])
+			detail := ""
+			if len(parts) > 1 {
+				detail = "schema=" + parts[len(parts)-2]
+			}
+			out = append(out, shape{"table", parts[len(parts)-1], rel, n, detail})
 		}
 	})
 	return out

@@ -262,3 +262,21 @@ COMMENT ON COLUMN documents.org_id IS 'forge:owner';
 		t.Fatalf("owner column for documents = %q, want org_id — the predicate in the offered wrapper names this column", got["documents"])
 	}
 }
+
+// TestOwnerScopedTables_SchemaQualified: pg_dump qualifies and may quote
+// the object of a COMMENT ON COLUMN. The owner declaration must still arm
+// the gate for the table, and handler SQL naming the table qualified must
+// still be recognised as reading it.
+func TestOwnerScopedTables_SchemaQualified(t *testing.T) {
+	got := ownerScopedTablesIn(`
+CREATE TABLE public.documents (id TEXT PRIMARY KEY, org_id TEXT NOT NULL);
+COMMENT ON COLUMN "public"."documents".org_id IS 'forge:owner';
+`)
+	if len(got) != 1 || got["documents"] != "org_id" {
+		t.Fatalf("owner tables = %v, want exactly {documents: org_id}", got)
+	}
+	ev, found := classifyHandlerSQL([]string{`SELECT id FROM public.documents`}, got)
+	if !found || len(ev.Tables) != 1 || ev.Tables[0] != "documents" {
+		t.Fatalf("classifyHandlerSQL over a qualified FROM = %+v (found %v), want it to read documents", ev, found)
+	}
+}
