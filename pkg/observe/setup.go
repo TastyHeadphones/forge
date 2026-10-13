@@ -18,6 +18,8 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+
+	"github.com/reliant-labs/forge/pkg/observe/metrics"
 )
 
 // Config is the typed configuration for Setup. The standard OTEL_* environment
@@ -53,6 +55,11 @@ type Config struct {
 	// goroutine snapshots, about 0.15% of one core. See profiler.go.
 	ProfilesDisabled bool
 
+	// Development makes the declared-metrics registry panic on an attribute a
+	// metric did not declare, where production corrects it and counts it. See
+	// pkg/observe/metrics.
+	Development bool
+
 	// InstanceID is reported as semconv service.instance.id when non-empty.
 	// Callers typically pass os.Hostname().
 	InstanceID string
@@ -79,6 +86,12 @@ func Setup(ctx context.Context, cfg Config) (func(context.Context) error, http.H
 		propagation.Baggage{},
 	))
 
+	if cfg.Development {
+		metrics.Default().SetMode(metrics.ModeDevelopment)
+	} else {
+		metrics.Default().SetMode(metrics.ModeProduction)
+	}
+
 	promReader, err := promexporter.New()
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating prometheus exporter: %w", err)
@@ -91,7 +104,7 @@ func Setup(ctx context.Context, cfg Config) (func(context.Context) error, http.H
 	wantProfiles := exportEnabled(signalProfiles, cfg)
 
 	if !wantTraces && !wantMetrics && !wantLogs && !wantProfiles {
-		mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(promReader))
+		mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(promReader), sdkmetric.WithView(unitViews()...))
 		otel.SetMeterProvider(mp)
 		return func(ctx context.Context) error { return mp.Shutdown(ctx) }, metricsHandler, nil
 	}
@@ -119,7 +132,7 @@ func Setup(ctx context.Context, cfg Config) (func(context.Context) error, http.H
 		shutdowns = append(shutdowns, tp.Shutdown)
 	}
 
-	mpOpts := []sdkmetric.Option{sdkmetric.WithReader(promReader), sdkmetric.WithResource(res)}
+	mpOpts := []sdkmetric.Option{sdkmetric.WithReader(promReader), sdkmetric.WithResource(res), sdkmetric.WithView(unitViews()...)}
 	if wantMetrics {
 		exp, err := newMetricExporter(ctx, cfg)
 		if err != nil {
@@ -197,4 +210,17 @@ func resourceFromConfig(ctx context.Context, cfg Config) (*resource.Resource, er
 		resource.WithAttributes(attrs...),
 		resource.WithFromEnv(),
 	)
+}
+
+// unitViews rewrites the units a library emits in words ("milliseconds") into
+// the UCUM spelling the declared schema uses ("ms"). Prometheus renders both as
+// the same _milliseconds suffix, so series names do not change; an OTLP backend
+// gets a unit it can parse.
+func unitViews() []sdkmetric.View {
+	rewrite := map[string]string{"go.sql.query_timing": "ms", "go.sql.connections_wait_duration": "ns"}
+	views := make([]sdkmetric.View, 0, len(rewrite))
+	for name, unit := range rewrite {
+		views = append(views, sdkmetric.NewView(sdkmetric.Instrument{Name: name}, sdkmetric.Stream{Unit: unit}))
+	}
+	return views
 }

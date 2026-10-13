@@ -260,19 +260,11 @@ func MetricsInterceptor(meter metric.Meter) connect.Interceptor {
 	if meter == nil {
 		return &noopInterceptor{}
 	}
-	calls, _ := meter.Int64Counter(
-		"rpc.server.calls",
-		metric.WithDescription("Total RPC calls"),
-	)
-	errs, _ := meter.Int64Counter(
-		"rpc.server.errors",
-		metric.WithDescription("Total RPC errors"),
-	)
-	dur, _ := meter.Float64Histogram(
-		"rpc.server.duration",
-		metric.WithDescription("RPC duration in seconds"),
-		metric.WithUnit("s"),
-	)
+	// Unit and description come from the declared built-ins, so the schema
+	// (`<bin> metrics schema`) cannot disagree with what is emitted.
+	calls, _ := meter.Int64Counter("rpc.server.calls", declaredOpts[metric.Int64CounterOption]("rpc.server.calls")...)
+	errs, _ := meter.Int64Counter("rpc.server.errors", declaredOpts[metric.Int64CounterOption]("rpc.server.errors")...)
+	dur, _ := meter.Float64Histogram("rpc.server.duration", declaredOpts[metric.Float64HistogramOption]("rpc.server.duration")...)
 	return &metricsInterceptor{
 		calls:    calls,
 		errs:     errs,

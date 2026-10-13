@@ -398,6 +398,13 @@ func managedFilesForKindBinary(kind, binary, binName string) []managedFile {
 		// upgrade` CREATES it and never stomps an edited copy.
 		{templateName: "cmd-tree-commands.go.tmpl", destPath: cmdTreePath(binName, "commands.go"), templated: true, tier: Tier2, enabledFor: enabledForService},
 
+		// `<bin> metrics schema` and the package whose declarations it prints.
+		// Scaffolded once and owned; listed so `forge upgrade` CREATES them for
+		// an older project and never stomps an edited copy. They are a pair:
+		// metrics.go imports internal/metrics.
+		{templateName: "cmd-tree-metrics.go.tmpl", destPath: cmdTreePath(binName, "metrics.go"), templated: true, tier: Tier2, enabledFor: enabledForService},
+		{templateName: "internal-metrics.go.tmpl", destPath: "internal/metrics/metrics.go", templated: true, tier: Tier2, enabledFor: enabledForService},
+
 		// Local observability. Both are Tier 2: constant text the user is
 		// expected to edit (add a log pipeline, tune the collector), not a
 		// function of anything they declare. Gated on service-kind AND

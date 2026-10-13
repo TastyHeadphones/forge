@@ -47,6 +47,7 @@ var cmdTreeTemplates = map[string]string{
 	"cmd-tree-version.go.tmpl":  "version.go",
 	"cmd-tree-db.go.tmpl":       "db.go",
 	"cmd-tree-commands.go.tmpl": "commands.go",
+	"cmd-tree-metrics.go.tmpl":  "metrics.go",
 }
 
 // scaffoldOnceBanner is the canonical Tier-2 marker the banner linter

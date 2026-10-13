@@ -781,6 +781,18 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 
 	succeeded, failed := partitionBuildResults(results)
 
+	// The metrics schema of the binary just built, for the release bundle's
+	// observability/metrics-schema.json. Best effort: see emitMetricsSchema.
+	if len(failed) == 0 && !opts.debug {
+		// The arch the go builds above used: the image platform when the
+		// project image consumes them (see buildParallel), else the plain one.
+		builtArch := resolveBuildArch(cfg.Deploy.TargetArch, opts.targetArch, false)
+		if opts.buildDocker && len(goTargets) > 0 && !skipProjectDocker {
+			builtArch = resolveBuildArchForImage(cfgArchForDocker, opts.targetArch)
+		}
+		emitMetricsSchema(ctx, os.Stdout, opts.outputDir, builtArch, builtTargets(goTargets, succeeded))
+	}
+
 	// Persist build state on ANY successful project docker build — not
 	// just --push. The state file is the build→deploy tag handoff, which
 	// every transport needs (scp/compose deploy a local image just as much

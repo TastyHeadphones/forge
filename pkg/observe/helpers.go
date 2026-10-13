@@ -10,6 +10,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/reliant-labs/forge/pkg/observe/metrics"
 	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
@@ -128,19 +129,10 @@ func NewCallMetrics(meter metric.Meter, namespace string) *CallMetrics {
 	if meter == nil {
 		return &CallMetrics{}
 	}
-	calls, _ := meter.Int64Counter(
-		namespace+".calls",
-		metric.WithDescription("Total method calls"),
-	)
-	errs, _ := meter.Int64Counter(
-		namespace+".errors",
-		metric.WithDescription("Total method errors"),
-	)
-	dur, _ := meter.Float64Histogram(
-		namespace+".duration",
-		metric.WithDescription("Method duration in seconds"),
-		metric.WithUnit("s"),
-	)
+	metrics.DescribeCallMetrics(namespace)
+	calls, _ := meter.Int64Counter(namespace+".calls", declaredOpts[metric.Int64CounterOption](namespace+".calls")...)
+	errs, _ := meter.Int64Counter(namespace+".errors", declaredOpts[metric.Int64CounterOption](namespace+".errors")...)
+	dur, _ := meter.Float64Histogram(namespace+".duration", declaredOpts[metric.Float64HistogramOption](namespace+".duration")...)
 	return &CallMetrics{
 		calls:    calls,
 		errs:     errs,

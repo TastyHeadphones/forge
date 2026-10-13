@@ -1,8 +1,8 @@
 ---
 name: v0.1.45
-description: Upgrade a project to forge v0.1.45. One section per change — (1) the typed `forge.Observability` declaration replaces the bare `_observability` toggle; (2) continuous profiles, on by default beside the local ClickStack (`profiles_port`, the `otel-profiles` collector); (3) `gen/go.mod` requiring the retired `github.com/reliant-labs/forge/pkg` module, which `forge generate` now rewrites (the root `go.mod` is yours to fix); (4) the gitignored `.npmrc` (`legacy-peer-deps`) that stops `npm install` crashing in a `--link-forge` project; (5) `serve.go` opens the otelconnect span OUTSIDE auth (`chainDeps.Trace`), so rejected calls have spans and request logs carry `trace_id`; (6) lean CI over a local gate — `task ci` / `task ci:checks`, a consolidated `.github/workflows/ci.yml`; (7) `forge.ControlPlaneSecret`, a Secret the control plane delivers and renews, replacing a `secret_optional` env var or a hand-minted Secret for a control-plane OTLP token; (8) `Bundle.applier = "forge"` for a self-applied platform env, and the deleted Flux pointer path. Use when deploy/kcl/<env>/main.k has `_observability` but no `observability =` on its forge.Bundle or no `profiles_port`, when `grep forge/pkg gen/go.mod go.mod` matches or `forge env up` reports "go module graph is stale" on every start, when a bridged frontend's `npm install` dies with "Cannot read properties of null (reading 'edgesOut')", or when `grep -n 'Extras = append(\[\]connect.Interceptor{otelInt}' cmd/*/cmd/serve.go` matches, or when Taskfile.yml has no `ci:checks` task or `.github/workflows/ci.yml` runs one job per check instead of calling `task ci:checks`, or when `deploy/kcl/<env>/main.k` mounts an OTLP token Secret a control plane writes after the deploy (`secret_optional = True` on a `SecretRef`, or a `required_secrets` entry for a Secret the control plane mints), or when an env declares `forge.ControlPlane` over bound clusters it applies itself and sets no `applier`.
+description: Upgrade a project to forge v0.1.45. One section per change — (1) the typed `forge.Observability` declaration replaces the bare `_observability` toggle; (2) continuous profiles, on by default beside the local ClickStack (`profiles_port`, the `otel-profiles` collector); (3) `gen/go.mod` requiring the retired `github.com/reliant-labs/forge/pkg` module, which `forge generate` now rewrites (the root `go.mod` is yours to fix); (4) the gitignored `.npmrc` (`legacy-peer-deps`) that stops `npm install` crashing in a `--link-forge` project; (5) `serve.go` opens the otelconnect span OUTSIDE auth (`chainDeps.Trace`), so rejected calls have spans and request logs carry `trace_id`; (6) lean CI over a local gate — `task ci` / `task ci:checks`, a consolidated `.github/workflows/ci.yml`; (7) `forge.ControlPlaneSecret`, a Secret the control plane delivers and renews, replacing a `secret_optional` env var or a hand-minted Secret for a control-plane OTLP token; (8) `Bundle.applier = "forge"` for a self-applied platform env, and the deleted Flux pointer path. Use when deploy/kcl/<env>/main.k has `_observability` but no `observability =` on its forge.Bundle or no `profiles_port`, when `grep forge/pkg gen/go.mod go.mod` matches or `forge env up` reports "go module graph is stale" on every start, when a bridged frontend's `npm install` dies with "Cannot read properties of null (reading 'edgesOut')", or when `grep -n 'Extras = append(\[\]connect.Interceptor{otelInt}' cmd/*/cmd/serve.go` matches, or when Taskfile.yml has no `ci:checks` task or `.github/workflows/ci.yml` runs one job per check instead of calling `task ci:checks`, or when `deploy/kcl/<env>/main.k` mounts an OTLP token Secret a control plane writes after the deploy (`secret_optional = True` on a `SecretRef`, or a `required_secrets` entry for a Secret the control plane mints), or when an env declares `forge.ControlPlane` over bound clusters it applies itself and sets no `applier`, or when `cmd/<bin>/cmd/metrics.go` is missing.
 version: v0.1.45
-detection: grep -qs 'Extras = append(\[\]connect.Interceptor{otelInt}' cmd/*/cmd/serve.go || (grep -qs '^_observability = ' deploy/kcl/*/main.k && ! grep -qs '^    observability = ' deploy/kcl/*/main.k) || (grep -qs '^_observability = ' deploy/kcl/dev/main.k && ! grep -qs 'profiles_port' deploy/kcl/dev/main.k) || grep -qsE '^[[:space:]]*(require[[:space:]]+)?github\.com/reliant-labs/forge/pkg[[:space:]]+v' go.mod gen/go.mod || (test -f Taskfile.yml && ! grep -qs '^  ci:checks:' Taskfile.yml) || (test -f .github/workflows/ci.yml && ! grep -qs 'task ci:checks' .github/workflows/ci.yml)
+detection: grep -qs 'Extras = append(\[\]connect.Interceptor{otelInt}' cmd/*/cmd/serve.go || (grep -qs '^_observability = ' deploy/kcl/*/main.k && ! grep -qs '^    observability = ' deploy/kcl/*/main.k) || (grep -qs '^_observability = ' deploy/kcl/dev/main.k && ! grep -qs 'profiles_port' deploy/kcl/dev/main.k) || grep -qsE '^[[:space:]]*(require[[:space:]]+)?github\.com/reliant-labs/forge/pkg[[:space:]]+v' go.mod gen/go.mod || (test -f Taskfile.yml && ! grep -qs '^  ci:checks:' Taskfile.yml) || (test -f .github/workflows/ci.yml && ! grep -qs 'task ci:checks' .github/workflows/ci.yml) || (ls cmd/*/cmd/root.go >/dev/null 2>&1 && ! ls cmd/*/cmd/metrics.go >/dev/null 2>&1)
 ---
 
 # Upgrading to v0.1.45
@@ -96,14 +96,7 @@ A project scaffolded before this release could end up with this in `gen/go.mod`:
 require github.com/reliant-labs/forge/pkg v0.1.15
 ```
 
-The scaffold wrote the correct `require github.com/reliant-labs/forge vX.Y.Z`,
-but its own `go mod tidy` ran while `gen/` still had no Go files and deleted it
-as unused. The first real tidy, after codegen, then found
-`forge/pkg/forgepb` imported with no forge requirement, and `go mod tidy`
-(which ignores `go.work`) resolved it to the longest module path providing it:
-the retired `forge/pkg` module. Symptoms: `forge env up` says the module graph
-is stale on every start, and a root `go.mod` that also requires `forge` makes
-every `forge/pkg/*` import "ambiguous".
+The scaffold wrote the correct `require github.com/reliant-labs/forge vX.Y.Z`, but its own `go mod tidy` ran while `gen/` had no Go files and deleted it as unused. The first real tidy then found `forge/pkg/forgepb` imported with no forge requirement and resolved it to the retired `forge/pkg` module. Symptoms: `forge env up` says the module graph is stale on every start, and a root `go.mod` that also requires `forge` makes every `forge/pkg/*` import "ambiguous".
 
 ### What forge does now
 
@@ -201,7 +194,7 @@ If you set `Deps.Tracer` (forge's own `TracingInterceptor`) as well as `Deps.Tra
 
 ### Frontends
 
-Nothing to edit. `@reliantlabs/forge-web-runtime` (next release) makes the first RPCs a page makes wait, up to 2 seconds, for the HyperDX SDK to finish starting, so their `traceparent` names a span the browser really exports (before, a call made in that window carried a synthesized id that no browser span matched, so the API span's parent was missing). Bump the dependency when it is published.
+Nothing to edit. `@reliantlabs/forge-web-runtime` (next release) makes the first RPCs a page makes wait, up to 2 seconds, for the HyperDX SDK to start, so their `traceparent` names a span the browser really exports (before, it was a synthesized id no browser span matched). Bump the dependency when it is published.
 
 ### Verify
 
@@ -223,7 +216,7 @@ Use when `Taskfile.yml` has no `ci:checks` task, or `.github/workflows/ci.yml` h
 
 ### What changed
 
-`ci.yml` is scaffold-once (yours), so `forge generate` never rewrites it and your project keeps the old nine-job shape until you adopt the new one. Why it is worth adopting: GitHub bills each job rounded up to the whole minute, and every job repeats checkout, toolchain setup, cache restore and the forge install before doing any work. The one project generated from the old layout spent roughly half its Actions minutes on setup, and about $850/month at its peak pace.
+`ci.yml` is scaffold-once (yours), so `forge generate` never rewrites it and your project keeps the old nine-job shape until you adopt the new one. Worth adopting: GitHub bills each job rounded up to the whole minute, and every job repeats checkout, toolchain setup, cache restore and the forge install; for the one project generated from the old layout that was roughly half its Actions minutes.
 
 - **A local gate: `forge ci gate`**, behind two new Taskfile tasks. `task ci` runs everything CI runs (`ci:checks`, then `test`, then `test:integration`) in one summary table; `task ci:checks` is the static and build lane. Run `task ci` before you push and you have the verdict CI would give.
 - **The workflow became a thin wrapper.** Jobs are `changes` (skips the heavy jobs for a docs-only change), `checks` (one setup, then `task ci:checks`), `test` (`task test`), `integration-test` (`task test:integration`, PRs only, only when the repo has `//go:build integration` files), plus `docker-build` and `e2e` where you already had them. `lint`, `build`, `verify-generated`, `deployability`, `vuln-scan` and `license-check` are no longer jobs: they are rows in the gate. Every job has `timeout-minutes`.
@@ -324,3 +317,7 @@ Add `applier = "forge"` to the env's `forge.Bundle`, and remove `lifecycle` if b
 ### Verify
 
 `forge env shape <env> --json | jq .shape.applier` prints `"forge"`; `forge env deploy <env> --dry-run` prints no "declares neither" notice.
+
+## 9. Declared metrics registry
+
+Use when `<bin> metrics schema --json` is an unknown command, or `internal/metrics/metrics.go` does not exist: `forge generate` births both; detail in `migrations/v0.1.45/metrics-schema`.

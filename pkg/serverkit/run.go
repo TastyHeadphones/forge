@@ -20,6 +20,7 @@ import (
 	"golang.org/x/net/http2/h2c"
 
 	"github.com/reliant-labs/forge/pkg/observe"
+	"github.com/reliant-labs/forge/pkg/observe/metrics"
 )
 
 // newHTTPServer builds the serving http.Server around the routed handler: the
@@ -280,6 +281,9 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 		pprofMux.HandleFunc("/debug/pprof/profile", pprof.Profile)
 		pprofMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 		pprofMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+		// The declared-metrics schema rides the same loopback listener: it is
+		// introspection of this process, not product surface.
+		pprofMux.Handle(metrics.SchemaPath, metrics.SchemaHandler(metrics.Default(), cfg.ServiceName, schemaVersion(cfg.ServiceVersion)))
 		pprofSrv = &http.Server{
 			Addr:              cfg.PprofAddr,
 			Handler:           pprofMux,
@@ -556,9 +560,19 @@ func newLogger(cfg Config) *slog.Logger {
 // observeConfig projects the serverkit Config onto observe.Config.
 func observeConfig(cfg Config, instanceID string) observe.Config {
 	return observe.Config{
+		Development:    cfg.IsDevelopment(),
 		ServiceName:    cfg.ServiceName,
 		ServiceVersion: cfg.ServiceVersion,
 		OTLPEndpoint:   cfg.OTLPEndpoint,
 		InstanceID:     instanceID,
 	}
+}
+
+// schemaVersion reports an unstamped build as "dev", the same word the version
+// command prints, instead of an empty string a consumer must special-case.
+func schemaVersion(v string) string {
+	if v == "" {
+		return "dev"
+	}
+	return v
 }

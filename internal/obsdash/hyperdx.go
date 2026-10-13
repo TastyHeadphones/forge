@@ -177,13 +177,17 @@ func sourceFor(s Signal) string {
 func renderDashboard(d Dashboard) (HyperDXDashboard, error) {
 	hd := HyperDXDashboard{Name: DashboardName(d), Tags: []string{"forge", "generated"}, Tiles: []HyperDXTile{}}
 	for _, f := range d.Filters {
-		expr, err := fieldSQL(Traces, f.Field)
+		sig := f.Signal
+		if sig == "" {
+			sig = Traces
+		}
+		expr, err := fieldSQL(sig, f.Field)
 		if err != nil {
 			return hd, err
 		}
 		hd.Filters = append(hd.Filters, HyperDXFilter{
 			ID: "filter-" + f.ID, Type: "QUERY_EXPRESSION", Name: f.Label,
-			Expression: expr, Source: SourceTraces, WhereLanguage: "sql",
+			Expression: expr, Source: sourceFor(sig), WhereLanguage: "sql",
 		})
 	}
 	x, y, rowH := 0, 0, 0
@@ -315,6 +319,11 @@ func renderSeries(sig Signal, s Series) (HyperDXSelect, error) {
 			hs.AggFn = "max"
 		case AggLast:
 			hs.AggFn = "last_value"
+		case AggQuantile:
+			if s.MetricType != "histogram" {
+				return hs, fmt.Errorf("metric quantile %q needs metricType histogram, got %q", s.Label, s.MetricType)
+			}
+			hs.AggFn, hs.Level = "quantile", s.Quantile
 		default:
 			return hs, fmt.Errorf("metric aggregate %q is not supported", s.Agg)
 		}

@@ -191,6 +191,8 @@ Every process with an OTLP endpoint profiles itself (`pkg/observe`): a 10s CPU p
 
 In HyperDX → Search → Metrics (or a chart tile), pick the metric by name. The RPC edge is measured by the otelconnect server interceptor: `rpc.server.call.duration` (histogram, attributes `rpc.method` — the full `pkg.Service/Method` — and `rpc.response.status_code`, `OK` or the upper-case Connect code such as `NOT_FOUND`). Other series the app exports: `db.sql.*` / `go.sql.*` for the DB pool and queries, and `<pkg>_calls` / `<pkg>_errors` / `<pkg>_duration` for the per-package in-process method metrics (component chain). Every series carries `ServiceName`.
 
+**Declare your own metrics** in `internal/metrics/metrics.go`: each instrument is declared (name, type, UCUM unit, description, attribute keys, stability, `since`) and the registry returns the standard OTel instrument. An attribute you did not declare panics under `ENVIRONMENT=development` and is dropped (counted on `forge.metrics.rejected_attributes`) elsewhere. The declared set prints with `<bin> metrics schema --json`, `GET /debug/metrics/schema` (the pprof listener) and `forge observe metrics [--binary|--url]`; `forge build` writes `bin/observability/metrics-schema.json`, which a release carries as `observability/metrics-schema.json`; `forge observe metrics --dashboard` draws the Custom metrics dashboard from it. Adopting it in an older project: `migrations/v0.1.45/metrics-schema`.
+
 ## In-process component observability (the middleware chain)
 
 Forge instruments three boundaries: the RPC edge (the interceptor chain built

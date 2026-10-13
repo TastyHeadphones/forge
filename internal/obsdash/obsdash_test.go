@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/observe/metrics"
 )
 
 var update = flag.Bool("update", false, "rewrite the golden files")
@@ -184,5 +186,113 @@ func TestQuotingCannotBreakOutOfASQLString(t *testing.T) {
 func TestUnknownFieldIsAnError(t *testing.T) {
 	if _, err := fieldSQL(Metrics, "span.name"); err == nil {
 		t.Error("a span field on the metrics signal must be rejected, not rendered")
+	}
+}
+
+func customSchema(t *testing.T) metrics.Schema {
+	t.Helper()
+	return metrics.Schema{
+		SchemaVersion: metrics.SchemaVersion, Service: "shop", Version: "v1.4.0",
+		Metrics: []metrics.Spec{
+			{Name: "go.memory.used", Type: metrics.UpDownCounter, Unit: "By", Description: "builtin", Stability: metrics.Stable, Since: "v0.1.0"},
+			{Name: "orders.calls", Type: metrics.Counter, Unit: "{call}", Description: "a component call metric", Stability: metrics.Experimental, Since: "v0.1.0"},
+			{Name: "orders_created", Type: metrics.Counter, Unit: "{order}", Description: "Orders created.", Stability: metrics.Stable, Since: "v1.0.0",
+				Attributes: []metrics.Attribute{{Key: "status", Values: []string{"ok", "failed"}}, {Key: "region"}}},
+			{Name: "order_value", Type: metrics.Histogram, Unit: "{USD}", Description: "Order value.", Stability: metrics.Experimental, Since: "v1.1.0",
+				Attributes: []metrics.Attribute{{Key: "channel", Values: []string{"web", "api"}}}},
+			{Name: "queue_depth", Type: metrics.Gauge, Unit: "{job}", Description: "Jobs waiting.", Stability: metrics.Stable, Since: "v1.2.0"},
+			{Name: "jobs_in_flight", Type: metrics.UpDownCounter, Unit: "{job}", Description: "Jobs running.", Stability: metrics.Stable, Since: "v1.2.0"},
+			{Name: "old_metric", Type: metrics.Counter, Unit: "1", Description: "gone soon", Stability: metrics.Deprecated, Since: "v0.5.0"},
+		},
+	}
+}
+
+func TestCustomMetricsDashboardGolden(t *testing.T) {
+	schema := customSchema(t)
+	d, ok := BuildCustomMetrics("shop", schema)
+	if !ok {
+		t.Fatal("no custom metrics dashboard for a schema that declares metrics")
+	}
+	sp := Spec{Version: SpecVersion, Project: "shop", Dashboards: []Dashboard{d}, SavedSearches: []SavedSearch{}, Alerts: []Alert{}}
+	files, err := RenderHyperDX(sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || files[0].File != "shop-custom-metrics_gen.json" {
+		t.Fatalf("files = %+v", files)
+	}
+	golden(t, "shop-custom-metrics_gen.json", files[0].Content)
+	if errs := validateHyperDXDashboard(files[0].Content); len(errs) > 0 {
+		t.Errorf("custom metrics dashboard fails the HyperDX schema mirror:\n%s", strings.Join(errs, "\n"))
+	}
+}
+
+func TestCustomMetricsDashboardFollowsTheTypes(t *testing.T) {
+	d, _ := BuildCustomMetrics("shop", customSchema(t))
+	panels := map[string]Panel{}
+	for _, p := range d.Panels {
+		panels[p.ID] = p
+	}
+
+	for id := range panels {
+		if strings.Contains(id, "go-memory") || strings.Contains(id, "orders-calls") || strings.Contains(id, "old-metric") {
+			t.Errorf("panel %s: built-in, component-call and deprecated metrics do not belong on the custom dashboard", id)
+		}
+	}
+	series := func(id string) []Series { return panels[id].Series }
+
+	if s := series("orders-created"); len(s) != 1 || s[0].Agg != AggSum || s[0].MetricType != "sum" {
+		t.Errorf("counter series = %+v, want one sum (rate)", s)
+	}
+	if s := series("queue-depth"); len(s) != 1 || s[0].Agg != AggLast || s[0].MetricType != "gauge" {
+		t.Errorf("gauge series = %+v, want last value of a gauge", s)
+	}
+	if s := series("jobs-in-flight"); len(s) != 1 || s[0].Agg != AggLast {
+		t.Errorf("updowncounter series = %+v, want last value", s)
+	}
+	h := series("order-value")
+	if len(h) != 3 || h[0].Quantile != 0.5 || h[1].Quantile != 0.95 || h[2].Quantile != 0.99 || h[0].MetricType != "histogram" {
+		t.Errorf("histogram series = %+v, want p50/p95/p99", h)
+	}
+
+	by, ok := panels["orders-created-by-status"]
+	if !ok || len(by.GroupBy) != 1 || by.GroupBy[0] != "metric.attr.status" {
+		t.Errorf("an enumerated attribute should give a group-by panel, got %+v", by)
+	}
+	if _, ok := panels["orders-created-by-region"]; ok {
+		t.Error("an attribute with no enumerated values must not become a group-by")
+	}
+	filters := map[string]bool{}
+	for _, f := range d.Filters {
+		filters[f.Field] = true
+	}
+	if !filters["metric.attr.region"] || filters["metric.attr.status"] {
+		t.Errorf("filters = %v: want region (open-ended) as a filter and status (enumerated) as a group-by", filters)
+	}
+	if panels["order-value"].Unit != UnitCount || panels["orders-created"].Unit != UnitCount {
+		t.Errorf("units: order-value=%q orders-created=%q", panels["order-value"].Unit, panels["orders-created"].Unit)
+	}
+}
+
+func TestCustomMetricsDashboardIsOmittedWithoutCustomMetrics(t *testing.T) {
+	builtinOnly := metrics.NewRegistry(nil).Schema("shop", "v1")
+	if _, ok := BuildCustomMetrics("shop", builtinOnly); ok {
+		t.Error("a schema of only built-in metrics produced a custom dashboard")
+	}
+	in := fixture()
+	in.Metrics = &builtinOnly
+	for _, d := range Build(in).Dashboards {
+		if d.ID == CustomMetricsID {
+			t.Error("Build added an empty custom-metrics dashboard")
+		}
+	}
+	custom := customSchema(t)
+	in.Metrics = &custom
+	var ids []string
+	for _, d := range Build(in).Dashboards {
+		ids = append(ids, d.ID)
+	}
+	if got, want := strings.Join(ids, ","), "overview,service-billing,service-orders,custom-metrics,frontend"; got != want {
+		t.Errorf("dashboards = %s, want %s", got, want)
 	}
 }
