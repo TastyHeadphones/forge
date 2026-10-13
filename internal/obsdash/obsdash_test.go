@@ -205,7 +205,7 @@ func TestCustomMetricsDashboardGolden(t *testing.T) {
 	if !ok {
 		t.Fatal("no custom metrics dashboard for a schema that declares metrics")
 	}
-	sp := Spec{Version: SpecVersion, Project: "shop", Dashboards: []Dashboard{d}, SavedSearches: []SavedSearch{}, Alerts: []Alert{}}
+	sp := Spec{Version: SpecVersion, Project: "shop", Dashboards: []Dashboard{d}, SavedSearches: []SavedSearch{}}
 	files, err := RenderHyperDX(sp)
 	if err != nil {
 		t.Fatal(err)

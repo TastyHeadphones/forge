@@ -32,6 +32,7 @@ func newObserveCmd() *cobra.Command {
 		Short: "Read back what the local observability stack collected",
 	}
 	cmd.AddCommand(newObserveProfileCmd())
+	cmd.AddCommand(newObserveAlertsCmd())
 	cmd.AddCommand(newObserveMetricsCmd())
 	return cmdutil.StrictGroup(cmd)
 }
