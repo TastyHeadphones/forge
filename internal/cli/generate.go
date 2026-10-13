@@ -89,6 +89,17 @@ Without forge.yaml, falls back to directory convention scanning:
   proto/api/       - API messages
   proto/db/        - Database models (protoc-gen-forge)
 
+Hooks:
+  Generate hooks are the commands forge.yaml declares under generate.hooks
+  (sqlc, a project's own codegen). generate runs every one, in order, after
+  its own code generation and before validation, and prints each hook it ran.
+  Nothing skips them: a skipped hook leaves its output stale while validation
+  still passes. A run narrowed with --steps or --templates-only does not run
+  them, and says so.
+  FORGE_NO_GIT_HOOKS=1 is about GIT hooks, not these: it stops forge setting
+  core.hooksPath=.githooks and its merge driver in your clone. FORGE_NO_HOOKS=1
+  is its older name and means the same.
+
 Examples:
   forge generate            # Generate all code
   forge generate --watch    # Watch mode for development
@@ -552,6 +563,7 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 			return fmt.Errorf("step %q: %w", step.Name, err)
 		}
 	}
+	reportGenerateHooksNotRun(os.Stdout, ctx, steps, flags)
 
 	// --explain-drift: print the per-file diffs and fail with the drift
 	// report — the flag explains the drift, it never approves it. No-op

@@ -35,6 +35,32 @@ func hookActivationSkipped(cmd *cobra.Command) bool {
 	return ok
 }
 
+// gitHooksOptOutEnv stops forge configuring git in this clone: activating
+// its tracked hooks (core.hooksPath=.githooks) and registering its merge
+// driver for generated files. Any non-empty value opts out.
+//
+// It is about GIT hooks only. The commands a project declares in forge.yaml
+// `generate.hooks` are part of `forge generate` itself and always run (see
+// generate_hooks.go).
+const gitHooksOptOutEnv = "FORGE_NO_GIT_HOOKS"
+
+// legacyGitHooksOptOutEnv is gitHooksOptOutEnv's earlier spelling, still
+// honoured so a clone opted out under it stays opted out. It was renamed
+// because "hooks" read as forge.yaml's generate hooks too: people set it
+// expecting `forge generate` to skip `make sqlc`, and it never did.
+const legacyGitHooksOptOutEnv = "FORGE_NO_HOOKS"
+
+// gitHooksOptOut returns the variable that opts this process out of forge
+// configuring git hooks, or "" when neither is set.
+func gitHooksOptOut() string {
+	for _, k := range []string{gitHooksOptOutEnv, legacyGitHooksOptOutEnv} {
+		if os.Getenv(k) != "" {
+			return k
+		}
+	}
+	return ""
+}
+
 // ensureGitHooksActivated makes forge's committed git hooks fire in a
 // fresh clone or new worktree without any explicit install step or new
 // forge subcommand.
@@ -61,12 +87,12 @@ func hookActivationSkipped(cmd *cobra.Command) bool {
 //   - no-op unless it's a git repo,
 //   - never clobbers a core.hooksPath the user pointed elsewhere; only
 //     acts when it is unset,
-//   - fully suppressible with FORGE_NO_HOOKS=1,
+//   - fully suppressible with FORGE_NO_GIT_HOOKS=1 (gitHooksOptOut),
 //   - best-effort: any git error is swallowed, never surfaced.
 //
 // root is the project root (the directory holding forge.yaml).
 func ensureGitHooksActivated(root string) {
-	if os.Getenv("FORGE_NO_HOOKS") != "" {
+	if gitHooksOptOut() != "" {
 		return
 	}
 	// Only when the tracked hook is present AND forge wrote it. This gates
@@ -95,5 +121,5 @@ func ensureGitHooksActivated(root string) {
 		return
 	}
 	fmt.Fprintln(os.Stderr,
-		"forge: activated git hooks (.githooks) — 'git push' now runs 'forge lint' + 'forge project audit'. Disable with FORGE_NO_HOOKS=1.")
+		"forge: activated git hooks (.githooks) — 'git push' now runs 'forge lint' + 'forge project audit'. Disable with "+gitHooksOptOutEnv+"=1.")
 }

@@ -16,20 +16,22 @@ func TestEnsureGitHooksActivated(t *testing.T) {
 	const projectHook = "#!/bin/bash\n# Pre-commit hook to format staged Go files\nmake fmt\n"
 
 	for _, tc := range []struct {
-		name    string
-		hook    string // "" = no .githooks/pre-commit
-		noHooks bool
-		want    string
+		name   string
+		hook   string // "" = no .githooks/pre-commit
+		optOut string // env var set to 1, "" = none
+		want   string
 	}{
 		{name: "forge's hook is activated", hook: forgeHook, want: ".githooks"},
 		{name: "the project's own hook is left alone", hook: projectHook, want: ""},
 		{name: "no hook, nothing to activate", hook: "", want: ""},
-		{name: "FORGE_NO_HOOKS opts out", hook: forgeHook, noHooks: true, want: ""},
+		{name: "FORGE_NO_GIT_HOOKS opts out", hook: forgeHook, optOut: gitHooksOptOutEnv, want: ""},
+		// The earlier name: a clone opted out under it stays opted out.
+		{name: "FORGE_NO_HOOKS still opts out", hook: forgeHook, optOut: legacyGitHooksOptOutEnv, want: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			isolateGit(t)
-			if tc.noHooks {
-				t.Setenv("FORGE_NO_HOOKS", "1")
+			if tc.optOut != "" {
+				t.Setenv(tc.optOut, "1")
 			}
 			repo := t.TempDir()
 			gitOut(t, repo, "init", "-q")

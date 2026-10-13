@@ -47,7 +47,8 @@ func isolateGit(t *testing.T) {
 	// Hook activation must be ON (empty == unset for ensureGitHooksActivated):
 	// the existing-repo case asserts forge declines to configure hooks by
 	// itself, not because the user opted out.
-	t.Setenv("FORGE_NO_HOOKS", "")
+	t.Setenv(gitHooksOptOutEnv, "")
+	t.Setenv(legacyGitHooksOptOutEnv, "")
 }
 
 func writeTestFile(t *testing.T, path, body string) {
@@ -186,7 +187,7 @@ func TestRunNewInPlace_ExistingRepo(t *testing.T) {
 // assertHooksPathUnset fails when forge wrote core.hooksPath into the user's
 // repository config. That config is theirs: `project new` in an existing
 // repo must leave it alone, and the offer to activate hooks is made by a
-// later forge command (ensureGitHooksActivated), which honours FORGE_NO_HOOKS.
+// later forge command (ensureGitHooksActivated), which honours FORGE_NO_GIT_HOOKS.
 func assertHooksPathUnset(t *testing.T, repo, when string) {
 	t.Helper()
 	if hp := gitOut(t, repo, "config", "--local", "--default", "", "core.hooksPath"); hp != "" {
