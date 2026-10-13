@@ -189,6 +189,15 @@ type pipelineContext struct {
 	// truth lives in the files.
 	ExplainDriftEntries []checksums.Tier1DriftEntry
 
+	// DriftPending is the in-scope drift the stomp guard quarantined
+	// instead of failing on: each path's writes are side-render
+	// redirected, and the fresh-render check step settles it before
+	// validation (generate_drift_rescue.go). DriftMergeState is the git
+	// operation in progress when the guard ran ("" when none), for the
+	// report of whatever stays unresolved.
+	DriftPending    []checksums.Tier1DriftEntry
+	DriftMergeState string
+
 	// LegacyUnverified is populated by the one-time legacy-manifest
 	// migration (generate_legacy_migrate.go): paths whose on-disk bytes
 	// matched nothing the legacy manifest recorded (the fr-9a54388f0b
@@ -480,6 +489,10 @@ func generateSteps() []GenStep {
 		// of project shape.
 		{Name: "retire obsolete disowns", Gate: always, Run: stepRetireObsoleteDisowns, Tag: "validate"},
 		{Name: "rehash tracked files", Gate: always, Run: stepRehashTracked, Tag: "tools"},
+		// After every emitter has parked its fresh render, before anything
+		// spends time validating: settle the drift the stomp guard
+		// quarantined. See generate_drift_rescue.go.
+		{Name: adjudicateDriftStep, Gate: always, Run: stepAdjudicateTier1Drift, Tag: "validate"},
 		{Name: "post-gen validation", Gate: always, Run: stepPostGenValidate, Tag: "validate"},
 		{Name: "detect renamed Tier-1 exports", Gate: always, Run: stepDetectRenamedExports, Tag: "validate"},
 		{Name: "check disowned-sibling dangling refs", Gate: always, Run: stepCheckDisownedDanglingRefs, Tag: "validate"},
@@ -563,6 +576,7 @@ var stepPresetAllowlist = map[string]map[string]bool{
 		"go mod tidy (root)":                              true,
 		"goimports on generated Go":                       true,
 		"rehash tracked files":                            true,
+		adjudicateDriftStep:                               true,
 		"post-gen validation":                             true,
 		"detect renamed Tier-1 exports":                   true,
 		"check disowned-sibling dangling refs":            true,
@@ -639,6 +653,7 @@ var stepPresetAllowlist = map[string]map[string]bool{
 		// preset runs and writes nothing.
 		"detect proto directories": true,
 		"per-env deploy config":    true,
+		adjudicateDriftStep:        true,
 	},
 }
 
@@ -986,12 +1001,16 @@ func stepLoadChecksums(ctx *pipelineContext) error {
 // stepCheckTier1Drift is the pre-pipeline file-stomp guard. Before any
 // codegen step runs, scan the project for self-certifying Tier-1 files
 // (embedded forge:hash markers) and report every one whose marker fails
-// verification — positive evidence of a hand-edit (LLM or human). The
-// check is purely local to each file, so it gives the same answer in a
-// fresh clone, a parallel work lane, or a partially-committed tree. On
-// any hit, abort the pipeline with a single batched report listing
-// every conflict — the user gets one error to react to, not N runs to
-// discover N conflicts.
+// verification — evidence of a hand-edit (LLM or human), unless the bytes
+// turn out to be forge's own render under a stale record. The check is
+// purely local to each file, so it gives the same answer in a fresh
+// clone, a parallel work lane, or a partially-committed tree. Every hit
+// is quarantined for the fresh-render check (generate_drift_rescue.go),
+// which runs after the emitters and before validation: files matching
+// this run's render are re-recorded silently, and the rest fail the run
+// with a single batched report listing every conflict — the user gets one
+// error to react to, not N runs to discover N conflicts — and the run's
+// writes are rolled back.
 //
 // Escape hatches:
 //
@@ -1089,45 +1108,20 @@ func stepCheckTier1Drift(ctx *pipelineContext) error {
 
 	// --explain-drift: don't abort — redirect drifted paths to side
 	// renders, let the pipeline produce fresh content to diff against,
-	// and fail with the report at the end of the run. The explicit flag
-	// outranks the mid-merge heuristic below. Mechanics + rationale in
-	// generate_explain_drift.go.
+	// and fail with the report at the end of the run. Mechanics +
+	// rationale in generate_explain_drift.go.
 	if ctx.ExplainDrift {
 		prepareExplainDrift(ctx, drift)
 		return nil
 	}
 
-	// Mid-merge detection: when git is in the middle of a merge /
-	// cherry-pick / rebase, the Tier-1 drift we're seeing is almost
-	// always upstream changes the operation brought in — NOT a real
-	// hand-edit. Surface a friendlier message that points the user at
-	// the right escape hatches.
-	if state := detectGitMergeState(ctx.AbsPath); state != "" {
-		var b strings.Builder
-		fmt.Fprintf(&b, "Tier-1 stomp guard tripped while git is mid-%s.\n\n", state)
-		fmt.Fprintf(&b, "%d Tier-1 file(s) drifted from their recorded checksum:\n", len(drift))
-		for _, d := range drift {
-			fmt.Fprintf(&b, "  • %s\n", d.Path)
-		}
-		fmt.Fprintf(&b, "\nDuring a mid-%s state this is almost always upstream changes the merge brought in (not real hand-edits). Two options:\n", state)
-		fmt.Fprintf(&b, "  1. Resolve the %s first (`git status`), then re-run `forge generate`.\n", state)
-		fmt.Fprintf(&b, "  2. Run `forge generate --force` to regenerate the drifted files from the current templates after the merge content lands.\n")
-		return errMidMergeTier1Drift{state: state, msg: b.String()}
-	}
-
-	// Default: error with a batched report. The FIRST line must stand
-	// alone — file names + remedies — because truncating consumers
-	// (agent harnesses, wrap-and-rethrow callers) often surface only
-	// the first line of an error (journey fr-a04f8c0609 saw a bare
-	// header with no file and no remedy). The body lives in
-	// generate_drift_hints.go — it leads with each file's designated
-	// extension point and documents `forge project disown` as a permanent,
-	// one-way ownership transfer, so giving up regeneration never
-	// looks like the path of least resistance for agents. The "Tier-1
-	// file-stomp guard" phrase reaches the user via the step-name wrap
-	// (`step "check Tier-1 file-stomp guard": …`); repeating it here
-	// produced the confusing 'guard: guard:' first line.
-	return fmt.Errorf("%s\n%s", tier1DriftSummaryLine(drift), formatTier1DriftReport(drift))
+	// Default: a mismatch with forge's record is not yet proof of a
+	// hand-edit — a killed run or a merge leaves forge's own bytes beside
+	// a stale record. Park a fresh render of each drifted path and let
+	// the fresh-render check decide, before validation; whatever it
+	// cannot match is reported there exactly as this guard used to.
+	quarantineDriftForRescue(ctx, drift)
+	return nil
 }
 
 // errMidMergeTier1Drift is the typed error returned by

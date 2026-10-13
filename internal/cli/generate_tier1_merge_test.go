@@ -114,7 +114,7 @@ func TestStepCheckTier1Drift_MidMergeReturnsTypedError(t *testing.T) {
 		Checksums:  cs,
 	}
 
-	err := stepCheckTier1Drift(ctx)
+	err := checkTier1DriftAndAdjudicate(t, ctx)
 	if err == nil {
 		t.Fatal("expected stepCheckTier1Drift to return an error (Tier-1 drift detected)")
 	}
