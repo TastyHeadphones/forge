@@ -157,6 +157,16 @@ github.com/reliant-labs/forge/cmd/forge@<pin> <same args>` that needs no
   left out: membership stays declared, never inferred. A compile error in a
   reconciled file (`compose.go`, `lifecycle.go`) now says forge may have
   injected the failing line instead of blaming the author.
+- **`forge project new --in-place` no longer ignores files the repository
+  tracks.** The scaffold's `.gitignore` ignores a root `/package.json`,
+  `/package-lock.json` and `go.work.sum`, which a forge project never commits
+  but an existing repository may (reliant commits all three), and the in-place
+  merge appended them anyway. Every forge pattern is now checked with git's own
+  matcher (`git ls-files --cached --ignored --exclude=<pattern>`, anchored to
+  the target directory when it is a subdirectory of the repository); one that
+  matches a tracked file is left out, with a comment in its place when forge
+  writes a fresh `.gitignore`, and the run lists each skipped pattern and the
+  tracked files it would have hidden.
 
 - **`forge env deploy <env> --dry-run` now predicts the real run's release
   decision, and a nested git checkout is no longer "dirt".** A bare

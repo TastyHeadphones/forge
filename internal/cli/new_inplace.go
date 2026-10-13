@@ -28,6 +28,10 @@ import (
 //  2. .gitignore is merged, never replaced. The user's entries are what keep
 //     their untracked artefacts out of commits; dropping them is how an
 //     earlier version swept .agent-artifacts/ and .reliant/ into a commit.
+//     And forge never adds a pattern that matches a file the repository
+//     TRACKS: forge's template ignores a root /package.json and go.work.sum,
+//     which an existing repo may well commit (reliant tracks both). See
+//     dropTrackedIgnores.
 //
 // Git is handled in finalizeNewProject: a target inside an existing work tree
 // is never init'ed, configured, staged or committed (see gitWorkTreeRoot).
@@ -52,6 +56,16 @@ type inPlaceMergeResult struct {
 	// gitignoreAdded is how many forge entries the merge appended.
 	gitignoreMerged bool
 	gitignoreAdded  int
+	// gitignoreSkipped lists the forge patterns left out because they match
+	// files the target's repository tracks.
+	gitignoreSkipped []skippedIgnore
+}
+
+// skippedIgnore is one forge .gitignore pattern an in-place scaffold left
+// out, and the tracked files it would have matched.
+type skippedIgnore struct {
+	pattern string
+	tracked []string // slash-separated, relative to the target
 }
 
 // mergeScaffoldInto copies every file under staging into target.
@@ -100,15 +114,21 @@ func mergeScaffoldInto(staging, target string, overwrite bool) (inPlaceMergeResu
 		}
 
 		existing, readErr := os.ReadFile(dest)
-		switch {
-		case readErr == nil && relSlash == ".gitignore":
-			merged, added := mergeGitignore(string(existing), string(content))
+		if relSlash == ".gitignore" && (readErr == nil || os.IsNotExist(readErr)) {
+			forgeBody, skipped := dropTrackedIgnores(string(content), gitTrackedIgnoreMatcher(target))
+			res.gitignoreSkipped = skipped
+			if readErr != nil {
+				return os.WriteFile(dest, []byte(forgeBody), info.Mode().Perm())
+			}
+			merged, added := mergeGitignore(string(existing), forgeBody)
 			res.gitignoreMerged = true
 			res.gitignoreAdded = added
 			if merged == string(existing) {
 				return nil
 			}
 			return os.WriteFile(dest, []byte(merged), 0o644)
+		}
+		switch {
 		case readErr == nil && !overwrite:
 			res.kept = append(res.kept, relSlash)
 			return nil
@@ -206,6 +226,135 @@ func stripForgeGitignoreBlock(body string) string {
 	return rest + "\n"
 }
 
+// trackedIgnoreMatcher returns, for each gitignore pattern (as written in the
+// target's own .gitignore), the tracked files it matches. A pattern that
+// matches nothing is absent from the map.
+type trackedIgnoreMatcher func(patterns []string) map[string][]string
+
+// dropTrackedIgnores removes from forge's .gitignore body every pattern that
+// matches a file the repository tracks, leaving a comment in its place, and
+// reports what it removed.
+//
+// Ignoring a tracked file does not untrack it, which is exactly why it is
+// wrong: the file keeps being committed while ripgrep, editors' search and
+// every other tool that honours .gitignore pretend it is not there, and the
+// first time a branch or `git rm` untracks it, re-creating it is silently left
+// out of `git add`.
+// forge's template ignores a root /package.json, /package-lock.json and
+// go.work.sum because a FORGE project never commits them; an existing
+// repository adopting forge may (reliant tracks all three), and its own
+// layout wins.
+//
+// Negations are never dropped: they only ever un-ignore. A nil match leaves
+// body untouched — the target is not in a git work tree, so nothing is
+// tracked.
+func dropTrackedIgnores(body string, match trackedIgnoreMatcher) (string, []skippedIgnore) {
+	if match == nil {
+		return body, nil
+	}
+	lines := strings.Split(body, "\n")
+	var patterns []string
+	for _, line := range lines {
+		if l := strings.TrimSpace(line); l != "" && !strings.HasPrefix(l, "#") && !strings.HasPrefix(l, "!") {
+			patterns = append(patterns, l)
+		}
+	}
+	matched := match(patterns)
+	if len(matched) == 0 {
+		return body, nil
+	}
+	var skipped []skippedIgnore
+	reported := map[string]bool{}
+	for i, line := range lines {
+		l := strings.TrimSpace(line)
+		tracked, ok := matched[l]
+		if !ok {
+			continue
+		}
+		lines[i] = fmt.Sprintf("# forge left out %q: this repository tracks %s", l, summarizeTracked(tracked))
+		if !reported[l] { // a pattern the template repeats is reported once
+			reported[l] = true
+			skipped = append(skipped, skippedIgnore{pattern: l, tracked: tracked})
+		}
+	}
+	return strings.Join(lines, "\n"), skipped
+}
+
+// gitTrackedIgnoreMatcher matches gitignore patterns against the files the
+// git work tree containing target tracks, using git's own matcher
+// (`git ls-files --cached --ignored --exclude=<pattern>`), so anchoring,
+// globs and directory patterns mean exactly what they will mean in the
+// merged .gitignore. Nil when target is not inside a work tree.
+func gitTrackedIgnoreMatcher(target string) trackedIgnoreMatcher {
+	top, ok := gitWorkTreeRoot(context.Background(), target)
+	if !ok {
+		return nil
+	}
+	prefix, err := filepath.Rel(resolvePathForCompare(top), resolvePathForCompare(target))
+	if err != nil {
+		return nil
+	}
+	prefix = filepath.ToSlash(prefix)
+	if prefix == "." {
+		prefix = ""
+	}
+	lsIgnored := func(patterns []string) []string {
+		args := []string{"ls-files", "-z", "--cached", "--ignored"}
+		for _, p := range patterns {
+			args = append(args, "--exclude="+anchorIgnorePattern(prefix, p))
+		}
+		cmd := exec.Command("git", args...)
+		cmd.Dir = target
+		out, err := cmd.Output()
+		if err != nil {
+			return nil
+		}
+		var files []string
+		for _, f := range strings.Split(string(out), "\x00") {
+			if f != "" {
+				files = append(files, f)
+			}
+		}
+		return files
+	}
+	return func(patterns []string) map[string][]string {
+		// One call answers the common case — nothing tracked is matched —
+		// before paying one call per pattern to say which pattern matched.
+		if len(patterns) == 0 || len(lsIgnored(patterns)) == 0 {
+			return nil
+		}
+		out := map[string][]string{}
+		for _, p := range patterns {
+			if files := lsIgnored([]string{p}); len(files) > 0 {
+				out[p] = files
+			}
+		}
+		return out
+	}
+}
+
+// anchorIgnorePattern rewrites a pattern written in <prefix>/.gitignore into
+// the form `git ls-files --exclude` reads it in, which is relative to the
+// repository root rather than to the directory git runs in. A pattern with a
+// slash before its end is anchored to its .gitignore's directory, so it gains
+// the prefix; one without matches at any depth, and running ls-files from the
+// target already limits it to the target's files.
+func anchorIgnorePattern(prefix, pattern string) string {
+	if prefix == "" || !strings.Contains(strings.TrimSuffix(pattern, "/"), "/") {
+		return pattern
+	}
+	return "/" + prefix + "/" + strings.TrimPrefix(pattern, "/")
+}
+
+// summarizeTracked names up to three of a pattern's tracked files.
+func summarizeTracked(files []string) string {
+	const limit = 3
+	if len(files) <= limit {
+		return strings.Join(files, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(files[:limit], ", "), len(files)-limit)
+}
+
 // inPlaceMergeSummary renders what an in-place scaffold did with the user's
 // existing files. Empty when nothing pre-existed.
 func inPlaceMergeSummary(r inPlaceMergeResult) []string {
@@ -226,6 +375,15 @@ func inPlaceMergeSummary(r inPlaceMergeResult) []string {
 		} else {
 			out = append(out, "📁 .gitignore already covers everything forge ignores — left as is.")
 		}
+	}
+	if len(r.gitignoreSkipped) > 0 {
+		out = append(out, fmt.Sprintf("📁 Left %d forge .gitignore pattern(s) out because they match files this repository tracks:",
+			len(r.gitignoreSkipped)))
+		for _, s := range r.gitignoreSkipped {
+			out = append(out, fmt.Sprintf("    %s  (tracks %s)", s.pattern, summarizeTracked(s.tracked)))
+		}
+		out = append(out, "    Ignoring a tracked file does not untrack it; it hides the file from every tool that honours .gitignore,",
+			"    and from `git add` the first time a branch or `git rm` untracks it.")
 	}
 	return out
 }

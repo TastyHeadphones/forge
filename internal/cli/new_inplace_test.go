@@ -2,6 +2,7 @@ package cli
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -137,4 +138,153 @@ func TestDetectExistingFrontendApps(t *testing.T) {
 	if err := checkInPlaceFrontendCollisions(apps, []string{"dashboard"}); err != nil {
 		t.Errorf("an unrelated frontend name was refused: %v", err)
 	}
+}
+
+func TestDropTrackedIgnores(t *testing.T) {
+	const body = "# Go\nbin/\ngo.work\ngo.work.sum\n\n/package.json\n!gen/go.mod\n/package.json\n"
+	match := func(patterns []string) map[string][]string {
+		for _, p := range patterns {
+			if strings.HasPrefix(p, "!") {
+				t.Errorf("a negation was offered to the matcher: %q", p)
+			}
+		}
+		return map[string][]string{
+			"go.work.sum":   {"go.work.sum"},
+			"/package.json": {"package.json"},
+		}
+	}
+
+	got, skipped := dropTrackedIgnores(body, match)
+	want := "# Go\nbin/\ngo.work\n# forge left out \"go.work.sum\": this repository tracks go.work.sum\n\n" +
+		"# forge left out \"/package.json\": this repository tracks package.json\n!gen/go.mod\n" +
+		"# forge left out \"/package.json\": this repository tracks package.json\n"
+	if got != want {
+		t.Errorf("body:\n%s\nwant:\n%s", got, want)
+	}
+	wantSkipped := []skippedIgnore{
+		{pattern: "go.work.sum", tracked: []string{"go.work.sum"}},
+		{pattern: "/package.json", tracked: []string{"package.json"}},
+	}
+	if !reflect.DeepEqual(skipped, wantSkipped) {
+		t.Errorf("skipped = %+v, want %+v", skipped, wantSkipped)
+	}
+
+	if got, skipped := dropTrackedIgnores(body, nil); got != body || skipped != nil {
+		t.Errorf("outside a git work tree the body must be untouched; got %q, %v", got, skipped)
+	}
+}
+
+func TestAnchorIgnorePattern(t *testing.T) {
+	for _, tc := range []struct{ prefix, in, want string }{
+		{"", "/package.json", "/package.json"},
+		{"svc", "/package.json", "/svc/package.json"},
+		{"svc", "/node_modules/", "/svc/node_modules/"},
+		{"svc", "docs/adr", "/svc/docs/adr"},
+		{"svc", "bin/", "bin/"},
+		{"svc", "*.log", "*.log"},
+		{"a/b", "/x", "/a/b/x"},
+	} {
+		if got := anchorIgnorePattern(tc.prefix, tc.in); got != tc.want {
+			t.Errorf("anchorIgnorePattern(%q, %q) = %q, want %q", tc.prefix, tc.in, got, tc.want)
+		}
+	}
+}
+
+// reliant adopted forge in place and the merged .gitignore ignored the
+// /package.json, /package-lock.json and go.work.sum it commits. An in-place
+// merge must leave out every pattern git says matches a tracked file — at the
+// repository root and in a subdirectory, where the merged .gitignore anchors
+// to the subdirectory — and say so.
+func TestMergeScaffoldInto_GitignoreSkipsTrackedPatterns(t *testing.T) {
+	if testing.Short() {
+		t.Skip("-short: builds two git repositories and runs git's matcher per pattern (~4s); runs in task test")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	const forgeIgnore = "# forge\n/package.json\n/package-lock.json\ngo.work.sum\nbin/\nnode_modules/\n/other.txt\n!keep.me\n"
+
+	t.Run("repository root", func(t *testing.T) {
+		repo := t.TempDir()
+		initGitRepo(t, repo, map[string]string{
+			"package.json":      "{}",
+			"package-lock.json": "{}",
+			"go.work.sum":       "",
+			"bin/tool.sh":       "",
+			".gitignore":        ".env\n",
+		})
+		staging := t.TempDir()
+		writeTestFile(t, filepath.Join(staging, ".gitignore"), forgeIgnore)
+
+		res, err := mergeScaffoldInto(staging, repo, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := os.ReadFile(filepath.Join(repo, ".gitignore"))
+		block := string(got)[strings.Index(string(got), forgeGitignoreBegin):]
+		for _, want := range []string{"node_modules/\n", "/other.txt\n", "!keep.me\n"} {
+			if !strings.Contains(block, want) {
+				t.Errorf("an untracked-only pattern %q was dropped:\n%s", want, got)
+			}
+		}
+		for _, notWant := range []string{"/package.json\n", "/package-lock.json\n", "go.work.sum\n", "bin/\n"} {
+			if strings.Contains(block, notWant) {
+				t.Errorf("merged a pattern that matches a tracked file, %q:\n%s", notWant, got)
+			}
+		}
+		var patterns []string
+		for _, s := range res.gitignoreSkipped {
+			patterns = append(patterns, s.pattern)
+		}
+		if want := []string{"/package.json", "/package-lock.json", "go.work.sum", "bin/"}; !reflect.DeepEqual(patterns, want) {
+			t.Errorf("skipped %v, want %v", patterns, want)
+		}
+		summary := strings.Join(inPlaceMergeSummary(res), "\n")
+		for _, want := range []string{
+			"Left 4 forge .gitignore pattern(s) out because they match files this repository tracks",
+			"/package.json  (tracks package.json)",
+			"bin/  (tracks bin/tool.sh)",
+		} {
+			if !strings.Contains(summary, want) {
+				t.Errorf("summary lacks %q:\n%s", want, summary)
+			}
+		}
+
+		// Idempotent: a re-run neither re-adds nor duplicates anything.
+		res2, err := mergeScaffoldInto(staging, repo, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		again, _ := os.ReadFile(filepath.Join(repo, ".gitignore"))
+		if string(again) != string(got) || len(res2.gitignoreSkipped) != 4 {
+			t.Errorf("re-run changed the merge (skipped %d):\n%s", len(res2.gitignoreSkipped), again)
+		}
+	})
+
+	t.Run("subdirectory with no .gitignore", func(t *testing.T) {
+		repo := t.TempDir()
+		initGitRepo(t, repo, map[string]string{
+			"other.txt":        "", // tracked, but at the repo root: /other.txt in svc/.gitignore does not match it
+			"svc/package.json": "{}",
+			"svc/main.go":      "package main\n",
+		})
+		target := filepath.Join(repo, "svc")
+		staging := t.TempDir()
+		writeTestFile(t, filepath.Join(staging, ".gitignore"), forgeIgnore)
+
+		res, err := mergeScaffoldInto(staging, target, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := os.ReadFile(filepath.Join(target, ".gitignore"))
+		if !strings.Contains(string(got), "# forge left out \"/package.json\": this repository tracks package.json\n") {
+			t.Errorf("a fresh .gitignore must replace the tracked pattern with a note:\n%s", got)
+		}
+		if !strings.Contains(string(got), "\n/other.txt\n") {
+			t.Errorf("/other.txt is anchored to svc/, where nothing matches it, so it must stay:\n%s", got)
+		}
+		if len(res.gitignoreSkipped) != 1 || res.gitignoreSkipped[0].pattern != "/package.json" {
+			t.Errorf("skipped = %+v, want only /package.json", res.gitignoreSkipped)
+		}
+	})
 }
