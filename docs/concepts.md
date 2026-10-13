@@ -413,7 +413,10 @@ writes `error`, because a new project has no direct reads to report. Adopting
 an existing project with `forge project new --in-place` writes `warn`: that
 project's existing reads would otherwise fail its first lint. Flip it to
 `error` once they have moved onto the typed config. A `forge.yaml` without the
-key reads as `warn`.
+key reads as `warn`. The check itself is forbidigo, configured in
+`.golangci.yml`; a config whose forbidigo `forbid` list does not cover
+`os.Getenv` checks nothing about env reads, so `forge lint` reports the lane as
+could-not-run until the patterns are added.
 
 `sensitive: true` changes three things, each closing a specific leak:
 

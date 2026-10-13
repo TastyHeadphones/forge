@@ -247,7 +247,7 @@ func TestResolveGolangciLint_NothingToCompare(t *testing.T) {
 // the advisory guardrail reports it could not run.
 func TestGolangciLanesReportUnresolvedToolchain(t *testing.T) {
 	unresolved := errors.New("golangci-lint at /usr/local/bin/golangci-lint was built with go1.26.2, but this module targets go 1.27")
-	rc := &lintRunCtx{ctx: context.Background(), paths: []string{"./..."},
+	rc := &lintRunCtx{ctx: context.Background(), cwd: writeGuardConfig(t, t.TempDir()), paths: []string{"./..."},
 		golangciMemo: &golangciMemo{resolved: true, res: golangciResolution{err: unresolved}}}
 
 	gate := findStep(t, "golangci-lint")
@@ -297,7 +297,9 @@ func newExportSkewFake(t *testing.T) (f *fakeToolchain, dir, pinned string) {
 	f.versions[f.onPath] = "v2.13.1"
 	f.toolchain = "go1.27.2"
 	f.outputs[f.onPath] = golangciOutput{stdout: exportSkewReport, err: errors.New("exit status 1")}
-	return f, moduleDir(t, "1.27.0"), filepath.Join(f.cache, "v2.14.0-go1.27.2", golangciExeName())
+	dir = moduleDir(t, "1.27.0")
+	writeGuardConfig(t, dir) // the guardrail lane runs only against a config that points forbidigo at env reads
+	return f, dir, filepath.Join(f.cache, "v2.14.0-go1.27.2", golangciExeName())
 }
 
 // mentionsBogusReport reports whether any finding carries the unreadable

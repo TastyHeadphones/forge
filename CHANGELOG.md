@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The typed-config guardrail checks env reads, or says it cannot.** The
+  advisory lane runs forbidigo with whatever the project's golangci-lint config
+  gives it. A `.golangci.yml` with no forbidigo `forbid` list (a hand-owned
+  one, as in reliant) left forbidigo on its built-in `fmt.Print*` patterns, so
+  the lane filed every `fmt.Println` as a typed-config finding and never looked
+  at an `os.Getenv`. The lane now reads the config golangci-lint loads
+  (`.golangci.{yml,yaml,json}` in the project or its nearest ancestor, v1 or v2
+  layout). Unless a forbid pattern covers `os.Getenv`, it reports itself as
+  could-not-run (`typed-config-guardrail-unavailable`, an error under
+  `--strict`) with the patterns to add, and does not invoke golangci-lint. A
+  clean run also stops reporting `typed-config guardrail — 1 warning` whose only
+  detail was `0 issues.`: golangci-lint's summary and source snippets are not
+  findings, only file-anchored issues are (`--quiet`, `--scope`, `--json`).
+
 ### Added
 
 - **`alerting.QueryOptions.Limits` and `chquery.Scan`**: the per-query limits without `readonly`, and the row reader behind `chquery.Run`, for a `Querier` that runs as an impersonated ClickHouse user (`EXECUTE AS`). Such a Querier cannot send `readonly` (a readonly session refuses the `EXECUTE AS` statement itself); the target user's profile contains the query instead. `Settings()` is now `Limits()` plus `readonly = 2`.

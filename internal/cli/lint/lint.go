@@ -1547,10 +1547,15 @@ func runGolangciLint(rc *lintRunCtx) error {
 // Findings print verbatim. A non-zero exit can only mean the INVOCATION
 // failed — --issues-exit-code=0 already neutralizes the findings exit code —
 // so it is reported as a lane that could not run (laneUnavailableError), not
-// swallowed into a ⚠️ and a nil return.
+// swallowed into a ⚠️ and a nil return. So is a golangci-lint config that
+// does not point forbidigo at env reads: forbidigo would run its own default
+// patterns instead (lint_typed_access_guard.go).
 func runTypedAccessGuardAdvisory(rc *lintRunCtx) error {
 	fmt.Println("Checking typed-config guardrail (advisory)...")
 
+	if reason := typedAccessGuardUnconfigured(rc.cwd); reason != "" {
+		return laneUnavailable(typedAccessGuardUnconfiguredHint, "%s", reason)
+	}
 	out, err := rc.execGolangci(golangciRunArgs([]string{"--enable-only=forbidigo", "--issues-exit-code=0"}, rc.paths))
 	if err != nil {
 		return laneUnavailable(typedAccessGuardUnavailableHint, "%v", err)
