@@ -394,6 +394,30 @@ github.com/reliant-labs/forge/cmd/forge@<pin> <same args>` that needs no
   functions before the tables a `LANGUAGE sql` body names, and the setting is
   transaction-local, so it ends with the baseline. The `db/deploy-migrations`
   skill's hand-cut (goose) recipe gains the same line.
+- **BREAKING: a config file's path variable is the binary's own, not
+  `FORGE_CONFIG`.** Every forge-built binary read `FORGE_CONFIG`, so a shell that
+  set it for one forge app made every other forge binary started from that
+  shell load that app's file and die at startup (`FORGE_CONFIG=/x.yaml reliant
+  server worker` → `config file "/x.yaml" does not exist`), including a daemon
+  a desktop app launches with the login environment. The variable is now
+  `<BINARY>_CONFIG`, derived from `(forge.v1.binary_config).binary`
+  (`RELIANT_CONFIG`, `IDP_PROVISION_ONESHOT_CONFIG`) and shared by a binary's
+  root and command configs; the project-global `AppConfig`, bound to no binary,
+  reads `<PROJECT>_CONFIG` from forge.yaml's `name` (the generated
+  `config.ConfigPathEnv`). Set to `""`, it is unset, like every variable the
+  loader reads. `FORGE_CONFIG` is read by nothing, and
+  `config.ConfigPathEnv` is removed from `forge/pkg/config`. The variable is
+  recorded on the `--config` flag, so `--help` names it, and a missing file now
+  says where its path came from (`(from env RELIANT_CONFIG) ... point
+  RELIANT_CONFIG at a readable file, or unset it`). New in `pkg/config`:
+  `ConfigPathEnvFor(binary)`, and `RegisterConfigFlag(cmd, env)`, which
+  registers `--config` with a chosen variable — called on a binary's root
+  before the generated `Register*Flags`, it is the override. `forge generate`
+  refuses a config field whose `env_var` or alias is its process's path
+  variable. A
+  project that set `FORGE_CONFIG` sets the binary's variable instead, and
+  regenerates `pkg/config/config_gen.go`.
+
 - **`forge env deploy <env> --dry-run` now predicts the real run's release
   decision, and a nested git checkout is no longer "dirt".** A bare
   `forge env deploy prod` cut and built a whole new release because an

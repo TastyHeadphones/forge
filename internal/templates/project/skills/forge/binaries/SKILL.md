@@ -184,6 +184,10 @@ api, err := config.LoadApiServerConfig(cmd)    // refuses any command but `serve
 
   The subcommand path is read after the argv token naming the binary (`app`, `./cmd/app`, `/app/app`), or from all of argv when none does (`args = ["server", "api"]` on the project image), and ends at the first flag.
 
+### Config files
+
+Every config also loads from a YAML or JSON file: `--config <path>`, or the binary's own `<BINARY>_CONFIG` (`RELIANT_CONFIG` for `cmd/reliant`; the project-global `AppConfig` reads `<PROJECT>_CONFIG`). Precedence is defaults < file < env < flags. The file's shape, the variable's override and its failure modes: `binaries/config-files`.
+
 Splitting into separate binaries instead (`cmd/app-server` + `cmd/app`) is right when the roles share nothing. When they share a binary — one image, a monolith mode that runs every role in one process, a CLI on the same root — `command` keeps one binary and still gives each process only its own config and credentials.
 
 ## Errors

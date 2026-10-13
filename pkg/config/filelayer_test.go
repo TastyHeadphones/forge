@@ -26,6 +26,26 @@ import (
 // the proto field name, so the YAML/JSON documents key off these names.
 func buildFileLayerMessage(t *testing.T) protoreflect.Message {
 	t.Helper()
+	return buildFileLayerMessageFor(t, "")
+}
+
+// fileLayerBinary is the binary buildBoundFileLayerMessage binds its message
+// to, so its config-path variable is FILELAYER_CONFIG.
+const (
+	fileLayerBinary  = "filelayer"
+	fileLayerPathEnv = "FILELAYER_CONFIG"
+)
+
+// buildBoundFileLayerMessage is buildFileLayerMessage carrying
+// (forge.v1.binary_config) = {binary: "filelayer"}: the message a per-binary
+// project's generated loader hands the library.
+func buildBoundFileLayerMessage(t *testing.T) protoreflect.Message {
+	t.Helper()
+	return buildFileLayerMessageFor(t, fileLayerBinary)
+}
+
+func buildFileLayerMessageFor(t *testing.T, binary string) protoreflect.Message {
+	t.Helper()
 
 	field := func(name string, num int32, typ descriptorpb.FieldDescriptorProto_Type, opt *forgepb.ConfigFieldOptions) *descriptorpb.FieldDescriptorProto {
 		fdp := &descriptorpb.FieldDescriptorProto{
@@ -67,8 +87,14 @@ func buildFileLayerMessage(t *testing.T) protoreflect.Message {
 		JsonName: proto.String("db"),
 	}
 
+	var rootOpts *descriptorpb.MessageOptions
+	if binary != "" {
+		rootOpts = &descriptorpb.MessageOptions{}
+		proto.SetExtension(rootOpts, forgepb.E_BinaryConfig, &forgepb.BinaryConfigOptions{Binary: binary})
+	}
 	rootMsg := &descriptorpb.DescriptorProto{
-		Name: proto.String("AppConfig"),
+		Name:    proto.String("AppConfig"),
+		Options: rootOpts,
 		Field: []*descriptorpb.FieldDescriptorProto{
 			field("log_level", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING, &forgepb.ConfigFieldOptions{
 				EnvVar: "LOG_LEVEL", Flag: "log-level", DefaultValue: "info", Description: "log level",
@@ -308,19 +334,22 @@ func TestFileLayer_MissingExplicitFlagFileErrorsLoudly(t *testing.T) {
 }
 
 func TestFileLayer_MissingExplicitEnvFileErrorsLoudly(t *testing.T) {
-	t.Setenv(ConfigPathEnv, "/nonexistent/env/config.yaml")
-	m := buildFileLayerMessage(t)
+	t.Setenv(fileLayerPathEnv, "/nonexistent/env/config.yaml")
+	m := buildBoundFileLayerMessage(t)
 	err := LoadInto(nil, m.Interface())
 	if err == nil {
-		t.Fatalf("LoadInto: want LOUD error for missing %s file, got nil", ConfigPathEnv)
+		t.Fatalf("LoadInto: want LOUD error for missing %s file, got nil", fileLayerPathEnv)
 	}
-	if !contains(err.Error(), "does not exist") {
-		t.Errorf("error = %q, want it to mention the file does not exist", err.Error())
+	// The variable is named: whoever reads this may not know it is set.
+	for _, want := range []string{"does not exist", "from env " + fileLayerPathEnv, "unset it"} {
+		if !contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to contain %q", err.Error(), want)
+		}
 	}
 }
 
 func TestFileLayer_NoConfigPathProceedsNormally(t *testing.T) {
-	// No --config and no FORGE_CONFIG: NOT a fallback — defaults+env+flags only.
+	// No --config and no path variable: NOT a fallback — defaults+env+flags only.
 	m := buildFileLayerMessage(t)
 	if err := LoadInto(nil, m.Interface()); err != nil {
 		t.Fatalf("LoadInto: %v", err)
@@ -373,11 +402,11 @@ func TestFileLayer_UnsupportedExtensionErrorsLoudly(t *testing.T) {
 }
 
 func TestFileLayer_FlagPathBeatsEnvPath(t *testing.T) {
-	// The --config flag path wins over FORGE_CONFIG.
+	// The --config flag path wins over the binary's path variable.
 	flagFile := writeFile(t, "flag.yaml", "log_level: from-flag-file\n")
 	envFile := writeFile(t, "env.yaml", "log_level: from-env-file\n")
-	t.Setenv(ConfigPathEnv, envFile)
-	m := buildFileLayerMessage(t)
+	t.Setenv(fileLayerPathEnv, envFile)
+	m := buildBoundFileLayerMessage(t)
 	cmd := cmdWithConfigFlag(t, m.Interface())
 	if err := cmd.Flags().Set(ConfigFlag, flagFile); err != nil {
 		t.Fatal(err)
@@ -391,14 +420,127 @@ func TestFileLayer_FlagPathBeatsEnvPath(t *testing.T) {
 }
 
 func TestFileLayer_EnvPathLoadsFile(t *testing.T) {
-	// FORGE_CONFIG alone (no --config flag, cmd=nil) loads the file.
+	// The binary's path variable alone (no --config flag, cmd=nil) loads the
+	// file: the descriptor's binding names the variable.
 	envFile := writeFile(t, "env.yaml", "log_level: env-path-loaded\n")
-	t.Setenv(ConfigPathEnv, envFile)
-	m := buildFileLayerMessage(t)
+	t.Setenv(fileLayerPathEnv, envFile)
+	m := buildBoundFileLayerMessage(t)
 	if err := LoadInto(nil, m.Interface()); err != nil {
 		t.Fatalf("LoadInto: %v", err)
 	}
 	if got := strOf(m, "log_level"); got != "env-path-loaded" {
-		t.Errorf("log_level = %q, want env-path-loaded (FORGE_CONFIG path)", got)
+		t.Errorf("log_level = %q, want env-path-loaded (%s path)", got, fileLayerPathEnv)
+	}
+}
+
+// TestFileLayer_AnotherBinarysVariableIsIgnored is the regression for the
+// shared FORGE_CONFIG: a shell that set the path variable for ONE forge app
+// made every other forge binary started from it load that app's file and die
+// at startup (`FORGE_CONFIG=/nonexistent.yaml reliant server worker` →
+// `config file "/nonexistent.yaml" does not exist`). Each binary now reads
+// only its own variable, so another binary's — and the old shared name —
+// load nothing.
+func TestFileLayer_AnotherBinarysVariableIsIgnored(t *testing.T) {
+	t.Setenv("FORGE_CONFIG", "/nonexistent/forge.yaml")
+	t.Setenv("OTHERAPP_CONFIG", "/nonexistent/otherapp.yaml")
+
+	bound := buildBoundFileLayerMessage(t)
+	cmd := cmdWithConfigFlag(t, bound.Interface())
+	if err := LoadInto(cmd, bound.Interface()); err != nil {
+		t.Fatalf("LoadInto(bound): %v — another binary's path variable must not reach this one", err)
+	}
+	if got := strOf(bound, "log_level"); got != "info" {
+		t.Errorf("log_level = %q, want the default (no file loaded)", got)
+	}
+
+	// An unbound message names no binary, so with no --config flag naming a
+	// variable it has no environment path at all.
+	unbound := buildFileLayerMessage(t)
+	if err := LoadInto(nil, unbound.Interface()); err != nil {
+		t.Fatalf("LoadInto(unbound): %v", err)
+	}
+}
+
+// The path variable follows the env layer's rule: set to "" it is unset
+// (lookupEnv), so no file is loaded and the defaults stand.
+func TestFileLayer_EmptyPathVariableIsUnset(t *testing.T) {
+	t.Setenv(fileLayerPathEnv, "")
+	m := buildBoundFileLayerMessage(t)
+	if err := LoadInto(nil, m.Interface()); err != nil {
+		t.Fatalf("LoadInto with %s=\"\": %v", fileLayerPathEnv, err)
+	}
+	if got := strOf(m, "log_level"); got != "info" {
+		t.Errorf("log_level = %q, want the default (no file)", got)
+	}
+}
+
+func TestConfigPathEnvFor(t *testing.T) {
+	for binary, want := range map[string]string{
+		"reliant":               "RELIANT_CONFIG",
+		"control-plane":         "CONTROL_PLANE_CONFIG",
+		"idp-provision-oneshot": "IDP_PROVISION_ONESHOT_CONFIG",
+		"my.app":                "MY_APP_CONFIG",
+		"svc_2":                 "SVC_2_CONFIG",
+		"":                      "",
+	} {
+		if got := ConfigPathEnvFor(binary); got != want {
+			t.Errorf("ConfigPathEnvFor(%q) = %q, want %q", binary, got, want)
+		}
+	}
+}
+
+// TestRegisterFlags_ConfigHelpNamesTheBinarysVariable pins what `--help`
+// tells an operator: the variable a bound message's --config answers to, and
+// no variable at all for an unbound one registered without RegisterConfigFlag.
+func TestRegisterFlags_ConfigHelpNamesTheBinarysVariable(t *testing.T) {
+	bound := &cobra.Command{Use: "filelayer"}
+	if err := RegisterFlags(bound, buildBoundFileLayerMessage(t).Interface()); err != nil {
+		t.Fatal(err)
+	}
+	if usage := bound.PersistentFlags().Lookup(ConfigFlag).Usage; !contains(usage, "also settable via "+fileLayerPathEnv) {
+		t.Errorf("bound --config usage = %q, want it to name %s", usage, fileLayerPathEnv)
+	}
+
+	unbound := &cobra.Command{Use: "app"}
+	if err := RegisterFlags(unbound, buildFileLayerMessage(t).Interface()); err != nil {
+		t.Fatal(err)
+	}
+	if usage := unbound.PersistentFlags().Lookup(ConfigFlag).Usage; contains(usage, "settable via") {
+		t.Errorf("unbound --config usage = %q, want no variable named", usage)
+	}
+}
+
+// TestRegisterConfigFlag_NamesTheVariableForTheWholePath pins
+// RegisterConfigFlag as both the project-global config's plumbing and the
+// override: the variable named on the root's --config is the one every load
+// beneath it reads, whatever the loaded message's own binding would derive.
+func TestRegisterConfigFlag_NamesTheVariableForTheWholePath(t *testing.T) {
+	newTree := func(t *testing.T, msg proto.Message) *cobra.Command {
+		t.Helper()
+		root := &cobra.Command{Use: "app"}
+		RegisterConfigFlag(root, "PROJ_CONFIG")
+		if err := RegisterPersistentFlags(root, msg); err != nil {
+			t.Fatal(err)
+		}
+		sub := &cobra.Command{Use: "serve"}
+		root.AddCommand(sub)
+		return sub
+	}
+	t.Setenv(fileLayerPathEnv, "/nonexistent/derived.yaml")
+	t.Setenv("PROJ_CONFIG", writeFile(t, "proj.yaml", "log_level: from-proj\n"))
+
+	for name, m := range map[string]protoreflect.Message{
+		"unbound": buildFileLayerMessage(t),      // the project-global AppConfig shape
+		"bound":   buildBoundFileLayerMessage(t), // an override of the derived name
+	} {
+		t.Run(name, func(t *testing.T) {
+			sub := newTree(t, m.Interface())
+			if err := LoadInto(sub, m.Interface()); err != nil {
+				t.Fatalf("LoadInto: %v", err)
+			}
+			if got := strOf(m, "log_level"); got != "from-proj" {
+				t.Errorf("log_level = %q, want from-proj (the variable RegisterConfigFlag named)", got)
+			}
+		})
 	}
 }

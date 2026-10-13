@@ -10,9 +10,10 @@
 // Three layers live here:
 //
 //   - loader.go     the descriptor walk and the precedence resolution.
-//   - filelayer.go  the first-class config-FILE layer (--config / FORGE_CONFIG),
-//     which loads only for an explicitly-given path and fails
-//     loudly on a missing or invalid one.
+//   - filelayer.go  the first-class config-FILE layer (--config, or the
+//     binary's <BINARY>_CONFIG), which loads only for an
+//     explicitly-given path and fails loudly on a missing or
+//     invalid one.
 //   - semantic.go   the role-annotation helpers ([Mode], [Validate]) and the
 //     cobra-facing surface.
 //
