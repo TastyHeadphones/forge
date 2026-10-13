@@ -235,6 +235,37 @@ func JournaledPaths() []string {
 	return out
 }
 
+// ChangedJournalPaths returns every path this run actually changed, of the
+// ones a restore owns: each journaled path whose bytes or existence differ
+// from what was captured before the run, and each file an external tool
+// created under a captured directory. A journaled path rewritten with its
+// pre-run bytes is not a change — every write goes through the journal, and
+// most rewrite a file identically. Slash form, sorted. Read it BEFORE
+// RestoreRollbackReport, which clears the journal.
+func ChangedJournalPaths(root string) []string {
+	var out []string
+	for relPath, entry := range rollbackJournal {
+		if entryChanged(entry, filepath.Join(root, relPath)) {
+			out = append(out, relPath)
+		}
+	}
+	out = append(out, createdUnderTrees(root)...)
+	sort.Strings(out)
+	return out
+}
+
+// entryChanged reports whether full is no longer in the state entry
+// captured. A path that was absent and is now a directory is not itself a
+// change: the files inside it are, and createdUnderTrees names them.
+func entryChanged(entry rollbackEntry, full string) bool {
+	if !entry.existed {
+		info, err := os.Lstat(full)
+		return err == nil && !info.IsDir()
+	}
+	current, err := os.ReadFile(full)
+	return err != nil || !bytes.Equal(current, entry.content)
+}
+
 // RecordPreWrite is the exported shim for pipeline steps that mutate a
 // forge-owned path DIRECTLY (a raw os.Remove / os.WriteFile) instead of
 // through the WriteGeneratedFile* chokepoint. Call it immediately before

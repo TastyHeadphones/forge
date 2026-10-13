@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -76,6 +77,56 @@ type rollbackConsistency struct {
 	Checked bool
 	Builds  bool
 	Output  string
+	// SkippedNoGoChange is set when no build ran because the run changed
+	// no Go build input (goBuildInputsTouched): the compiler would only
+	// have re-judged the tree the user started with.
+	SkippedNoGoChange bool
+}
+
+// restoredTreeCompileCheck is the post-rollback compile check; a test seam
+// over goBuildRestoredTree.
+var restoredTreeCompileCheck = goBuildRestoredTree
+
+// goBuildInputsTouched reports whether a failed run changed anything the Go
+// compiler reads: a journaled path the run changed (changed, read before the
+// revert), or a path outside the journal that still differs from before the
+// run (the residue). Nothing it reports is ever assumed: when the residue
+// could not be checked, a path outside the journal may have changed
+// unseen, so the answer is yes.
+//
+// Embedded files (//go:embed) are not inputs here. Their bytes never decide
+// whether a package compiles, and the revert puts every journaled file back
+// where it was, so a pattern's match set is the pre-run one.
+func goBuildInputsTouched(changed []string, residue rollbackResidue) bool {
+	if !residue.Checked {
+		return true
+	}
+	for _, p := range append(append([]string(nil), changed...), residue.Changed...) {
+		if isGoBuildInput(p) {
+			return true
+		}
+	}
+	return false
+}
+
+// isGoBuildInput reports whether a project-relative path is one `go build`
+// reads to decide whether the tree compiles: Go and cgo/assembly sources,
+// the module files, and anything vendored.
+func isGoBuildInput(rel string) bool {
+	rel = filepath.ToSlash(rel)
+	if strings.HasPrefix(rel, "vendor/") {
+		return true
+	}
+	switch path.Base(rel) {
+	case "go.mod", "go.sum", "go.work", "go.work.sum":
+		return true
+	}
+	switch path.Ext(rel) {
+	case ".go", ".s", ".S", ".sx", ".c", ".h", ".cc", ".cpp", ".cxx", ".hh", ".hpp", ".hxx",
+		".m", ".f", ".F", ".for", ".f90", ".syso", ".swig", ".swigcxx":
+		return true
+	}
+	return false
 }
 
 // rollbackReport is everything the failure report needs, gathered before
@@ -240,8 +291,11 @@ func writeRollbackReport(w io.Writer, rep rollbackReport) {
 // not build: the non-compiling case gets the fuller note below, and an
 // unchecked tree has earned neither claim.
 func compileVerdictSuffix(c rollbackConsistency) string {
-	if c.Checked && c.Builds {
+	switch {
+	case c.Checked && c.Builds:
 		return ", verified: it compiles"
+	case c.SkippedNoGoChange:
+		return "; the run changed no Go file, so there was nothing to recompile"
 	}
 	return ""
 }
