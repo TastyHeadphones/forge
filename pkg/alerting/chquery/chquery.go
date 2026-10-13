@@ -52,6 +52,12 @@ func Run(ctx context.Context, conn Conn, query string, opts alerting.QueryOption
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
+	return Scan(rows)
+}
+
+// Scan reads every row into alerting.Rows. A Querier that must choose its own
+// settings (see alerting.QueryOptions.Limits) reuses this and sends its own.
+func Scan(rows driver.Rows) ([]alerting.Row, error) {
 	names, types := rows.Columns(), rows.ColumnTypes()
 	var out []alerting.Row
 	for rows.Next() {

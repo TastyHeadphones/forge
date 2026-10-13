@@ -86,11 +86,15 @@ func ValidateExpr(expr string) error {
 	return nil
 }
 
-// Settings are the ClickHouse settings every evaluation carries. readonly=2
-// forbids writes and DDL while still allowing the per-query limits to be set.
-func (o QueryOptions) Settings() map[string]any {
+// Limits are the per-query resource settings: a timeout and a row cap, both
+// throwing on overflow rather than truncating.
+//
+// A Querier that runs as an IMPERSONATED user (ClickHouse `EXECUTE AS`) sends
+// only these. It must not send `readonly`: a readonly session refuses the
+// EXECUTE AS statement itself, and the target user's settings profile (which
+// should say readonly = 2 with MAX constraints) is what contains the query.
+func (o QueryOptions) Limits() map[string]any {
 	s := map[string]any{
-		"readonly":              2,
 		"result_overflow_mode":  "throw",
 		"timeout_overflow_mode": "throw",
 	}
@@ -104,6 +108,15 @@ func (o QueryOptions) Settings() map[string]any {
 	if o.MaxResultRows > 0 {
 		s["max_result_rows"] = o.MaxResultRows
 	}
+	return s
+}
+
+// Settings are Limits plus readonly=2 (no writes or DDL, while the per-query
+// limits stay settable): what a Querier on its own, directly-authenticated
+// connection sends.
+func (o QueryOptions) Settings() map[string]any {
+	s := o.Limits()
+	s["readonly"] = 2
 	return s
 }
 
