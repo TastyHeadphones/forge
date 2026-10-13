@@ -194,6 +194,91 @@ func New(d Deps) Service { return &service{deps: d} }
 	}
 }
 
+// TestLintDepsAreInterfaces_GenericInstantiations: a Deps field typed with
+// an instantiated generic is judged by the generic type's declaration.
+// reliant's `streaming.UpdateHub[db.UserUpdate]` is an interface and was
+// refused as "concrete type *ast.IndexExpr" — wrong on both counts. A
+// generic STRUCT still fires, a pointer to an instantiation still fires,
+// and the message renders the type as source, never as an AST node name.
+func TestLintDepsAreInterfaces_GenericInstantiations(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	must(t, writeFile(filepath.Join(tmp, "go.mod"), "module example.com/app\n\ngo 1.24\n"))
+
+	hubDir := filepath.Join(tmp, "internal", "hub")
+	must(t, mkdirAll(hubDir))
+	must(t, writeFile(filepath.Join(hubDir, "hub.go"), `package hub
+
+import "context"
+
+// Subscriber is a generic INTERFACE: an instantiation must NOT fire.
+type Subscriber[T any] interface {
+	Subscribe(ctx context.Context, key string) (<-chan T, func())
+}
+
+// Pair is a generic interface with two type parameters.
+type Pair[K comparable, V any] interface{ Get(K) (V, bool) }
+
+// Broker is a generic STRUCT with behaviour: an instantiation MUST fire.
+type Broker[T any] struct{ subs map[string][]chan T }
+
+func (b *Broker[T]) Publish(ctx context.Context, key string, v T) error { return nil }
+`))
+
+	svcDir := filepath.Join(tmp, "internal", "events")
+	must(t, mkdirAll(svcDir))
+	must(t, writeFile(filepath.Join(svcDir, "service.go"), `package events
+
+import "example.com/app/internal/hub"
+
+type Event struct{ ID string }
+
+// Local is a same-package generic interface.
+type Local[T any] interface{ Next() T }
+
+type Deps struct {
+	Hub    hub.Subscriber[Event]     // generic interface — silent
+	Lookup hub.Pair[string, Event]   // two type args — silent
+	Next   Local[Event]              // same-package generic — silent
+	Broker hub.Broker[Event]         // generic struct — fires
+	BPtr   *hub.Broker[Event]        // pointer to instantiation — fires
+	HubPtr *hub.Subscriber[Event]    // pointer to an interface — fires
+}
+`))
+
+	fs, err := Inspect(context.Background(), tmp,
+		Options{Rules: []Rule{RuleDepsAreInterfaces}},
+	)
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	got := findingsForRule(fs, string(RuleDepsAreInterfaces))
+	var joined strings.Builder
+	for _, f := range got {
+		joined.WriteString(f.Message + "\n")
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 findings (Broker, BPtr, HubPtr), got %d:\n%s", len(got), joined.String())
+	}
+	for _, silent := range []string{`"Hub"`, `"Lookup"`, `"Next"`} {
+		if strings.Contains(joined.String(), silent) {
+			t.Errorf("a generic interface dep %s must not fire; got:\n%s", silent, joined.String())
+		}
+	}
+	for _, want := range []string{
+		`"Broker" has concrete type hub.Broker[Event]`,
+		`"BPtr" has concrete type *hub.Broker[Event]`,
+		`"HubPtr" has concrete type *hub.Subscriber[Event]`,
+	} {
+		if !strings.Contains(joined.String(), want) {
+			t.Errorf("expected %q in:\n%s", want, joined.String())
+		}
+	}
+	if strings.Contains(joined.String(), "*ast.") {
+		t.Errorf("a finding named a Go AST node instead of the type:\n%s", joined.String())
+	}
+}
+
 // TestLintDepsAreInterfaces_NoInternalDir confirms projects without an
 // internal/ tree (CLI / library kinds) get an empty result rather than
 // an error.

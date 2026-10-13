@@ -74,6 +74,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/parser"
+	"go/printer"
 	"go/token"
 	"io/fs"
 	"os"
@@ -272,6 +273,15 @@ func (l *depsLinter) lintPkg(pkgDir string) ([]forgeconv.Finding, error) {
 		if isLoggerField(field) {
 			continue
 		}
+		// An instantiated generic type (`hub.Subscriber[Event]`) is the
+		// generic type itself as far as this rule is concerned: whether it
+		// is an interface is a property of its declaration, and type
+		// arguments never change that. Classify the instantiated type.
+		if generic := genericBase(field.Type); generic != nil {
+			if isLikelyInterfaceType(generic) || l.selectorResolvesToInterface(generic, fileImports) {
+				continue
+			}
+		}
 		if isLikelyInterfaceType(field.Type) {
 			continue
 		}
@@ -372,6 +382,21 @@ func (l *depsLinter) lintPkg(pkgDir string) ([]forgeconv.Finding, error) {
 		}
 	}
 	return findings, nil
+}
+
+// genericBase returns the generic type an instantiation names —
+// `pkg.T` for `pkg.T[A]` or `pkg.T[A, B]`, `T` for a same-package `T[A]` —
+// or nil when expr is not an instantiation. A pointer to an instantiation
+// is deliberately NOT unwrapped: `*pkg.T[A]` is a concrete pointer whatever
+// T is, exactly as `*pkg.T` is.
+func genericBase(expr ast.Expr) ast.Expr {
+	switch t := expr.(type) {
+	case *ast.IndexExpr:
+		return t.X
+	case *ast.IndexListExpr:
+		return t.X
+	}
+	return nil
 }
 
 // findDepsStruct returns the *ast.StructType for the first
@@ -1691,7 +1716,21 @@ func exprString(expr ast.Expr) string {
 		return "func(...)"
 	case *ast.ChanType:
 		return "chan " + exprString(t.Value)
+	case *ast.IndexExpr:
+		return exprString(t.X) + "[" + exprString(t.Index) + "]"
+	case *ast.IndexListExpr:
+		args := make([]string, len(t.Indices))
+		for i, ix := range t.Indices {
+			args[i] = exprString(ix)
+		}
+		return exprString(t.X) + "[" + strings.Join(args, ", ") + "]"
 	default:
-		return fmt.Sprintf("%T", expr)
+		// Never print a Go AST node name (`*ast.IndexExpr`) at the author:
+		// render the source text of the type when it is anything else.
+		var b strings.Builder
+		if err := printer.Fprint(&b, token.NewFileSet(), expr); err == nil {
+			return b.String()
+		}
+		return "this type"
 	}
 }
