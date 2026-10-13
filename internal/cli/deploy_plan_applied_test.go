@@ -124,7 +124,7 @@ func ledgerOnlyFixture(t *testing.T, cp *fakeDSOTCaller, history []release.Promo
 	deployPlanSecretPresence = func(context.Context, string, string, release.Shape) map[string]bool { return presence }
 	// No registry: the field summary is best-effort and these bundles have
 	// no bytes. A test that wants it states the bytes (see realBundle).
-	fetchBundleRef = func(_ context.Context, ref string) (bundle.Fetched, error) {
+	fetchBundleRef = func(_ context.Context, _, _, ref string) (bundle.Fetched, error) {
 		return bundle.Fetched{}, errors.New("no registry in this test: " + ref)
 	}
 	t.Cleanup(func() {
@@ -287,7 +287,7 @@ func TestLedgerOnlyPlan_ChangedObjectNamesItsFields(t *testing.T) {
 	ledger := ledgerOnlyFixture(t, ledgerOnlyControlPlane(t, applied, candidate),
 		[]release.Promotion{appliedPromotion("p-1", "v1", applied)}, nil)
 	prev := fetchBundleRef
-	fetchBundleRef = func(_ context.Context, ref string) (bundle.Fetched, error) {
+	fetchBundleRef = func(_ context.Context, _, _, ref string) (bundle.Fetched, error) {
 		switch ref {
 		case applied.Reference:
 			return appliedBytes, nil

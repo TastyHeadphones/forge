@@ -104,7 +104,7 @@ func findReleaseBundle(ctx context.Context, projectDir, env, version string, led
 			return releaseBundle{}, false, nil
 		}
 		repo := bundle.Repository(base, env)
-		target, err := bundlePushTarget(repo)
+		target, err := bundlePushTarget(ctx, projectDir, env, repo)
 		if err != nil {
 			return releaseBundle{}, false, err
 		}
@@ -183,8 +183,8 @@ func fetchBundleBlobs(ctx context.Context, reg bundleRegistry, tag, digest strin
 // next write for the same release finds it. Best-effort: a registry that will
 // not take the tag costs immutability checking for this release, not the
 // build, and that is said.
-func tagReleaseBundle(ctx context.Context, repo string, manifest []byte, version string, in bundleBuildInputs) {
-	target, err := bundlePushTarget(repo)
+func tagReleaseBundle(ctx context.Context, projectDir, env, repo string, manifest []byte, version string, in bundleBuildInputs) {
+	target, err := bundlePushTarget(ctx, projectDir, env, repo)
 	if err != nil {
 		fmt.Fprintf(in.errWriter(), "[bundle] Note: release %s's bundle was not tagged (%v); a later deploy cannot check it is unchanged.\n", version, err)
 		return

@@ -115,7 +115,7 @@ func runReleaseBundle(ctx context.Context, out io.Writer, projectDir, env, versi
 	if err != nil {
 		return err
 	}
-	fetched, err := fetchBundleRef(ctx, ref)
+	fetched, err := fetchBundleRef(ctx, projectDir, env, ref)
 	if err != nil {
 		return fmt.Errorf("pull %s: %w", ref, err)
 	}
@@ -232,7 +232,7 @@ func resolveReleaseBundleRef(ctx context.Context, projectDir, env, versionOrDige
 // fetchBundleRef pulls a bundle by its recorded reference: a registry
 // reference (<repo>@<digest>) or this machine's OCI layout
 // (oci-layout:<root>@<digest>).
-var fetchBundleRef = func(ctx context.Context, ref string) (bundle.Fetched, error) {
+var fetchBundleRef = func(ctx context.Context, projectDir, env, ref string) (bundle.Fetched, error) {
 	if rest, ok := strings.CutPrefix(ref, "oci-layout:"); ok {
 		root, digest, found := strings.Cut(rest, "@")
 		if !found {
@@ -248,7 +248,7 @@ var fetchBundleRef = func(ctx context.Context, ref string) (bundle.Fetched, erro
 	if !found {
 		return bundle.Fetched{}, fmt.Errorf("reference %q names no digest", ref)
 	}
-	r, err := bundle.NewRepository(repo)
+	r, err := openBundleRepository(ctx, projectDir, env, repo)
 	if err != nil {
 		return bundle.Fetched{}, err
 	}
@@ -351,7 +351,7 @@ func printPlanLiveDiff(ctx context.Context, w io.Writer, projectDir, env, versio
 		fmt.Fprintf(w, "\nLive diff: not computed — %v\n", err)
 		return
 	}
-	fetched, err := fetchBundleRef(ctx, ref)
+	fetched, err := fetchBundleRef(ctx, projectDir, env, ref)
 	if err != nil {
 		fmt.Fprintf(w, "\nLive diff: not computed — pull %s: %v\n", ref, err)
 		return

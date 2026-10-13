@@ -959,7 +959,9 @@ func stubHostedBundleRegistry(t *testing.T, fake *fakeDeployService) {
 	t.Helper()
 	registry := memory.New()
 	prev := bundlePushTarget
-	bundlePushTarget = func(string) (bundle.Pusher, error) { return tagByDigest{registry}, nil }
+	bundlePushTarget = func(context.Context, string, string, string) (bundle.Pusher, error) {
+		return tagByDigest{registry}, nil
+	}
 	t.Cleanup(func() { bundlePushTarget = prev })
 	fake.layerFetch = func(_, manifestDigest string) ([]byte, error) {
 		fetched, err := bundle.Fetch(context.Background(), registry, manifestDigest)

@@ -241,7 +241,7 @@ func TestEnvBuildBundle_HostedEnvPushesAndRecordsTheBytes(t *testing.T) {
 	registry := memory.New()
 	prevTarget := bundlePushTarget
 	var pushedTo string
-	bundlePushTarget = func(reference string) (bundle.Pusher, error) {
+	bundlePushTarget = func(_ context.Context, _, _, reference string) (bundle.Pusher, error) {
 		pushedTo = reference
 		return registry, nil
 	}
@@ -674,7 +674,7 @@ func TestEnvBuildBundle_AFailedPushFallsBackLocallyAndDoesNotFailTheBuild(t *tes
 	writeHostedPushBaseFixture(t, dir, "prod", "registry.unreachable.invalid/acme")
 
 	prevTarget := bundlePushTarget
-	bundlePushTarget = func(string) (bundle.Pusher, error) {
+	bundlePushTarget = func(context.Context, string, string, string) (bundle.Pusher, error) {
 		return nil, errors.New("dial tcp: lookup registry.unreachable.invalid: no such host")
 	}
 	t.Cleanup(func() { bundlePushTarget = prevTarget })

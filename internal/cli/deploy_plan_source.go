@@ -270,7 +270,7 @@ func fileLedgerDeployPlan(ctx context.Context, projectDir, env, bundleDigest str
 	if live != nil {
 		for _, b := range bundles {
 			if b.ID == basis.AppliedBundleID {
-				annotateChangedFields(ctx, &plan, b.Reference, candidate.Reference)
+				annotateChangedFields(ctx, projectDir, env, &plan, b.Reference, candidate.Reference)
 				break
 			}
 		}
