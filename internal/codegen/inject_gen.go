@@ -342,6 +342,13 @@ func GenerateCompose(in InjectGenInput) error {
 	if consumed := notAComponentConsumers(comps, notComponents); len(consumed) > 0 {
 		return notAComponentConsumedError(in.ProjectDir, consumed)
 	}
+	// Never emit a constructor call that cannot compile. A package whose
+	// constructor compose.go cannot call is refused here, named, before
+	// compose.go is written — not composed anyway and left for the validate
+	// build to blame on compose.go (compose_constructible.go).
+	if bad := unconstructibleComponents(in.ProjectDir, comps); len(bad) > 0 {
+		return unconstructibleError(bad)
+	}
 	// No len(comps)==0 early-return: cmd/server.go imports internal/app
 	// unconditionally, so the package must exist and compile even with zero
 	// components. The template renders a valid empty NewComponents over an
