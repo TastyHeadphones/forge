@@ -84,6 +84,8 @@ func TestClassifyTemplate(t *testing.T) {
 		{"internal/templates/project/cmd-tree-server.go.tmpl", tier2Scaffold},
 		{"internal/templates/project/cmd-tree-version.go.tmpl", tier2Scaffold},
 		{"internal/templates/project/cmd-tree-db.go.tmpl", tier2Scaffold},
+		{"internal/templates/project/cmd-tree-metrics.go.tmpl", tier2Scaffold},
+		{"internal/templates/project/internal-metrics.go.tmpl", tier2Scaffold},
 		{"internal/templates/project/cmd-worker-group.go.tmpl", tier2Scaffold},
 		{"internal/templates/project/cmd-operator-group.go.tmpl", tier2Scaffold},
 		{"internal/templates/project/compose.go.tmpl", tier2Scaffold},

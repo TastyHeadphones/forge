@@ -2816,8 +2816,8 @@ type Service struct {
 
 	// The user customizes the file: replaces the delegation body.
 	customized := strings.Replace(string(first),
-		"return crud.HandleCreate(s.crudCreatePatientOp())(ctx, req)",
-		"// user customization marker\n\treturn crud.HandleCreate(s.crudCreatePatientOp())(ctx, req)", 1)
+		"resp, err := crud.HandleCreate(s.crudCreatePatientOp())(ctx, req)",
+		"// user customization marker\n\tresp, err := crud.HandleCreate(s.crudCreatePatientOp())(ctx, req)", 1)
 	if customized == string(first) {
 		t.Fatalf("expected CreatePatient shim to delegate via crud.HandleCreate; got:\n%s", first)
 	}

@@ -817,7 +817,11 @@ func crudShimImports(data CRUDTemplateData) []string {
 	hasReal := false
 	needsDB := false
 	scoped := false
+	hasCreate := false
 	for _, m := range data.CRUDMethods {
+		if !m.ShapeMismatch && m.Operation == "create" {
+			hasCreate = true
+		}
 		if m.ShapeMismatch {
 			hasMismatch = true
 		} else {
@@ -840,6 +844,11 @@ func crudShimImports(data CRUDTemplateData) []string {
 	}
 	if hasReal {
 		imports = append(imports, crudLibImport)
+	}
+	if hasCreate {
+		// The Create shim records the scaffolded example metric
+		// (internal/metrics/metrics.go, born with the command tree).
+		imports = append(imports, data.Module+"/internal/metrics")
 	}
 	if scoped {
 		// The GetUser call the scoping scaffold opens with.

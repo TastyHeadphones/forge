@@ -402,7 +402,8 @@ func isKnownTier2(rel, noTmpl string) bool {
 		//                         expression it calls is re-derived next
 		//                         door in cmd-svc-mount-gen.go
 		"cmd-tree-serve.go", "cmd-tree-server.go",
-		"cmd-tree-version.go", "cmd-tree-db.go",
+		"cmd-tree-version.go", "cmd-tree-db.go", "cmd-tree-metrics.go",
+		"internal-metrics.go",
 		"cmd-tree-root.go", "cmd-svc-group.go",
 		"compose.go", "lifecycle.go":
 		return true

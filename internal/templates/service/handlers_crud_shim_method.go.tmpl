@@ -196,14 +196,26 @@ func (s *Service) {{.MethodName}}(
 		return e, nil
 	}
 {{- end}}
+{{- if eq .Operation "create"}}
+	resp, err := crud.HandleCreate(op)(ctx, req)
+	metrics.RecordCreated(ctx, "{{.EntityName}}", err)
+	return resp, err
+{{- else}}
 	return crud.Handle{{.Operation | title}}(op)(ctx, req)
+{{- end}}
 }
 {{- else}}
 func (s *Service) {{.MethodName}}(
 	ctx context.Context,
 	req *connect.Request[pb.{{.InputType}}],
 ) (*connect.Response[pb.{{.OutputType}}], error) {
+{{- if eq .Operation "create"}}
+	resp, err := crud.HandleCreate(s.crud{{.MethodName}}Op())(ctx, req)
+	metrics.RecordCreated(ctx, "{{.EntityName}}", err)
+	return resp, err
+{{- else}}
 	return crud.Handle{{.Operation | title}}(s.crud{{.MethodName}}Op())(ctx, req)
+{{- end}}
 }
 {{- end}}
 {{- end}}

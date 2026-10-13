@@ -652,6 +652,7 @@ func generateCmdServerData(data CmdServerTemplateData, targetDir string, cs *che
 		{"cmd-tree-serve.go.tmpl", "serve.go"},
 		{"cmd-tree-server.go.tmpl", "server.go"},
 		{"cmd-tree-version.go.tmpl", "version.go"},
+		{"cmd-tree-metrics.go.tmpl", "metrics.go"},
 	}
 	// db.go is birthed only when the project HAS a migration story:
 	// cmd/<bin>/cmd/root.go gates its newDBCmd(deps) call on the same
@@ -671,8 +672,26 @@ func generateCmdServerData(data CmdServerTemplateData, targetDir string, cs *che
 			return fmt.Errorf("write %s: %w", dest, werr)
 		}
 	}
+
+	// internal/metrics/metrics.go is where the project's own metrics are
+	// declared, and `metrics schema` (above) links it. Birthed with the tree
+	// that imports it so the two can never be present without each other.
+	content, rerr := templates.ProjectTemplates().Render(metricsPackageTemplate, data)
+	if rerr != nil {
+		return fmt.Errorf("render %s: %w", metricsPackageTemplate, rerr)
+	}
+	if _, werr := writeForgeScaffoldOnce(targetDir, metricsPackageFile, content); werr != nil {
+		return fmt.Errorf("write %s: %w", metricsPackageFile, werr)
+	}
 	return nil
 }
+
+// The project's declared-metrics package: scaffold-once and the user's from
+// birth. The CRUD Create shims record its example metric.
+const (
+	metricsPackageTemplate = "internal-metrics.go.tmpl"
+	metricsPackageFile     = "internal/metrics/metrics.go"
+)
 
 // ScaffoldCmdAuthIfMissing births cmd/<bin>/cmd/auth.go — the
 // `auth idp-provision` subcommand — for a project that declares a
