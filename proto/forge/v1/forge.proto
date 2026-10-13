@@ -365,6 +365,49 @@ message ConfigFieldOptions {
   // are direct contradictions and forge rejects the pair rather than
   // silently picking one.
   bool optional = 10;
+
+  // EnvVarAliases are further environment variables the field is read from,
+  // in order, when env_var is unset: the first one set wins, and a variable
+  // set to "" counts as unset, exactly as for env_var. A flag still beats
+  // all of them.
+  //
+  //   string environment = 1 [(forge.v1.config) = {
+  //     env_var: "RELIANT_ENV"
+  //     env_var_aliases: [{name: "NODE_ENV"}]
+  //   }];
+  //   int32 port = 2 [(forge.v1.config) = {
+  //     env_var: "DAEMON_LISTEN_PORT"
+  //     env_var_aliases: [{name: "TOOLS_DAEMON_PORT", deprecated: true}]
+  //   }];
+  //
+  // An alias is for a SETTER forge does not control: a convention another
+  // tool owns (NODE_ENV), or an older name a deployment elsewhere still
+  // exports. forge's own setters use env_var alone — the KCL env map and the
+  // secret store key name only the primary — so every manifest forge renders
+  // converges on one name. A flag's --help lists env_var and the permanent
+  // aliases; a deprecated alias is never advertised.
+  //
+  // Aliases need env_var, are read only from the environment, and must not
+  // repeat any env var or alias another field of the same process reads;
+  // `forge generate` refuses each of those. A frontend config field takes
+  // no aliases: its values come from the rendered config document, not
+  // from an environment.
+  repeated EnvVarAlias env_var_aliases = 11;
+}
+
+// EnvVarAlias is one fallback environment variable of a config field. See
+// ConfigFieldOptions.env_var_aliases.
+message EnvVarAlias {
+  // Name is the environment variable, e.g. "NODE_ENV".
+  string name = 1;
+
+  // Deprecated marks a name kept only so existing setters keep working
+  // while they move to env_var. A process that finds it set prints one
+  // line to stderr at load naming env_var, whether the alias supplied the
+  // value or was shadowed by an earlier name. A permanent alias (the
+  // default) is read silently: NODE_ENV is somebody else's convention, not
+  // a migration in flight, and a notice at every start would be noise.
+  bool deprecated = 2;
 }
 
 // BinaryConfigOptions binds a config message to the BINARY that loads it,

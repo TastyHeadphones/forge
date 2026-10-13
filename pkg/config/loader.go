@@ -21,6 +21,9 @@ package config
 //   - Empty-env handling: an env var set to "" is UNSET, for every field
 //     kind — the file or default value stands. An explicitly empty value is
 //     a flag's to set (`--pprof-addr=`). See lookupEnv.
+//   - Env names: a field reads its env_var, then each of its
+//     env_var_aliases in order; the first one set wins, and a deprecated
+//     alias that is set prints a notice to stderr. See envnames.go.
 //   - Cardinality: a repeated field is carried by env/flag as ONE
 //     comma-separated string, each element parsed with the field's element
 //     kind, with surrounding whitespace trimmed and blank elements dropped.
@@ -71,7 +74,8 @@ func fieldOptions(fd protoreflect.FieldDescriptor) *forgepb.ConfigFieldOptions {
 	// blank option as "not config-bound" so such a field is skipped, the
 	// same way the generator skips fields with no annotation. A field is
 	// considered config-bound if it names any binding source.
-	if cfg.GetEnvVar() == "" && cfg.GetFlag() == "" && cfg.GetDefaultValue() == "" && !cfg.GetRequired() {
+	if cfg.GetEnvVar() == "" && len(cfg.GetEnvVarAliases()) == 0 && cfg.GetFlag() == "" &&
+		cfg.GetDefaultValue() == "" && !cfg.GetRequired() {
 		return nil
 	}
 	return cfg
@@ -267,7 +271,7 @@ func registerFlagsForDesc(flags *pflag.FlagSet, desc protoreflect.MessageDescrip
 		}
 		name := opt.GetFlag()
 		def := opt.GetDefaultValue()
-		desc := opt.GetDescription()
+		desc := flagUsage(opt) // the description, then the env vars that also set it
 
 		if fd.IsMap() {
 			return fmt.Errorf(
@@ -457,16 +461,18 @@ func applyEnvAndFlags(cmd *cobra.Command, m protoreflect.Message) error {
 // take env (Secret mount) but NEVER a flag — no flag is ever registered for
 // them, and we defensively skip the flag branch even if one were.
 func overlayField(cmd *cobra.Command, m protoreflect.Message, fd protoreflect.FieldDescriptor, opt *forgepb.ConfigFieldOptions) error {
-	// Env layer.
-	if envVar := opt.GetEnvVar(); envVar != "" {
-		if v, set := lookupEnv(envVar); set {
-			val, err := parseValue(m, fd, v)
-			if err != nil {
-				return fmt.Errorf("invalid value %q for config field %s (from env %s): %w", v, fd.Name(), envVar, err)
-			}
-			m.Set(fd, val)
+	// Env layer: env_var, then its aliases in order — the first one set wins
+	// (envnames.go). A malformed value in the name that wins is an error; it
+	// never falls through to the next name.
+	name, v, set := lookupFieldEnv(opt)
+	if set {
+		val, err := parseValue(m, fd, v)
+		if err != nil {
+			return fmt.Errorf("invalid value %q for config field %s (from env %s): %w", v, fd.Name(), name, err)
 		}
+		m.Set(fd, val)
 	}
+	noticeDeprecatedAliases(noticeWriter(cmd), fd, opt, name)
 
 	// Flag layer (wins). Never for sensitive fields.
 	flagName := opt.GetFlag()
@@ -504,15 +510,11 @@ func checkRequired(m protoreflect.Message) error {
 			continue
 		}
 		if fieldIsEmpty(m, fd) {
-			envVar := opt.GetEnvVar()
-			var empty string
-			if envVar != "" && envSetButEmpty(envVar) {
-				empty = fmt.Sprintf(" — %s is set but empty, and an empty env var counts as unset", envVar)
-			}
+			env, empty := envSourcesPhrase(opt), emptyEnvNote(opt)
 			if flag := opt.GetFlag(); flag != "" && !opt.GetSensitive() {
-				return fmt.Errorf("required config field %s is not set (env: %s, flag: --%s)%s", fd.Name(), envVar, flag, empty)
+				return fmt.Errorf("required config field %s is not set (env: %s, flag: --%s)%s", fd.Name(), env, flag, empty)
 			}
-			return fmt.Errorf("required config field %s is not set (env: %s)%s", fd.Name(), envVar, empty)
+			return fmt.Errorf("required config field %s is not set (env: %s)%s", fd.Name(), env, empty)
 		}
 	}
 	return nil

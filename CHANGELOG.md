@@ -43,6 +43,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`alerting.RuleSpec.KeepFiringFor` (`keep_firing_for`)**: holds a firing alert open that long after its series stops returning, like Prometheus's rule field of the same name. The shape's `alerts[]` (#684) declares it, so the evaluator now honours it instead of silently ignoring it. The one-evaluation flap damping every rule already had is the floor.
+- **`(forge.v1.config).env_var_aliases`: a config field read from fallback env
+  var names.** A field reads `env_var`, then each alias in order, and the first
+  one set wins. This replaces hand-written chains such as
+  `RELIANT_CONTROL_PLANE_URL`, else `CONTROL_PLANE_API_URL`, else
+  `CONTROL_PLANE_BASE_URL`. Each alias is
+  `{name: "...", deprecated: bool}`. A permanent alias (`NODE_ENV`) is read
+  silently. A deprecated one prints a stderr line at load whenever it is set,
+  naming `env_var`, whether it supplied the value or was shadowed. Aliases sit
+  in the env layer (below the flag) and follow its rules: `""` is unset, and a
+  malformed value in the winning name is an error, never a fall-through.
+  forge's own setters keep to `env_var`: the KCL env map and the secret store
+  key name it alone. Flag help now lists the env vars that set a flag,
+  permanent aliases included (`--environment string   … [env: RELIANT_ENV,
+  NODE_ENV]`). A required-field error names every alias. `forge generate`
+  refuses an alias that repeats any env var or alias another field of the same
+  process reads (a command config counts its binary's root config), repeats
+  the field's own `env_var`, has no `env_var` beside it, is not a variable
+  name, or sits on a frontend config field. New proto message
+  `forge.v1.EnvVarAlias`; `ConfigField.EnvVarAliases` joins
+  `gen/forge_descriptor.json` (omitted when empty). The typed-config guardrail
+  is name-agnostic, so a raw `os.Getenv` of an alias is flagged like any other.
 - **`alerting.QueryOptions.Limits` and `chquery.Scan`**: the per-query limits without `readonly`, and the row reader behind `chquery.Run`, for a `Querier` that runs as an impersonated ClickHouse user (`EXECUTE AS`). Such a Querier cannot send `readonly` (a readonly session refuses the `EXECUTE AS` statement itself); the target user's profile contains the query instead. `Settings()` is now `Limits()` plus `readonly = 2`.
 
 - **Alert rules, declared per env: `forge.AlertRule`, `forge.AlertRoute`,

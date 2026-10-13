@@ -944,7 +944,34 @@ type ConfigFieldOptions struct {
 	// It is an ERROR to set both `required: true` and `optional: true`; they
 	// are direct contradictions and forge rejects the pair rather than
 	// silently picking one.
-	Optional      bool `protobuf:"varint,10,opt,name=optional,proto3" json:"optional,omitempty"`
+	Optional bool `protobuf:"varint,10,opt,name=optional,proto3" json:"optional,omitempty"`
+	// EnvVarAliases are further environment variables the field is read from,
+	// in order, when env_var is unset: the first one set wins, and a variable
+	// set to "" counts as unset, exactly as for env_var. A flag still beats
+	// all of them.
+	//
+	//   string environment = 1 [(forge.v1.config) = {
+	//     env_var: "RELIANT_ENV"
+	//     env_var_aliases: [{name: "NODE_ENV"}]
+	//   }];
+	//   int32 port = 2 [(forge.v1.config) = {
+	//     env_var: "DAEMON_LISTEN_PORT"
+	//     env_var_aliases: [{name: "TOOLS_DAEMON_PORT", deprecated: true}]
+	//   }];
+	//
+	// An alias is for a SETTER forge does not control: a convention another
+	// tool owns (NODE_ENV), or an older name a deployment elsewhere still
+	// exports. forge's own setters use env_var alone — the KCL env map and the
+	// secret store key name only the primary — so every manifest forge renders
+	// converges on one name. A flag's --help lists env_var and the permanent
+	// aliases; a deprecated alias is never advertised.
+	//
+	// Aliases need env_var, are read only from the environment, and must not
+	// repeat any env var or alias another field of the same process reads;
+	// `forge generate` refuses each of those. A frontend config field takes
+	// no aliases: its values come from the rendered config document, not
+	// from an environment.
+	EnvVarAliases []*EnvVarAlias `protobuf:"bytes,11,rep,name=env_var_aliases,json=envVarAliases,proto3" json:"env_var_aliases,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1049,6 +1076,74 @@ func (x *ConfigFieldOptions) GetOptional() bool {
 	return false
 }
 
+func (x *ConfigFieldOptions) GetEnvVarAliases() []*EnvVarAlias {
+	if x != nil {
+		return x.EnvVarAliases
+	}
+	return nil
+}
+
+// EnvVarAlias is one fallback environment variable of a config field. See
+// ConfigFieldOptions.env_var_aliases.
+type EnvVarAlias struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Name is the environment variable, e.g. "NODE_ENV".
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Deprecated marks a name kept only so existing setters keep working
+	// while they move to env_var. A process that finds it set prints one
+	// line to stderr at load naming env_var, whether the alias supplied the
+	// value or was shadowed by an earlier name. A permanent alias (the
+	// default) is read silently: NODE_ENV is somebody else's convention, not
+	// a migration in flight, and a notice at every start would be noise.
+	Deprecated    bool `protobuf:"varint,2,opt,name=deprecated,proto3" json:"deprecated,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EnvVarAlias) Reset() {
+	*x = EnvVarAlias{}
+	mi := &file_forge_v1_forge_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EnvVarAlias) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EnvVarAlias) ProtoMessage() {}
+
+func (x *EnvVarAlias) ProtoReflect() protoreflect.Message {
+	mi := &file_forge_v1_forge_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EnvVarAlias.ProtoReflect.Descriptor instead.
+func (*EnvVarAlias) Descriptor() ([]byte, []int) {
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *EnvVarAlias) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *EnvVarAlias) GetDeprecated() bool {
+	if x != nil {
+		return x.Deprecated
+	}
+	return false
+}
+
 // BinaryConfigOptions binds a config message to the BINARY that loads it,
 // giving each binary its own config surface instead of one project-global
 // AppConfig every process ships.
@@ -1120,7 +1215,7 @@ type BinaryConfigOptions struct {
 
 func (x *BinaryConfigOptions) Reset() {
 	*x = BinaryConfigOptions{}
-	mi := &file_forge_v1_forge_proto_msgTypes[8]
+	mi := &file_forge_v1_forge_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1132,7 +1227,7 @@ func (x *BinaryConfigOptions) String() string {
 func (*BinaryConfigOptions) ProtoMessage() {}
 
 func (x *BinaryConfigOptions) ProtoReflect() protoreflect.Message {
-	mi := &file_forge_v1_forge_proto_msgTypes[8]
+	mi := &file_forge_v1_forge_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1145,7 +1240,7 @@ func (x *BinaryConfigOptions) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BinaryConfigOptions.ProtoReflect.Descriptor instead.
 func (*BinaryConfigOptions) Descriptor() ([]byte, []int) {
-	return file_forge_v1_forge_proto_rawDescGZIP(), []int{8}
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *BinaryConfigOptions) GetBinary() string {
@@ -1209,7 +1304,7 @@ type FrontendConfigOptions struct {
 
 func (x *FrontendConfigOptions) Reset() {
 	*x = FrontendConfigOptions{}
-	mi := &file_forge_v1_forge_proto_msgTypes[9]
+	mi := &file_forge_v1_forge_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1221,7 +1316,7 @@ func (x *FrontendConfigOptions) String() string {
 func (*FrontendConfigOptions) ProtoMessage() {}
 
 func (x *FrontendConfigOptions) ProtoReflect() protoreflect.Message {
-	mi := &file_forge_v1_forge_proto_msgTypes[9]
+	mi := &file_forge_v1_forge_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1234,7 +1329,7 @@ func (x *FrontendConfigOptions) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FrontendConfigOptions.ProtoReflect.Descriptor instead.
 func (*FrontendConfigOptions) Descriptor() ([]byte, []int) {
-	return file_forge_v1_forge_proto_rawDescGZIP(), []int{9}
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *FrontendConfigOptions) GetFrontend() string {
@@ -1409,7 +1504,7 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\atimeout\x18\x04 \x01(\v2\x19.google.protobuf.DurationR\atimeout\x12'\n" +
 	"\x0fidempotency_key\x18\x05 \x01(\bR\x0eidempotencyKey\x12\x16\n" +
 	"\x06errors\x18\x06 \x03(\tR\x06errorsB\x10\n" +
-	"\x0e_auth_required\"\xd0\x02\n" +
+	"\x0e_auth_required\"\x8f\x03\n" +
 	"\x12ConfigFieldOptions\x12\x17\n" +
 	"\aenv_var\x18\x01 \x01(\tR\x06envVar\x12\x12\n" +
 	"\x04flag\x18\x02 \x01(\tR\x04flag\x12#\n" +
@@ -1421,7 +1516,13 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\x04role\x18\b \x01(\x0e2\x19.forge.v1.ConfigFieldRoleR\x04role\x12%\n" +
 	"\x0eallowed_values\x18\t \x03(\tR\rallowedValues\x12\x1a\n" +
 	"\boptional\x18\n" +
-	" \x01(\bR\boptional\"G\n" +
+	" \x01(\bR\boptional\x12=\n" +
+	"\x0fenv_var_aliases\x18\v \x03(\v2\x15.forge.v1.EnvVarAliasR\renvVarAliases\"A\n" +
+	"\vEnvVarAlias\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1e\n" +
+	"\n" +
+	"deprecated\x18\x02 \x01(\bR\n" +
+	"deprecated\"G\n" +
 	"\x13BinaryConfigOptions\x12\x16\n" +
 	"\x06binary\x18\x01 \x01(\tR\x06binary\x12\x18\n" +
 	"\acommand\x18\x02 \x03(\tR\acommand\"3\n" +
@@ -1465,7 +1566,7 @@ func file_forge_v1_forge_proto_rawDescGZIP() []byte {
 }
 
 var file_forge_v1_forge_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_forge_v1_forge_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_forge_v1_forge_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_forge_v1_forge_proto_goTypes = []any{
 	(StoreAs)(0),                        // 0: forge.v1.StoreAs
 	(ServiceVisibility)(0),              // 1: forge.v1.ServiceVisibility
@@ -1478,13 +1579,14 @@ var file_forge_v1_forge_proto_goTypes = []any{
 	(*AuthConfig)(nil),                  // 8: forge.v1.AuthConfig
 	(*MethodOptions)(nil),               // 9: forge.v1.MethodOptions
 	(*ConfigFieldOptions)(nil),          // 10: forge.v1.ConfigFieldOptions
-	(*BinaryConfigOptions)(nil),         // 11: forge.v1.BinaryConfigOptions
-	(*FrontendConfigOptions)(nil),       // 12: forge.v1.FrontendConfigOptions
-	(*durationpb.Duration)(nil),         // 13: google.protobuf.Duration
-	(*descriptorpb.MessageOptions)(nil), // 14: google.protobuf.MessageOptions
-	(*descriptorpb.FieldOptions)(nil),   // 15: google.protobuf.FieldOptions
-	(*descriptorpb.ServiceOptions)(nil), // 16: google.protobuf.ServiceOptions
-	(*descriptorpb.MethodOptions)(nil),  // 17: google.protobuf.MethodOptions
+	(*EnvVarAlias)(nil),                 // 11: forge.v1.EnvVarAlias
+	(*BinaryConfigOptions)(nil),         // 12: forge.v1.BinaryConfigOptions
+	(*FrontendConfigOptions)(nil),       // 13: forge.v1.FrontendConfigOptions
+	(*durationpb.Duration)(nil),         // 14: google.protobuf.Duration
+	(*descriptorpb.MessageOptions)(nil), // 15: google.protobuf.MessageOptions
+	(*descriptorpb.FieldOptions)(nil),   // 16: google.protobuf.FieldOptions
+	(*descriptorpb.ServiceOptions)(nil), // 17: google.protobuf.ServiceOptions
+	(*descriptorpb.MethodOptions)(nil),  // 18: google.protobuf.MethodOptions
 }
 var file_forge_v1_forge_proto_depIdxs = []int32{
 	4,  // 0: forge.v1.EntityOptions.indexes:type_name -> forge.v1.IndexDef
@@ -1492,27 +1594,28 @@ var file_forge_v1_forge_proto_depIdxs = []int32{
 	6,  // 2: forge.v1.FieldOptions.validate:type_name -> forge.v1.ValidationRules
 	1,  // 3: forge.v1.ServiceOptions.visibility:type_name -> forge.v1.ServiceVisibility
 	8,  // 4: forge.v1.ServiceOptions.auth:type_name -> forge.v1.AuthConfig
-	13, // 5: forge.v1.MethodOptions.timeout:type_name -> google.protobuf.Duration
+	14, // 5: forge.v1.MethodOptions.timeout:type_name -> google.protobuf.Duration
 	2,  // 6: forge.v1.ConfigFieldOptions.role:type_name -> forge.v1.ConfigFieldRole
-	14, // 7: forge.v1.entity:extendee -> google.protobuf.MessageOptions
-	14, // 8: forge.v1.binary_config:extendee -> google.protobuf.MessageOptions
-	14, // 9: forge.v1.frontend_config:extendee -> google.protobuf.MessageOptions
-	15, // 10: forge.v1.field:extendee -> google.protobuf.FieldOptions
-	15, // 11: forge.v1.config:extendee -> google.protobuf.FieldOptions
-	16, // 12: forge.v1.service:extendee -> google.protobuf.ServiceOptions
-	17, // 13: forge.v1.method:extendee -> google.protobuf.MethodOptions
-	3,  // 14: forge.v1.entity:type_name -> forge.v1.EntityOptions
-	11, // 15: forge.v1.binary_config:type_name -> forge.v1.BinaryConfigOptions
-	12, // 16: forge.v1.frontend_config:type_name -> forge.v1.FrontendConfigOptions
-	5,  // 17: forge.v1.field:type_name -> forge.v1.FieldOptions
-	10, // 18: forge.v1.config:type_name -> forge.v1.ConfigFieldOptions
-	7,  // 19: forge.v1.service:type_name -> forge.v1.ServiceOptions
-	9,  // 20: forge.v1.method:type_name -> forge.v1.MethodOptions
-	21, // [21:21] is the sub-list for method output_type
-	21, // [21:21] is the sub-list for method input_type
-	14, // [14:21] is the sub-list for extension type_name
-	7,  // [7:14] is the sub-list for extension extendee
-	0,  // [0:7] is the sub-list for field type_name
+	11, // 7: forge.v1.ConfigFieldOptions.env_var_aliases:type_name -> forge.v1.EnvVarAlias
+	15, // 8: forge.v1.entity:extendee -> google.protobuf.MessageOptions
+	15, // 9: forge.v1.binary_config:extendee -> google.protobuf.MessageOptions
+	15, // 10: forge.v1.frontend_config:extendee -> google.protobuf.MessageOptions
+	16, // 11: forge.v1.field:extendee -> google.protobuf.FieldOptions
+	16, // 12: forge.v1.config:extendee -> google.protobuf.FieldOptions
+	17, // 13: forge.v1.service:extendee -> google.protobuf.ServiceOptions
+	18, // 14: forge.v1.method:extendee -> google.protobuf.MethodOptions
+	3,  // 15: forge.v1.entity:type_name -> forge.v1.EntityOptions
+	12, // 16: forge.v1.binary_config:type_name -> forge.v1.BinaryConfigOptions
+	13, // 17: forge.v1.frontend_config:type_name -> forge.v1.FrontendConfigOptions
+	5,  // 18: forge.v1.field:type_name -> forge.v1.FieldOptions
+	10, // 19: forge.v1.config:type_name -> forge.v1.ConfigFieldOptions
+	7,  // 20: forge.v1.service:type_name -> forge.v1.ServiceOptions
+	9,  // 21: forge.v1.method:type_name -> forge.v1.MethodOptions
+	22, // [22:22] is the sub-list for method output_type
+	22, // [22:22] is the sub-list for method input_type
+	15, // [15:22] is the sub-list for extension type_name
+	8,  // [8:15] is the sub-list for extension extendee
+	0,  // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_forge_v1_forge_proto_init() }
@@ -1527,7 +1630,7 @@ func file_forge_v1_forge_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_forge_v1_forge_proto_rawDesc), len(file_forge_v1_forge_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   10,
+			NumMessages:   11,
 			NumExtensions: 7,
 			NumServices:   0,
 		},
