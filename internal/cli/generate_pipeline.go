@@ -1664,53 +1664,9 @@ func stepParseServicesAndModule(ctx *pipelineContext) error {
 	// per-service emitters already iterate ctx.Services, so an empty slice
 	// is a self-correcting no-op without disabling the steps wholesale.
 	if ctx.HasServices {
-		declared, err = codegen.ParseDeclaredServices(ctx.ProjectDir)
+		services, declared, modulePath, err = parseDeclaredServicesAndModule(ctx)
 		if err != nil {
-			return fmt.Errorf("failed to parse service protos: %w", err)
-		}
-		services = codegen.ManagedServices(declared)
-		announceUnmanagedServices(codegen.UnmanagedServices(declared))
-		// Catch a proto service name that generates a Go identifier
-		// incompatible with the one forge's own bootstrap wiring derives
-		// from the proto/services/<dir>/ directory name — BEFORE any
-		// downstream step (handlers, mounts, bootstrap testing) emits code
-		// that assumes they agree. buf has already emitted Connect stubs
-		// named from the proto by this point (stepBufGenerateGo runs
-		// earlier), so those files are correct on their own terms; the
-		// mismatch only becomes a compile error once forge's directory-
-		// derived Mount<X>/NewTest<X> wiring tries to reference them under
-		// a different name. Checking here, right after the descriptor is
-		// parsed and before any consumer touches ctx.Services, means the
-		// proto can be edited at ANY time (not just at scaffold time) and
-		// still gets caught before code that won't compile is written.
-		for _, svc := range services {
-			dir := codegen.ServiceNameFromProtoFile(svc.ProtoFile)
-			if dir == "" {
-				continue
-			}
-			if verr := cmdutil.ValidateServiceDirConsistency(svc.Name, dir); verr != nil {
-				return fmt.Errorf("%s: %w", svc.ProtoFile, verr)
-			}
-		}
-		// `// forge:custom` decides whether an rpc gets a stub or CRUD
-		// wiring, so a marker the descriptor lost, or a custom rpc whose
-		// shim still calls the CRUD op forge stops generating, is refused
-		// here too — before any emitter classifies an rpc.
-		if err := checkCustomMarkerPlacement(services, ctx.ProjectDir); err != nil {
 			return err
-		}
-		if err := checkCustomRPCsDelegate(services, ctx.ProjectDir); err != nil {
-			return err
-		}
-		// ParseServicesFromProtos already reads the module path and sets it on each ServiceDef.
-		// Extract it from the first service to avoid a redundant GetModulePath() call.
-		if len(services) > 0 {
-			modulePath = services[0].ModulePath
-		} else {
-			modulePath, err = codegen.GetModulePath(ctx.ProjectDir)
-			if err != nil {
-				return fmt.Errorf("failed to read module path: %w", err)
-			}
 		}
 	}
 
@@ -1726,6 +1682,61 @@ func stepParseServicesAndModule(ctx *pipelineContext) error {
 	ctx.DeclaredServices = declared
 	ctx.ModulePath = modulePath
 	return nil
+}
+
+// parseDeclaredServicesAndModule is the HasServices half of
+// stepParseServicesAndModule: read the declared services, refuse the proto
+// shapes no emitter can handle, and resolve the module path.
+func parseDeclaredServicesAndModule(ctx *pipelineContext) (services, declared []codegen.ServiceDef, modulePath string, err error) {
+	declared, err = codegen.ParseDeclaredServices(ctx.ProjectDir)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("failed to parse service protos: %w", err)
+	}
+	services = codegen.ManagedServices(declared)
+	announceUnmanagedServices(codegen.UnmanagedServices(declared))
+	// Catch a proto service name that generates a Go identifier
+	// incompatible with the one forge's own bootstrap wiring derives
+	// from the proto/services/<dir>/ directory name — BEFORE any
+	// downstream step (handlers, mounts, bootstrap testing) emits code
+	// that assumes they agree. buf has already emitted Connect stubs
+	// named from the proto by this point (stepBufGenerateGo runs
+	// earlier), so those files are correct on their own terms; the
+	// mismatch only becomes a compile error once forge's directory-
+	// derived Mount<X>/NewTest<X> wiring tries to reference them under
+	// a different name. Checking here, right after the descriptor is
+	// parsed and before any consumer touches ctx.Services, means the
+	// proto can be edited at ANY time (not just at scaffold time) and
+	// still gets caught before code that won't compile is written.
+	for _, svc := range services {
+		dir := codegen.ServiceNameFromProtoFile(svc.ProtoFile)
+		if dir == "" {
+			continue
+		}
+		if verr := cmdutil.ValidateServiceDirConsistency(svc.Name, dir); verr != nil {
+			return nil, nil, "", fmt.Errorf("%s: %w", svc.ProtoFile, verr)
+		}
+	}
+	// `// forge:custom` decides whether an rpc gets a stub or CRUD
+	// wiring, so a marker the descriptor lost, or a custom rpc whose
+	// shim still calls the CRUD op forge stops generating, is refused
+	// here too — before any emitter classifies an rpc.
+	if err := checkCustomMarkerPlacement(services, ctx.ProjectDir); err != nil {
+		return nil, nil, "", err
+	}
+	if err := checkCustomRPCsDelegate(services, ctx.ProjectDir); err != nil {
+		return nil, nil, "", err
+	}
+	// ParseServicesFromProtos already reads the module path and sets it on each ServiceDef.
+	// Extract it from the first service to avoid a redundant GetModulePath() call.
+	if len(services) > 0 {
+		modulePath = services[0].ModulePath
+	} else {
+		modulePath, err = codegen.GetModulePath(ctx.ProjectDir)
+		if err != nil {
+			return nil, nil, "", fmt.Errorf("failed to read module path: %w", err)
+		}
+	}
+	return services, declared, modulePath, nil
 }
 
 // announceUnmanagedServices prints one line naming the services generate is
