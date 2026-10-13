@@ -24,8 +24,9 @@ package lint
 //     forge:lint-disable … forge:lint-enable and //nolint: directives
 //     (suppress.Declarations), in Go, proto, SQL, TypeScript/JavaScript and
 //     YAML;
-//   - the rule-specific pragmas: -- forge:allow-destructive and
-//     -- forge:allow-unsafe-not-null in SQL (migrationlint.Allowances), and
+//   - the rule-specific pragmas: -- forge:allow-destructive,
+//     -- forge:allow-unsafe-not-null and -- forge:allow-in-transaction in SQL
+//     (migrationlint.Allowances), and
 //     // forge:optional-checked in Go (the optional-deps guard).
 //
 // Hand-written files only: a generated file's directives are forge's, and the

@@ -25,6 +25,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its old name: refused without `--force`, replaced with it. On re-pin,
   re-import such files with `--force` on a database you can rebuild (or split
   them by hand, one statement per file).
+- **`forge lint --migration-safety` refuses a migration that cannot run as one
+  transaction.** forge's migrator sends a migration file to postgres as one
+  query, and several statements in one query run as one implicit transaction.
+  A file with two `CREATE INDEX CONCURRENTLY` statements, or one beside any
+  other statement, passed the lint and then failed `migrate up` with SQLSTATE
+  25001, leaving the schema dirty (reliant's goose cutover hit seven). The new
+  `non-transactional-statement` rule reports each such statement at its
+  file:line, with the fix: a migration file of its own, holding that one
+  statement (`forge db migration new <name>`). It covers every statement
+  postgres refuses inside a transaction block that a migration could hold:
+  `CREATE`/`DROP INDEX CONCURRENTLY`, `REINDEX … CONCURRENTLY` and `REINDEX
+  SCHEMA|DATABASE|SYSTEM`, `DETACH PARTITION … CONCURRENTLY`, `VACUUM`, a
+  table-less `CLUSTER`, `CREATE`/`DROP DATABASE`/`TABLESPACE`, `ALTER DATABASE
+  … SET TABLESPACE`, `ALTER SYSTEM`, `DISCARD ALL`, and the subscription
+  statements that touch a replication slot. `ALTER TYPE … ADD VALUE` is not
+  among them: postgres has allowed it in a transaction since 12, and nothing
+  forge provisions or tests is older than 16. Using the added value in the
+  same file does fail (SQLSTATE 55P04), so `enum-value-used-before-commit`
+  reports that use, unless the same file created the type. Both rules are
+  errors. They read statements the way postgres does (strings, quoted
+  identifiers, dollar quotes, nested comments, BEGIN ATOMIC bodies), so a `;`
+  or a `CONCURRENTLY` in a string or a comment is not mistaken for a
+  statement, and the tests check every verdict against a real postgres. They
+  cannot see the database, so a file postgres does run as one transaction (a
+  subscription with no replication slot, a string that only shares an added
+  enum value's spelling) says so with `-- forge:allow-in-transaction: <why>`,
+  which `forge lint --show-suppressed` lists. On re-pin, a migration the rules
+  refuse either never applied anywhere (split it) or is one they misread (mark
+  it).
 - **The `observability` skill loads whole again.** It had grown to 24,390
   bytes, over the 24,000-byte load cap, so a loader truncated its tail (the
   sub-skill pointers and the rules). The DB-persisted audit-trail recipe on

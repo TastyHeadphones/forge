@@ -367,11 +367,13 @@ func assertFinding(t *testing.T, result Result, rule string, severity Severity) 
 // the text after it.
 func TestAllowancesListsEachPragma(t *testing.T) {
 	src := "\n\n-- forge:allow-destructive: dropping the legacy table\nDROP TABLE legacy;\n" +
-		"-- forge-safety: allow-unsafe-not-null\nALTER TABLE t ALTER COLUMN c SET NOT NULL;\n"
+		"-- forge-safety: allow-unsafe-not-null\nALTER TABLE t ALTER COLUMN c SET NOT NULL;\n" +
+		"-- forge:allow-in-transaction: the subscription has no slot\n"
 	got := Allowances(src)
 	want := []Allowance{
 		{Pragma: "forge:allow-destructive", Rules: []string{"destructive-change"}, Line: 3, Reason: "dropping the legacy table"},
 		{Pragma: "forge:allow-unsafe-not-null", Rules: []string{"unsafe-add-not-null-column", "set-not-null-without-backfill"}, Line: 5},
+		{Pragma: "forge:allow-in-transaction", Rules: []string{"non-transactional-statement", "enum-value-used-before-commit"}, Line: 7, Reason: "the subscription has no slot"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Allowances:\n got %+v\nwant %+v", got, want)
@@ -380,7 +382,8 @@ func TestAllowancesListsEachPragma(t *testing.T) {
 	// The rules each allowance names are the rules its pragma actually
 	// silences: they fire without it and not with it.
 	cfg := RuleConfig{Enabled: true, UnsafeAddColumn: "error", DestructiveChange: "error", VolatileDefault: "error"}
-	bare := "DROP TABLE legacy;\nALTER TABLE t ADD COLUMN a INT NOT NULL;\nALTER TABLE t ALTER COLUMN c SET NOT NULL;\n"
+	bare := "DROP TABLE legacy;\nALTER TABLE t ADD COLUMN a INT NOT NULL;\nALTER TABLE t ALTER COLUMN c SET NOT NULL;\n" +
+		"CREATE INDEX CONCURRENTLY i ON t (c);\nALTER TYPE s ADD VALUE 'x';\nINSERT INTO t (s) VALUES ('x');\n"
 	fired := map[string]bool{}
 	for _, f := range lintMigrationFile("m.up.sql", bare, cfg) {
 		fired[f.Rule] = true

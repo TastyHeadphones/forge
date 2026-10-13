@@ -91,6 +91,8 @@ func TestVersionRemediationsSuggestTheRealCommand(t *testing.T) {
 	for _, rule := range []string{
 		migrationlint.RuleNonTimestampVersion,
 		migrationlint.RuleDuplicateVersion,
+		migrationlint.RuleNonTransactionalStatement,
+		migrationlint.RuleEnumValueUsedBeforeCommit,
 	} {
 		remediation := migrationlint.RemediationFor(rule)
 		suggested := extractBacktickedForgeCommand(t, remediation)

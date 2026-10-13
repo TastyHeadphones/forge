@@ -1,6 +1,6 @@
 ---
 name: db/orm-and-safety
-description: The two per-project database opt-outs that live next to the code they affect, not in forge.yaml — `//forge:no-orm` in internal/db to skip the generated ORM, and `-- forge:allow-destructive` in a migration to allow one destructive change — plus how the database itself is derived.
+description: The two per-project database opt-outs that live next to the code they affect, not in forge.yaml — `//forge:no-orm` in internal/db to skip the generated ORM, and `-- forge:allow-destructive` in a migration to allow one destructive change — plus how the database itself is derived, and the lint rules for a migration file that cannot run as one transaction (CONCURRENTLY, enum values).
 ---
 
 # ORM opt-out and migration-safety directives
@@ -55,3 +55,29 @@ ALTER TABLE daemons DROP COLUMN last_heartbeat;
 to an already-merged file does not disturb forge. Whether your migration RUNNER records a hash
 of the file is the runner's business — check it before touching a merged file, and never change
 the statements themselves.
+
+## A migration file runs as one transaction
+
+The migrator (and AutoMigrate, and testkit) sends a migration file to postgres as ONE query.
+A query holding several statements runs as one implicit transaction, so two kinds of file
+pass review, fail at deploy, and leave the schema dirty. `forge lint --migration-safety`
+refuses both, at the statement's line.
+
+- **`non-transactional-statement`** — a statement postgres refuses inside a transaction block
+  (SQLSTATE 25001) shares its file with another statement. `CREATE`/`DROP INDEX CONCURRENTLY`,
+  `REINDEX … CONCURRENTLY` (and `REINDEX SCHEMA|DATABASE|SYSTEM`), `ALTER TABLE … DETACH
+  PARTITION … CONCURRENTLY`, `VACUUM`, a table-less `CLUSTER`, and the database, tablespace,
+  `ALTER SYSTEM` and subscription statements. Give each one a file of its own
+  (`forge db migration new <name>`): a lone statement runs outside any transaction block.
+- **`enum-value-used-before-commit`** — a file uses an enum value it also adds
+  (`ALTER TYPE … ADD VALUE 'x'`, then `'x'` in an UPDATE, INSERT or DEFAULT). A value added in
+  a transaction cannot be used until it commits (SQLSTATE 55P04). Move the `ADD VALUE` to an
+  earlier migration of its own. A value added to a type the same file creates is fine.
+
+Both read statements, not the database. When postgres does run the file as one transaction
+(a subscription created with `slot_name = NONE`; a string that only shares an added enum
+value's spelling), say so in the file with `-- forge:allow-in-transaction: <why>`.
+`forge lint --show-suppressed` lists it.
+
+`ALTER TYPE … ADD VALUE` on its own is not refused: postgres has allowed it inside a
+transaction since 12, and every postgres forge provisions or tests against is 16 or newer.
