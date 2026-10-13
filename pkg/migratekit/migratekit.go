@@ -352,11 +352,14 @@ type Result struct {
 // binary's compatibility declarations, which is what lets an OLDER binary
 // (at boot via AutoMigrate, or here) reach that verdict. See ahead.go.
 //
-// First of all, a database another tool migrated is ADOPTED when the embedded
-// baseline declares that tool's history (`-- forge:adopts`): the baseline is
+// First of all, a database another tool migrated — or a forge history that
+// `forge db squash` replaced — is ADOPTED when the embedded baseline declares
+// that history (`-- forge:adopts <tool> <versions>`): the baseline is
 // recorded as applied without running, and everything after it applies as
 // usual. A database whose history is not the declared one is an
-// *AdoptionError and nothing runs. See adopt.go.
+// *AdoptionError and nothing runs. See adopt.go. A database a forge history
+// this binary does not carry built, with no declaration to adopt it by, is a
+// *ForeignHistoryError (adopt_forge.go).
 //
 // The whole run holds migratekit's run lock, shared with AutoMigrate, so
 // replicas racing a release through either entry point take turns, on the
@@ -381,6 +384,9 @@ func (mg *Migrator) up(ctx context.Context) (res Result, err error) {
 		return res, err
 	}
 	if res.Before, res.Adopted, err = adopt(ctx, mg.conn, mg.m, mg.source, res.Before); err != nil {
+		return res, err
+	}
+	if err := refuseForeignHistory(ctx, mg.conn, mg.source, res.Before); err != nil {
 		return res, err
 	}
 	// Settled: a schema left dirty is checked as of the last version that

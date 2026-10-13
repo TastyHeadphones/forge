@@ -81,6 +81,64 @@ func TestDBSquash_BaselineAndTheNextMigrationApplyInOneMigratekitRun(t *testing.
 	assertSquashedReleaseApplies(t, os.DirFS(release))
 }
 
+// The baseline squash writes is adopted by the database its history built:
+// the real squash, then `migrate up` of the release over a database the
+// squashed migrations migrated. Its SQL must not run — CREATE TYPE and CREATE
+// TABLE would fail there — and the migration after it must.
+func TestDBSquash_TheDatabaseItsHistoryBuiltAdoptsTheBaseline(t *testing.T) {
+	if testing.Short() {
+		t.Skip("boots a postgres container for squash and a pgtest database")
+	}
+	if err := exec.Command("docker", "info").Run(); err != nil {
+		t.Skipf("no docker daemon: %v", err)
+	}
+	history := t.TempDir()
+	for name, body := range squashHistory {
+		if err := os.WriteFile(filepath.Join(history, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dsn := scratchDatabase(t)
+	var out bytes.Buffer
+	if err := runMigrateUp(&out, dsn, history); err != nil {
+		t.Fatalf("build the database from the history: %v\n%s", err, out.String())
+	}
+
+	release := t.TempDir()
+	if err := runDBSquash(context.Background(), squashOptions{
+		FromDir:  history,
+		Baseline: "20260102000000_baseline",
+		OutDir:   release,
+		Image:    "postgres:16-alpine",
+		DBName:   "forge_squash",
+		DBUser:   "postgres",
+		DBPass:   "forge_squash",
+	}); err != nil {
+		t.Fatalf("squash: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(release, "20260103000000_after.up.sql"), []byte(afterSquash), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	if err := runMigrateUp(&out, dsn, release); err != nil {
+		t.Fatalf("migrate up of the squashed release over the database its history built: %v\n%s", err, out.String())
+	}
+	for _, want := range []string{
+		"ADOPTED a database the forge migrations 20260102000000_baseline.up.sql squashed had built",
+		"2 forge versions verified",
+		"migrations applied: 20260102000000 -> 20260103000000",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("migrate up output lacks %q:\n%s", want, out.String())
+		}
+	}
+	db := openScratch(t, dsn)
+	if n := countRows(t, db, `SELECT count(*) FROM accounts`); n != 1 {
+		t.Errorf("accounts holds %d rows, want the history's one: the baseline's INSERT ran on an adopted database", n)
+	}
+}
+
 // Two squashes of one history write the same bytes. The header used to carry
 // the wall clock and the absolute --from-dir, so a re-cut never reproduced the
 // file and a reviewer could not tell "re-cut" from "changed" (reliant stripped

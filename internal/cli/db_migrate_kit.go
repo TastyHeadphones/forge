@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strconv"
 
 	"github.com/reliant-labs/forge/pkg/migratekit"
@@ -99,8 +100,7 @@ func runMigrateUp(w io.Writer, dsn, migDir string) error {
 // reportMigrateUp prints what an Up did, in the scaffolded binary's words.
 func reportMigrateUp(w io.Writer, res migratekit.Result) {
 	if a := res.Adopted; a != nil {
-		_, _ = fmt.Fprintf(w, "ADOPTED a database %s migrated: %s recorded as applied without running its SQL "+
-			"(%d %s versions verified; %s's own table left in place)\n", a.Tool, a.Name, a.Versions, a.Tool, a.Tool)
+		_, _ = fmt.Fprintln(w, a.String())
 	}
 	if a := res.Ahead; a != nil {
 		_, _ = fmt.Fprintf(w, "SCHEMA AHEAD OF THESE MIGRATIONS: database is at version %d, the directory holds up to %d; "+
@@ -142,19 +142,38 @@ func runMigrateStatus(w io.Writer, dsn, migDir string) error {
 			_, _ = fmt.Fprintf(w, "latest:  none (%s holds no migrations)\n", migDir)
 			return nil
 		}
+		latest := ms[len(ms)-1].Version
+		if state.Applied && !state.Dirty && squashedBy(ms[0], state.Version) {
+			// A database the squashed history built: `migrate up` adopts it,
+			// then applies everything after the baseline.
+			_, _ = fmt.Fprintf(w, "latest:  %d (%s)\npending: %d after adopting %s\n", latest, migDir, len(ms)-1, ms[0].Name)
+			_, _ = fmt.Fprintf(w, "the schema is at a version %s squashed: `forge db migrate up` adopts the database if it applied every version that baseline lists, running none of its SQL\n", ms[0].Name)
+			return nil
+		}
 		pending := 0
+		carried := false
 		for _, mig := range ms {
 			if !state.Applied || mig.Version > state.Version {
 				pending++
 			}
+			carried = carried || mig.Version == state.Version
 		}
-		latest := ms[len(ms)-1].Version
 		_, _ = fmt.Fprintf(w, "latest:  %d (%s)\npending: %d\n", latest, migDir, pending)
-		if state.Applied && state.Version > latest {
+		switch {
+		case !state.Applied || carried:
+		case state.Version > latest:
 			_, _ = fmt.Fprintf(w, "the schema is AHEAD of %s: `forge db migrate up` reports whether that is safe\n", migDir)
+		default:
+			_, _ = fmt.Fprintf(w, "the schema is at version %d, which no migration in %s carries: `forge db migrate up` reports why, and applies nothing\n", state.Version, migDir)
 		}
 		return nil
 	})
+}
+
+// squashedBy reports whether version is one the baseline m declares it
+// squashed (`-- forge:adopts forge ...`).
+func squashedBy(m compat.Migration, version uint) bool {
+	return m.Adopts != nil && m.Adopts.Tool == compat.ToolForge && slices.Contains(m.Adopts.Versions, int64(version))
 }
 
 // runMigrateVersion prints the schema's version alone — `N`, or `N (dirty)` —

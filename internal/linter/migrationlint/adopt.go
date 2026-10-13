@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/reliant-labs/forge/internal/migrationver"
 	"github.com/reliant-labs/forge/pkg/migratekit/compat"
@@ -22,13 +23,15 @@ const RuleInvalidAdoption = "invalid-adopts-directive"
 
 // InvalidAdoptionRemediation is the fix text for an invalid-adopts-directive
 // finding.
-const InvalidAdoptionRemediation = `declare the replaced history on the FIRST migration only — the baseline that squashed it — as ` + "`" + compat.AdoptsDirective + ` goose <version> <version> ...` + "`" + ` lines listing every version that tool recorded (repeat the line to wrap a long list). See the forge skill db/deploy-migrations, "Adopting a database another tool migrated"`
+const InvalidAdoptionRemediation = `declare the replaced history on the FIRST migration only — the baseline that squashed it — as ` + "`" + compat.AdoptsDirective + ` <tool> <version> <version> ...` + "`" + ` lines listing every version that history recorded (repeat the line to wrap a long list): tool goose for a goose history, forge for one ` + "`forge db squash`" + ` collapsed, whose listed versions are then files the directory no longer holds. See the forge skill db/deploy-migrations, "Adopting a database another tool migrated" and "Squashing a forge history"`
 
 // adoptingFile is one migration whose body declares an adoption.
 type adoptingFile struct {
-	file    string
-	version uint64
-	line    int
+	file     string
+	version  uint64
+	line     int
+	tool     string
+	versions []int64
 }
 
 // lintAdoption checks one migration's adoption declaration, and returns it
@@ -51,7 +54,7 @@ func lintAdoption(file, content string) (*adoptingFile, []Finding) {
 	if !ok {
 		return nil, nil
 	}
-	return &adoptingFile{file: file, version: v, line: adoption.Line}, nil
+	return &adoptingFile{file: file, version: v, line: adoption.Line, tool: adoption.Tool, versions: adoption.Versions}, nil
 }
 
 // lintAdoptionPlacement reports every adoption declared on a migration that is
@@ -72,9 +75,31 @@ func lintAdoptionPlacement(files []string, adopting []adoptingFile) []Finding {
 			first, firstFile = v, f
 		}
 	}
+	present := map[uint64]bool{}
+	for _, f := range files {
+		if v, ok := migrationver.ParseVersion(filepath.Base(f)); ok {
+			present[v] = true
+		}
+	}
 	var findings []Finding
 	for _, a := range adopting {
 		if a.version == first {
+			// A squashed forge history lists versions this directory no
+			// longer holds; the migrator refuses a listed version it still
+			// embeds (the baseline's own, or a file left beside it).
+			if a.tool == compat.ToolForge {
+				var carried []string
+				for _, v := range a.versions {
+					if v > 0 && present[uint64(v)] {
+						carried = append(carried, fmt.Sprint(v))
+					}
+				}
+				if len(carried) > 0 {
+					findings = append(findings, Finding{File: a.file, Line: a.line, Rule: RuleInvalidAdoption, Severity: SeverityError,
+						Message: fmt.Sprintf("this baseline declares it replaces forge version(s) %s, which this directory still holds — a squash replaces the migrations it lists, so the migrator refuses every database while a listed version is the baseline's own or a file beside it: number the baseline outside the squashed history and move the squashed files out",
+							strings.Join(carried, ", "))})
+				}
+			}
 			continue
 		}
 		findings = append(findings, Finding{File: a.file, Line: a.line, Rule: RuleInvalidAdoption, Severity: SeverityError,

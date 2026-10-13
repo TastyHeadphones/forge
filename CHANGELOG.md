@@ -102,13 +102,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `forge db migrate force <id>` on every existing database: force records a
   version as applied without checking anything, so it would have marked the
   baseline applied on a database whose schema it never verified, skipping the
-  check adoption exists to make. The steps now say what is true. forge adopts
-  only a history another tool recorded (`-- forge:adopts`). `forge db migrate
-  up` refuses a database the squashed migrations built, whatever the
-  baseline's number, and changes nothing. So squash a forge history only when
-  its databases can be rebuilt, preview each with `forge db migrate status`
-  and a `migrate up` against a copy, and never force. The tests check each of
-  those claims against the migrator. The header also dropped the wall-clock
+  check adoption exists to make. The steps now say what is true (since the
+  squashed forge history is declared and adopted — see "A squashed forge
+  history is adopted" under Added — that is: a database the squashed
+  migrations built adopts the baseline), preview each database with `forge db
+  migrate status` and a `migrate up` against a copy, and never force. The
+  tests check each of those claims against the migrator. The header also dropped the wall-clock
   time and the absolute `--from-dir`: it names the squashed migrations' count
   and version range, so a re-squash with the same `--image` is byte-for-byte
   identical (reliant stripped the old header with `tail -n +6`; drop that on
@@ -396,6 +395,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A squashed forge history is adopted, not refused: `-- forge:adopts forge
+  <versions>`.** After `forge db squash` replaced a forge history with one
+  baseline, every database that history built was refused, and misleadingly:
+  "schema at 20260101000002, AHEAD of the newest migration this binary embeds
+  (20260201000000)" for a baseline numbered above the history, and "MISSING …
+  give it a NEWER version" for one below it. A baseline can now declare the
+  forge versions it replaces, the shape of goose's adoption (#649), and
+  `forge db squash` writes the list (plus `-- forge:backward-compatible`: the
+  baseline builds exactly the schema the release before the squash runs on).
+  `migratekit` adopts a database whose schema version is one the baseline
+  lists when every listed version has a `schema_migrations_applied` row (a
+  database older than that record is judged by its `schema_migrations`
+  version, which golang-migrate never applies below): the baseline gets its
+  applied row and becomes the schema's version, none of its SQL runs, and the
+  migrations after it apply on the same run. One behind the squash (a listed
+  version not applied) or past it (a schema version the list lacks) is a
+  `*migratekit.AdoptionError` with forge's remedies, and nothing changes. The
+  history's rows stay, so the release before the squash, rolled back to,
+  still finds its migrations recorded and reads the baseline as a compatible
+  schema ahead of it. Adoption runs under the run lock and `appliedLockKey`
+  on the run's one session (#706), and finishes an adoption a crash
+  interrupted. The migrator refuses, at `Open` and at boot, a forge baseline
+  listing a version it still carries (its own number, or a squashed file left
+  beside it); `forge lint`'s `invalid-adopts-directive` reports the same, and
+  `forge db squash` refuses a `--to` inside the history. Without the
+  declaration, a database built by a history the binary does not carry is now
+  a `*migratekit.ForeignHistoryError` that says so and names the fix, instead
+  of AHEAD or MISSING, and `forge db migrate status` previews both cases
+  rather than calling them AHEAD. `Adopted.String()` is the adoption line
+  every command prints; the scaffolded `db.go` uses it. Skills:
+  db/deploy-migrations ("Squashing a forge history"), db/versioning. On
+  re-pin, nothing changes for a project that has not squashed a forge
+  history; one that has can re-run `forge db squash` (or add the
+  `-- forge:adopts forge` lines by hand) and drop any rebuild-every-database
+  plan.
 - **`forge db squash --from-dsn`: squash a database another tool migrated.**
   `forge db squash` replays only forge's `*.up.sql`, so a goose history could
   not be squashed: reliant pg_dumped a goose-built database by hand, stripped

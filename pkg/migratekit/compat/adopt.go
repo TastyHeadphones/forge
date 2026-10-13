@@ -27,6 +27,15 @@ import (
 // SQL — and refuses one that is behind (a listed version it never applied) or
 // that holds a version the list does not account for.
 //
+// The tool may be forge itself. `forge db squash` collapses a forge history
+// into one baseline, and the databases that history built already have the
+// baseline's schema, recorded in forge's own tables:
+//
+//	-- forge:adopts forge 20260101000001 20260101000002
+//
+// The migrator adopts such a database on the same terms: every listed version
+// recorded as applied, and its schema version one of them.
+//
 // WHY EVERY VERSION AND NOT THE LAST ONE. goose applies out of order
 // (WithAllowMissing), so "the newest applied version is X" does not mean every
 // version below X ran: a migration merged with an EARLIER timestamp after a
@@ -50,10 +59,14 @@ const AdoptsDirective = "-- forge:adopts"
 // ToolGoose names pressly/goose, whose history lives in goose_db_version.
 const ToolGoose = "goose"
 
+// ToolForge names forge's own migrator: a history `forge db squash` replaced,
+// recorded in schema_migrations and schema_migrations_applied.
+const ToolForge = "forge"
+
 // adoptableTools is every tool whose history the migrator can read. A tool
 // is added here together with its reader in pkg/migratekit; the directive's
 // grammar does not change.
-var adoptableTools = []string{ToolGoose}
+var adoptableTools = []string{ToolGoose, ToolForge}
 
 // adoptsRe matches any `forge:adopt…` line comment, so that a misspelling of
 // the one directive whose ABSENCE is dangerous is an error rather than a

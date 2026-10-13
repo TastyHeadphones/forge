@@ -407,8 +407,10 @@ func printDSNSquashNextSteps(w io.Writer, upPath string, goose *gooseHistory) {
 	_, _ = fmt.Fprintln(w, "     migrations inserted) and nothing an application wrote.")
 	if goose == nil {
 		_, _ = fmt.Fprintln(w, "  2. The database had no goose history, so the baseline declares no adoption: a database the")
-		_, _ = fmt.Fprintln(w, "     original history built would RUN it and fail on its first CREATE. forge adopts only goose")
-		_, _ = fmt.Fprintln(w, "     histories; rebuild every other database before this release reaches it.")
+		_, _ = fmt.Fprintln(w, "     original history built would RUN it and fail on its first CREATE. --from-dsn declares only a")
+		_, _ = fmt.Fprintln(w, "     goose history. A history forge's own migrations built is squashed from them instead (`forge db")
+		_, _ = fmt.Fprintln(w, "     squash` without --from-dsn), which declares it; rebuild any other database before this release")
+		_, _ = fmt.Fprintln(w, "     reaches it.")
 	} else {
 		_, _ = fmt.Fprintf(w, "  2. Make %s the FIRST migration in the directory: only the first may\n", filepath.Base(upPath))
 		_, _ = fmt.Fprintln(w, "     declare an adoption (`forge lint` reports `invalid-adopts-directive` otherwise).")
