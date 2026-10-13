@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
@@ -92,6 +93,7 @@ func GenerateServiceFilesWithMode(root, modulePath, serviceName, projectName str
 		ProtoFileSymbol     string
 		HandlerName         string
 		Methods             []string
+		HasConfig           bool
 	}{
 		ServiceName:         serviceName,
 		ServicePackage:      servicePackage,
@@ -101,6 +103,7 @@ func GenerateServiceFilesWithMode(root, modulePath, serviceName, projectName str
 		ProtoFileSymbol:     fmt.Sprintf("File_services_%s_v1_%s_proto", servicePackage, servicePackage),
 		HandlerName:         connectService,
 		Methods:             []string{},
+		HasConfig:           codegen.ProjectHasTypedConfig(root),
 	}
 
 	svcPath := filepath.Join(svcDir, "service.go")

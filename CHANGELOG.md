@@ -152,6 +152,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   One file can still conflict: a forge project's own `internal/app/compose.go`,
   where `forge generate` injects each component. Take either side and run
   `forge generate`, which re-injects the other side's component.
+- **A service adopted into a project without typed config compiles, and a
+  failed generate names what is missing.** Before, the handler scaffold
+  imported `<module>/pkg/config` and required `Deps.Config` in every project,
+  even one with no config protos and no `pkg/config` (reliant, adopting
+  services in place). `go mod tidy` then failed, generate rolled back, and
+  the error said "fix go.mod or go.sum" (P3b friction F13).
+  - `service.go` imports and wires `Config` only when the project has typed
+    config: config protos under `proto/config`, or a `pkg/config` that
+    declares `Config`. The harness already followed `Deps.Config` (#702). A
+    project without typed config gets no `pkg/config` placeholder, because
+    an empty `Config` would be a value every caller had to construct and pass
+    while it configured nothing.
+  - The config loader runs only when `proto/config` holds a `.proto`. A CLI
+    scaffold leaves an empty `proto/config/v1`, and the loader used to
+    replace the CLI's `pkg/config` stub with one importing `gen/config/v1`,
+    which nothing generates. That broke the first generate after a CLI
+    project gained a service.
+  - A failed `go mod tidy` reads go's own report and names each unresolved
+    import. An import inside the project's module is named as a package
+    that does not exist, which no go.mod or go.sum change can fix, with a
+    hint for `pkg/config` and `gen/`. An external one is named as a
+    dependency that cannot be resolved. The go.mod advice stays only for a
+    failure that names no import, and the error no longer repeats its own
+    prefix.
+  - When the generated test harness fails to compile because the project's
+    own `pkg/middleware` has no `ContextWithClaims` (P3b F14), the error
+    names that seam and the one function to add. It no longer calls the
+    failure a forge codegen bug.
 
 - **A failed `forge generate` that changed no Go file no longer builds the
   project to report on its rollback.** After reverting a failed run, generate

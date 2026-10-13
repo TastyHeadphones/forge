@@ -161,7 +161,7 @@ func GenerateServiceStub(svc ServiceDef, targetDir string, crudMethodNames ...ma
 // directory, using the proto-derived HandlerName so that Connect RPC references
 // (Unimplemented*Handler, New*Handler) match the actual proto service name.
 func RegenerateServiceFile(svc ServiceDef, targetDir string) error {
-	data := mapServiceDefToTemplateData(svc)
+	data := mapServiceDefToTemplateData(svc, filepath.Dir(filepath.Dir(filepath.Dir(targetDir))))
 
 	serviceContent, err := templates.ServiceTemplates().Render("service.go.tmpl", data)
 	if err != nil {

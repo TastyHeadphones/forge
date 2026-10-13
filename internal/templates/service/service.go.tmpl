@@ -9,16 +9,20 @@ import (
 
 	pb "{{.Module}}/gen/{{.ProtoImportPath}}/v1"
 	{{.ProtoConnectPackage}} "{{.Module}}/gen/{{.ProtoImportPath}}/v1/{{.ProtoConnectPackage}}"
+{{- if .HasConfig}}
 	"{{.Module}}/pkg/config"
+{{- end}}
 )
 
 // Deps holds dependencies for the {{.ServiceName}} service. Composition
-// (internal/app/compose.go) supplies Logger/Config and resolves added fields
+// (internal/app/compose.go) supplies Logger{{if .HasConfig}}/Config{{end}} and resolves added fields
 // by type. The rpc methods on *Service are where this service's logic lives;
 // see the forge `api` / `services` skill.
 type Deps struct {
 	Logger *slog.Logger
+{{- if .HasConfig}}
 	Config *config.Config
+{{- end}}
 	// Add your dependencies here (e.g. Repo Repository). Required ones get
 	// a validateDeps() check below. Tag intentionally-optional fields with
 	// the `forge:optional-dep` directive directly above the field.
@@ -30,9 +34,11 @@ func (d Deps) validateDeps() error {
 	if d.Logger == nil {
 		return fmt.Errorf("{{.ServiceName}}: Deps.Logger is required")
 	}
+{{- if .HasConfig}}
 	if d.Config == nil {
 		return fmt.Errorf("{{.ServiceName}}: Deps.Config is required")
 	}
+{{- end}}
 	// Add checks for your required Deps fields here. Example:
 	//   if d.Repo == nil { return fmt.Errorf("{{.ServiceName}}: Deps.Repo is required") }
 	return nil
