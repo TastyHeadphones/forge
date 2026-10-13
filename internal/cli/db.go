@@ -103,13 +103,15 @@ in. A relative --dir resolves against that root too.`
 // --to (default `00001_baseline`) and land alongside (or in --out-dir).
 func newDBSquashCommand() *cobra.Command {
 	var (
-		fromDir  string
-		baseline string
-		outDir   string
-		image    string
-		dbName   string
-		dbUser   string
-		dbPass   string
+		fromDir       string
+		fromDSN       string
+		excludeTables []string
+		baseline      string
+		outDir        string
+		image         string
+		dbName        string
+		dbUser        string
+		dbPass        string
 	)
 
 	cmd := &cobra.Command{
@@ -117,7 +119,8 @@ func newDBSquashCommand() *cobra.Command {
 		Short: "Collapse N migrations into one canonical baseline (.up.sql)",
 		Long: `Squash applies every migration in --from-dir against an ephemeral Postgres
 container, dumps the resulting schema + seed data with pg_dump, and writes
-a single forward-only baseline migration.
+a single forward-only baseline migration. With --from-dsn it dumps an existing
+database instead: see "Squashing a database" below.
 
 Output:
   <out-dir>/<baseline>.up.sql    (CREATE statements + INSERTs for non-schema_migrations rows)
@@ -143,13 +146,45 @@ Requires:
 The migrations are applied by forge's migrator, the same one
 'forge db migrate up' runs.
 
+Squashing a database (--from-dsn):
+  A history forge cannot replay (goose's, or any other tool's) is squashed
+  from a database it built. Point --from-dsn at a throwaway database the
+  COMPLETE history built, such as goose up on an empty database: its rows
+  become INSERTs in every fresh database, so the command lists them. pg_dump
+  runs in a postgres:<server major>-alpine container (--image overrides).
+  When the database has goose_db_version, the baseline declares every version
+  goose applied there ("-- forge:adopts goose ..."), so the migrator ADOPTS a
+  database goose migrated instead of re-running the history. Tables named
+  like another tool's history are listed; leave one out with --exclude-table.
+
 Examples:
   forge db squash
   forge db squash --from-dir db/migrations --to 00001_baseline
-  forge db squash --to 20260506_baseline --out-dir db/baselines/`,
+  forge db squash --to 20260506_baseline --out-dir db/baselines/
+  forge db squash --from-dsn 'postgres://postgres:pw@localhost:5432/goose_built?sslmode=disable'`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if outDir != "" {
 				outDir = dbProjectPath(outDir)
+			}
+			if fromDSN != "" {
+				for _, f := range []string{"from-dir", "db-name", "db-user", "db-pass"} {
+					if cmd.Flags().Changed(f) {
+						return fmt.Errorf("--%s does not apply to --from-dsn, which dumps the database it names and starts no container of its own", f)
+					}
+				}
+				if !cmd.Flags().Changed("image") {
+					image = "" // matched to the server's major version
+				}
+				return runDBSquashFromDSN(cmd.Context(), cmd.OutOrStdout(), squashOptions{
+					FromDSN:       fromDSN,
+					ExcludeTables: excludeTables,
+					Baseline:      baseline,
+					OutDir:        outDir,
+					Image:         image,
+				})
+			}
+			if len(excludeTables) > 0 {
+				return fmt.Errorf("--exclude-table applies only to --from-dsn: a replayed history holds no other tool's tables")
 			}
 			return runDBSquash(cmd.Context(), squashOptions{
 				FromDir:  resolveMigrationsDir(fromDir),
@@ -164,9 +199,11 @@ Examples:
 	}
 
 	cmd.Flags().StringVar(&fromDir, "from-dir", "", "Source directory holding the migrations to squash (default: the project's migrations directory; a relative path resolves against the project root)")
+	cmd.Flags().StringVar(&fromDSN, "from-dsn", "", "Squash an existing database instead of replaying --from-dir: a postgres:// URL of a throwaway database the complete history built")
+	cmd.Flags().StringArrayVar(&excludeTables, "exclude-table", nil, "With --from-dsn: a table to leave out of the baseline, such as another tool's history table (pg_dump pattern, e.g. public.flyway_schema_history; repeatable)")
 	cmd.Flags().StringVar(&baseline, "to", "00001_baseline", "Baseline filename stem (writes <stem>.up.sql)")
-	cmd.Flags().StringVar(&outDir, "out-dir", "", "Output directory for the baseline files (default: same as --from-dir; a relative path resolves against the project root)")
-	cmd.Flags().StringVar(&image, "image", "postgres:16-alpine", "Postgres docker image used for the ephemeral container")
+	cmd.Flags().StringVar(&outDir, "out-dir", "", "Output directory for the baseline files (default: same as --from-dir, or the project's migrations directory with --from-dsn; a relative path resolves against the project root)")
+	cmd.Flags().StringVar(&image, "image", "postgres:16-alpine", "Postgres docker image used for the ephemeral container (with --from-dsn, the one pg_dump runs in; default postgres:<server major>-alpine)")
 	cmd.Flags().StringVar(&dbName, "db-name", "forge_squash", "Database name created inside the ephemeral container")
 	cmd.Flags().StringVar(&dbUser, "db-user", "postgres", "Database user (default container superuser)")
 	cmd.Flags().StringVar(&dbPass, "db-pass", "forge_squash", "Database password for the ephemeral container")
@@ -175,13 +212,17 @@ Examples:
 }
 
 type squashOptions struct {
-	FromDir  string
-	Baseline string
-	OutDir   string
-	Image    string
-	DBName   string
-	DBUser   string
-	DBPass   string
+	FromDir string
+	// FromDSN, when set, names the database to squash instead of FromDir
+	// (runDBSquashFromDSN), and ExcludeTables the extra tables it leaves out.
+	FromDSN       string
+	ExcludeTables []string
+	Baseline      string
+	OutDir        string
+	Image         string
+	DBName        string
+	DBUser        string
+	DBPass        string
 }
 
 // runDBSquash drives the squash flow end-to-end: prereqs, container

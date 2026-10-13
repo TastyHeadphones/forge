@@ -248,6 +248,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`forge db squash --from-dsn`: squash a database another tool migrated.**
+  `forge db squash` replays only forge's `*.up.sql`, so a goose history could
+  not be squashed: reliant pg_dumped a goose-built database by hand, stripped
+  pg_dump's prelude by hand, and typed the `-- forge:adopts goose …` list.
+  `--from-dsn <postgres URL>` dumps an existing database instead, whatever
+  tool built it, through the same `squashBaseline` lexing that drops pg_dump's
+  session prelude and psql meta-commands (#678). pg_dump runs in a
+  `postgres:<server major>-alpine` container (`--image` overrides), and the
+  password reaches it through the environment, never the command line. When
+  the database has `goose_db_version`, the baseline's header declares every
+  version goose applied there (`-- forge:adopts goose …`, eight per line), read
+  as migratekit's adoption reads the table, and the command checks the file
+  parses back to that list. Point it at a throwaway database the complete
+  history built (`goose up` on an empty database): its rows become INSERTs in
+  every fresh database, so the command lists them per table, and it names any
+  table that looks like another tool's history (`--exclude-table` leaves one
+  out; `goose_db_version`, an older goose's `goose_db_version_id_seq`, and
+  forge's bookkeeping always are). The header names only the history (count
+  and version range), so a re-cut writes the same bytes. Rehearsed on reliant's 152 goose migrations: the goose-built database
+  is ADOPTED (152 versions verified), a fresh database applies the baseline,
+  and their `pg_dump --schema-only` are identical. The db/deploy-migrations
+  skill's hand recipe is replaced by the command. On re-pin, reliant can
+  re-cut its P5a baseline with it and drop the hand-made dump.
 - **`migratekit.Apply(ctx, db, fsys, dir) (Result, error)`: the boot path's run,
   returning what it did.** `AutoMigrate` is now `Apply` plus a log line per
   fact. A command that wants the boot path's policy (a binary embedding no
