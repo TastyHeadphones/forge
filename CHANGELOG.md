@@ -54,6 +54,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which `forge lint --show-suppressed` lists. On re-pin, a migration the rules
   refuse either never applied anywhere (split it) or is one they misread (mark
   it).
+- **`forge db squash` no longer tells you to force a baseline onto a database,
+  and writes the same bytes for the same history.** Its last "next step" was
+  `forge db migrate force <id>` on every existing database: force records a
+  version as applied without checking anything, so it would have marked the
+  baseline applied on a database whose schema it never verified, skipping the
+  check adoption exists to make. The steps now say what is true. forge adopts
+  only a history another tool recorded (`-- forge:adopts`). `forge db migrate
+  up` refuses a database the squashed migrations built, whatever the
+  baseline's number, and changes nothing. So squash a forge history only when
+  its databases can be rebuilt, preview each with `forge db migrate status`
+  and a `migrate up` against a copy, and never force. The tests check each of
+  those claims against the migrator. The header also dropped the wall-clock
+  time and the absolute `--from-dir`: it names the squashed migrations' count
+  and version range, so a re-squash with the same `--image` is byte-for-byte
+  identical (reliant stripped the old header with `tail -n +6`; drop that on
+  re-pin).
 - **The `observability` skill loads whole again.** It had grown to 24,390
   bytes, over the 24,000-byte load cap, so a loader truncated its tail (the
   sub-skill pointers and the rules). The DB-persisted audit-trail recipe on
