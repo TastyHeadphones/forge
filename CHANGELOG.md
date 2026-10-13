@@ -70,6 +70,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and version range, so a re-squash with the same `--image` is byte-for-byte
   identical (reliant stripped the old header with `tail -n +6`; drop that on
   re-pin).
+- **A proto enum over an INTEGER column projects instead of refusing the
+  generate.** forge births enum columns as TEXT holding value names, and the
+  CRUD projection mapped only that, so a column the author declared integer,
+  storing the wire number (reliant's `tasks.status INTEGER NOT NULL DEFAULT
+  1`), failed generate with `no conversion between wire kind enum and column
+  type INT4`. SQL is the schema: an integer column of any width (or
+  `INTEGER[]` for a repeated enum) now stores the number. The write path
+  routes an unset enum exactly as the TEXT path does (the column's literal
+  DEFAULT, NULL for a nullable column), the read path casts the stored number
+  back (proto3 enums are open, so an undeclared number passes through as it
+  would on the wire; one outside int32 is refused), and a list filter binds
+  `int32(req.Status)` rather than the name Postgres would compare as `integer
+  = text`. Birth still writes TEXT + CHECK.
+
 - **The `observability` skill loads whole again.** It had grown to 24,390
   bytes, over the 24,000-byte load cap, so a loader truncated its tail (the
   sub-skill pointers and the rules). The DB-persisted audit-trail recipe on

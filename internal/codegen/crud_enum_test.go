@@ -181,19 +181,21 @@ func TestBuildEntityConv_EnumShapeMismatches(t *testing.T) {
 	}
 	requireUnmapped(t, mismatchUnmapped, "history", "TEXT")
 
-	// Enum over a non-TEXT column (hand migration drift): unmapped.
-	intCol, intColUnmapped := BuildEntityConv(ServiceDef{Package: "orders.v1"}, EntityDef{
+	// Enum over a column that is neither TEXT (value names) nor an
+	// integer (wire numbers) — hand migration drift: unmapped. (An integer
+	// column maps: TestBuildEntityConv_IntegerEnumColumns.)
+	floatCol, floatColUnmapped := BuildEntityConv(ServiceDef{Package: "orders.v1"}, EntityDef{
 		Name: "Order",
 		Fields: []EntityField{
 			{Name: "status", GoName: "Status", ProtoType: "enum", GoType: "OrderStatus", Kind: FieldKindEnum, MessageType: "orders.v1.OrderStatus"},
 		},
-		Columns: []EntityColumn{{Name: "status", Type: "int64", NotNull: true, DeclType: "BIGINT"}},
+		Columns: []EntityColumn{{Name: "status", Type: "float64", NotNull: true, DeclType: "DOUBLE PRECISION"}},
 	})
-	joined = strings.Join(append(intCol.ToProtoAssigns, intCol.FromProtoAssigns...), "\n")
+	joined = strings.Join(append(floatCol.ToProtoAssigns, floatCol.FromProtoAssigns...), "\n")
 	if strings.Contains(joined, "Status") {
-		t.Errorf("an enum over a non-TEXT column must emit nothing at all; got:\n%s", joined)
+		t.Errorf("an enum over a float column must emit nothing at all; got:\n%s", joined)
 	}
-	requireUnmapped(t, intColUnmapped, "status", "BIGINT")
+	requireUnmapped(t, floatColUnmapped, "status", "DOUBLE PRECISION")
 }
 
 // requireUnmapped asserts the pairing was reported as unmappable, naming

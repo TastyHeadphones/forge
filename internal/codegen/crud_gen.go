@@ -345,6 +345,11 @@ type FilterFieldData struct {
 	// (skipping would make one declared value unfilterable). `optional`
 	// on the request field is the way to express "no filter" (nil).
 	IsEnum bool
+	// EnumNumber marks an IsEnum filter whose column is an INTEGER, which
+	// stores the wire number rather than the value name (a schema the author
+	// declared — forge births TEXT). The template binds int32(req.<F>):
+	// binding the name would hit Postgres with `integer = text`.
+	EnumNumber bool
 	// SearchColumns is the entity's declared string columns (minus the
 	// PK) that a "search" filter spans via orm.WhereILikeAny. A search
 	// field never maps to a column of its own — the historical
@@ -1346,6 +1351,7 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 					ff = classifyFilterField(mf)
 				}
 				ff.GoName = messageFieldGoName(msgFields, mf.Name)
+				ff.EnumNumber = ff.IsEnum && entityColumnType(cm.Entity, mf.Name) == "int64"
 				filterFields = append(filterFields, ff)
 			}
 		}
@@ -2281,6 +2287,17 @@ func buildCustomFilters(svc ServiceDef, cm CRUDMethod) []FilterFieldData {
 // the introspected schema — see schemadef.DetectConventions).
 func entityStringColumns(entity EntityDef) []string {
 	return entity.SearchColumns
+}
+
+// entityColumnType is the canonical type of the entity's column named name,
+// or "" when it declares none.
+func entityColumnType(entity EntityDef, name string) string {
+	for _, c := range entity.Columns {
+		if c.Name == name {
+			return c.Type
+		}
+	}
+	return ""
 }
 
 // entityColumnList renders the applied schema's column names for diagnostics.
