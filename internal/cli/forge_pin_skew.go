@@ -60,6 +60,19 @@ var pinGatedCommands = map[string][]string{
 	"project disown":     {"dry-run"},
 }
 
+// pinBuildCommands are the gated commands whose product is an artifact, not
+// an edit to the tree. They are strict about every skew, including a
+// development binary against a project pinned to a published tag. The
+// rewriting commands tolerate that one pairing: it is how forge's own e2e
+// lanes and every forge developer scaffold and generate (a binary built from
+// the checkout, a project on the published floor), and generate already
+// judges it with its own compatibility verdicts (generate_pkg_compat.go).
+var pinBuildCommands = map[string]bool{
+	"env deploy": true,
+	"env build":  true,
+	"build":      true,
+}
+
 // pinGatedGroups are command groups whose every subcommand mutates the
 // project, so a subcommand added later is gated without anyone remembering
 // to list it. Subcommands of a group honour the same read-only flags.
@@ -158,24 +171,25 @@ func pinSkew(pin, binary, binaryCommit string) (skewed, ok bool) {
 }
 
 // pinSkewFor reports the pin and the running binary's version when they are
-// different forges, or skewed=false when nothing is to be said: no project,
+// different forges (devAgainstTag: a development binary against a pin that
+// is a published tag), or skewed=false when nothing is to be said: no project,
 // forge's own repository, a project bridged to the checkout this binary was
 // built from, a replaced (local) forge, or a side that names no forge.
-func pinSkewFor(projectRoot string) (pin, binary string, skewed bool) {
+func pinSkewFor(projectRoot string) (pin, binary string, skewed, devAgainstTag bool) {
 	cfg, err := config.LoadProjectDir(projectRoot)
 	if err != nil || cfg == nil {
-		return "", "", false
+		return "", "", false, false
 	}
 	// forge's own repository is built and run from source by the people
 	// changing it; the pin there describes the scaffolds, not the binary.
 	if cfg.ModulePath == forgeModulePathForSkew {
-		return "", "", false
+		return "", "", false, false
 	}
 	build := buildinfo.Current()
 	// `replace github.com/reliant-labs/forge => ../forge` in the embedding
 	// binary: the running forge is a local checkout, not a version.
 	if build.ReplacedBy != "" {
-		return "", "", false
+		return "", "", false, false
 	}
 	// A project bridged (go.work) to the local forge checkout this very
 	// binary was built from is someone running the forge they are working
@@ -184,7 +198,7 @@ func pinSkewFor(projectRoot string) (pin, binary string, skewed bool) {
 	// project run by a binary that is NOT its checkout's — a stale
 	// ~/go/bin/forge, the 2026-10-07 case — is checked like any other.
 	if rep := forgecompat.InspectBridge(projectRoot); rep.Bridged && rep.CheckoutOK && !rep.Skewed {
-		return "", "", false
+		return "", "", false, false
 	}
 	// build.Commit, not buildinfo.GitCommit(): the latter falls back to the
 	// vcs revision of the HOST binary when forge is embedded (`reliant
@@ -192,9 +206,10 @@ func pinSkewFor(projectRoot string) (pin, binary string, skewed bool) {
 	pin, binary = cfg.ForgeVersion, buildinfo.Version()
 	skew, ok := pinSkew(pin, binary, build.Commit)
 	if !ok || !skew {
-		return "", "", false
+		return "", "", false, false
 	}
-	return pin, binary, true
+	devAgainstTag = !buildinfo.IsDevVersion(pin) && buildinfo.IsDevVersion(binary)
+	return pin, binary, true, devAgainstTag
 }
 
 // pinSkewRefusal is the runbook printed when a command is refused: which
@@ -228,12 +243,13 @@ func checkForgePinSkew(cmd, root *cobra.Command, w io.Writer, allow bool) error 
 	if err != nil || projectRoot == "" {
 		return nil
 	}
-	pin, binary, skewed := pinSkewFor(projectRoot)
+	pin, binary, skewed, devAgainstTag := pinSkewFor(projectRoot)
 	if !skewed {
 		return nil
 	}
 	rel := strings.TrimSpace(strings.TrimPrefix(cmd.CommandPath(), root.CommandPath()))
 	if readOnlyFlags, gated := pinGateFor(rel); gated && !readOnlyRun(cmd, readOnlyFlags) &&
+		!(devAgainstTag && !pinBuildCommands[rel]) &&
 		!allow && !forgecompat.SkewOverridden() {
 		return pinSkewRefusal(projectRoot, pin, binary, "forge "+rel)
 	}
@@ -252,8 +268,8 @@ func refuseGenerateUnderPinSkew(projectRoot string) error {
 	if forgecompat.SkewOverridden() {
 		return nil
 	}
-	pin, binary, skewed := pinSkewFor(projectRoot)
-	if !skewed {
+	pin, binary, skewed, devAgainstTag := pinSkewFor(projectRoot)
+	if !skewed || devAgainstTag {
 		return nil
 	}
 	return pinSkewRefusal(projectRoot, pin, binary, "forge generate (run automatically because generated code is stale)")

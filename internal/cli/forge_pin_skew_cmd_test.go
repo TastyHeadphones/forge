@@ -148,6 +148,18 @@ func TestForgePinSkew_EscapeHatches(t *testing.T) {
 			t.Errorf("generate refused under the pinned forge: %v", err)
 		}
 	})
+	t.Run("dev build against a published-tag pin", func(t *testing.T) {
+		// forge's own e2e lanes and every forge developer: a binary built from
+		// the checkout generating into a project on the published floor.
+		writeForgeYAML(t, ".", "name: demo\nmodule_path: github.com/example/demo\nforge_version: v0.1.44\n")
+		buildinfo.Set("v0.0.0-20261013000226-65c48bf95a17+dirty", "", "65c48bf95a17")
+		if err := guardVerdict(t, "generate"); err != nil {
+			t.Errorf("a dev build was refused against a published-tag pin: %v", err)
+		}
+		if err := guardVerdict(t, "env", "deploy", "prod"); err == nil {
+			t.Error("a deploy under a dev build against a tag pin must stay refused")
+		}
+	})
 	t.Run("dev build naming no forge", func(t *testing.T) {
 		buildinfo.Set("(devel)", "", "")
 		if err := guardVerdict(t, "generate"); err != nil {
