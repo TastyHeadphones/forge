@@ -496,6 +496,15 @@ type ConfigField struct {
 	// readable (additive contract, see the audit-json skill).
 	ProtoFile string `json:",omitempty"`
 
+	// EnvVarAliases is (forge.v1.config).env_var_aliases: the further env
+	// vars the runtime loader reads, in order, when EnvVar is unset. No
+	// generator projects them — the KCL env map, the secret store key and the
+	// flag's help name EnvVar alone, so forge's own setters converge on one
+	// name — but generate refuses an alias that collides with another name
+	// the same process reads (ValidateConfigEnvAliases). `json:",omitempty"`
+	// keeps old descriptors readable (additive contract).
+	EnvVarAliases []EnvVarAlias `json:",omitempty"`
+
 	// KCLBlock / KCLBlockType place a composed config block's LEAF in the KCL
 	// projection: KCLBlock is the composing field's name on the root message
 	// (`stripe` for `StripeConfig stripe = 40;`) and KCLBlockType the block
@@ -506,6 +515,12 @@ type ConfigField struct {
 	// name. Never serialized: it is derived from MessageType on every run.
 	KCLBlock     string `json:"-"`
 	KCLBlockType string `json:"-"`
+}
+
+// EnvVarAlias is one (forge.v1.config).env_var_aliases entry.
+type EnvVarAlias struct {
+	Name       string
+	Deprecated bool `json:",omitempty"`
 }
 
 // KCLPath is the dotted path a config.k instance authors this field by, and

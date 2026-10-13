@@ -563,6 +563,12 @@ func generateConfigLoader(projectDir string, features config.FeaturesConfig, cs 
 	if err := codegen.ValidateBinaryConfigBindings(messages, codegen.ProjectBinaries(projectDir)); err != nil {
 		return nil, err
 	}
+	// An env_var_aliases entry naming a variable another field of the same
+	// process reads would load one variable into two fields; refused here,
+	// before the loader that would do it is generated.
+	if err := codegen.ValidateConfigEnvAliases(messages); err != nil {
+		return nil, err
+	}
 
 	// A `sensitive` field bound to a FRONTEND is refused before anything is
 	// written. This runs at the head of config generation on purpose: a
@@ -681,6 +687,9 @@ func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs
 	// because this step also runs when Go codegen is disabled: a binding to
 	// a process that does not exist must not reach config_gen.k either.
 	if err := codegen.ValidateBinaryConfigBindings(messages, codegen.ProjectBinaries(projectDir)); err != nil {
+		return err
+	}
+	if err := codegen.ValidateConfigEnvAliases(messages); err != nil {
 		return err
 	}
 

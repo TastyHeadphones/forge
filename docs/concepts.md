@@ -412,6 +412,12 @@ configured" far more often than anyone means an empty value. An explicitly
 empty value is a flag's to set (`--pprof-addr=` turns pprof off,
 `--allowed-registries=` clears a defaulted list).
 
+A field can also list `env_var_aliases`: further names it is read from, in
+order, when `env_var` is unset. That is for setters forge does not control,
+such as `NODE_ENV` or an old name another deployment still exports. An alias
+marked `deprecated` prints a notice at startup whenever it is set. Everything
+forge renders sets `env_var` alone.
+
 Typed access is a guardrail, not a suggestion: a direct `os.Getenv` /
 `os.LookupEnv` outside the generated loader is a lint finding, and
 `config.enforce_typed_access` in `forge.yaml` decides how hard. `error` fails

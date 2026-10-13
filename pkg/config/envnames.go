@@ -1,0 +1,141 @@
+package config
+
+// The env layer's NAMES: the variable a config field is read from, and the
+// aliases it falls back to ((forge.v1.config).env_var_aliases).
+//
+// A field reads env_var first, then each alias in the order declared; the
+// first one set wins, and a variable set to "" is unset (lookupEnv), so an
+// empty primary falls through to the next name exactly as an absent one
+// does. That ordering is what a hand-written fallback chain did — `if v :=
+// os.Getenv(A); v != "" { … } else if v := os.Getenv(B); …` — and an alias
+// exists so a project can delete that chain without breaking whoever still
+// sets B.
+//
+// A DEPRECATED alias prints one line to stderr at load, whether it supplied
+// the value or an earlier name shadowed it: either way the setter exporting
+// it has a rename to make, and the process start is the only place that
+// setter's operator looks. A permanent alias (NODE_ENV) is silent.
+//
+// The notice goes to the command's stderr (cmd.ErrOrStderr, so a test or an
+// embedding program can capture it) rather than a logger: config loads
+// before the logger exists, because the logger is built from the config.
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"strings"
+
+	"github.com/spf13/cobra"
+	"google.golang.org/protobuf/reflect/protoreflect"
+
+	"github.com/reliant-labs/forge/pkg/forgepb"
+)
+
+// envNames returns the variables a field's env layer reads, in precedence
+// order: env_var, then each alias as declared.
+func envNames(opt *forgepb.ConfigFieldOptions) []string {
+	var names []string
+	if v := opt.GetEnvVar(); v != "" {
+		names = append(names, v)
+	}
+	for _, a := range opt.GetEnvVarAliases() {
+		if a.GetName() != "" {
+			names = append(names, a.GetName())
+		}
+	}
+	return names
+}
+
+// lookupFieldEnv resolves a field's env layer: the first of its names set to
+// something other than "". name is the variable that supplied the value.
+func lookupFieldEnv(opt *forgepb.ConfigFieldOptions) (name, value string, ok bool) {
+	for _, n := range envNames(opt) {
+		if v, set := lookupEnv(n); set {
+			return n, v, true
+		}
+	}
+	return "", "", false
+}
+
+// noticeDeprecatedAliases writes one line to w for each deprecated alias of
+// the field that is set. supplier is the variable the env layer read the
+// value from ("" when none was set).
+func noticeDeprecatedAliases(w io.Writer, fd protoreflect.FieldDescriptor, opt *forgepb.ConfigFieldOptions, supplier string) {
+	primary := opt.GetEnvVar()
+	for _, a := range opt.GetEnvVarAliases() {
+		name := a.GetName()
+		if !a.GetDeprecated() || name == "" {
+			continue
+		}
+		if _, set := lookupEnv(name); !set {
+			continue
+		}
+		if name == supplier {
+			fmt.Fprintf(w, "warning: %s is a deprecated name for %s (config field %s); set %s instead\n",
+				name, primary, fd.Name(), primary)
+			continue
+		}
+		fmt.Fprintf(w, "warning: %s is a deprecated name for %s (config field %s) and is ignored, because %s is set; unset %s\n",
+			name, primary, fd.Name(), supplier, name)
+	}
+}
+
+// noticeWriter is where load-time notices go: the command's stderr, or the
+// process's when LoadInto runs without a command.
+func noticeWriter(cmd *cobra.Command) io.Writer {
+	if cmd != nil {
+		return cmd.ErrOrStderr()
+	}
+	return os.Stderr
+}
+
+// envSourcesPhrase names the variables a field reads, for an error message:
+// "DAEMON_LISTEN_PORT", or "DAEMON_LISTEN_PORT or TOOLS_DAEMON_PORT".
+func envSourcesPhrase(opt *forgepb.ConfigFieldOptions) string {
+	return strings.Join(envNames(opt), " or ")
+}
+
+// emptyEnvNote is the clause a required-field error adds when any of the
+// field's variables is present but empty, so nobody goes looking for a
+// variable that is in fact set. "" when none is.
+func emptyEnvNote(opt *forgepb.ConfigFieldOptions) string {
+	var empty []string
+	for _, n := range envNames(opt) {
+		if envSetButEmpty(n) {
+			empty = append(empty, n)
+		}
+	}
+	switch len(empty) {
+	case 0:
+		return ""
+	case 1:
+		return fmt.Sprintf(" — %s is set but empty, and an empty env var counts as unset", empty[0])
+	default:
+		return fmt.Sprintf(" — %s are set but empty, and an empty env var counts as unset", strings.Join(empty, ", "))
+	}
+}
+
+// flagUsage is a flag's help text: the field's description, then the env
+// vars that also set it. Deprecated aliases are left out — help is where a
+// new setter learns the name to use, and that is never the deprecated one.
+func flagUsage(opt *forgepb.ConfigFieldOptions) string {
+	names := []string{}
+	if v := opt.GetEnvVar(); v != "" {
+		names = append(names, v)
+	}
+	for _, a := range opt.GetEnvVarAliases() {
+		if a.GetName() != "" && !a.GetDeprecated() {
+			names = append(names, a.GetName())
+		}
+	}
+	desc := opt.GetDescription()
+	if len(names) == 0 {
+		return desc
+	}
+	env := "[env: " + strings.Join(names, ", ") + "]"
+	if desc == "" {
+		return env
+	}
+	return desc + " " + env
+}

@@ -118,6 +118,22 @@ Later layers win: the proto `default_value`, then the config file (`--config`), 
 
 **An env var set to `""` is unset, for every field type.** `TEMPORAL_HOST=` keeps the file's or the default's value; it does not load `""`. A deploy template rendered from a missing key, compose's `X: ${X}` and `export X=` all mean "not configured". An explicitly empty value comes from a flag (`--pprof-addr=` switches pprof off; `--allowed-registries=` clears a defaulted list). A required field whose variable is set but empty fails with an error that says so.
 
+**Aliases replace a hand-written fallback chain.** When a value has setters you do not control — another tool's convention, or an old name a deployment elsewhere still exports — list the extra names instead of keeping `if v := os.Getenv(A); v != "" { … } else if …`:
+
+```protobuf
+string url = 1 [(forge.v1.config) = {
+  env_var: "RELIANT_CONTROL_PLANE_URL"
+  env_var_aliases: [{name: "CONTROL_PLANE_API_URL"}, {name: "CONTROL_PLANE_BASE_URL", deprecated: true}]
+}];
+string environment = 2 [(forge.v1.config) = {env_var: "RELIANT_ENV", env_var_aliases: [{name: "NODE_ENV"}]}];
+```
+
+- The loader reads `env_var`, then each alias in order; the first one set (non-empty) wins. All of them sit in the env layer: below the flag, above the file and the default. A malformed value in the winning name is an error; it never falls through to the next name.
+- `deprecated: true` prints one stderr line at load whenever that alias is set, naming `env_var`. Leave it off for a permanent alias like `NODE_ENV`, which is read silently.
+- forge's own setters use `env_var` alone. The KCL env map, the secret store key and `--help` name it (help also lists permanent aliases as `[env: RELIANT_ENV, NODE_ENV]`), so every manifest forge renders converges on one name.
+- `generate` refuses an alias that repeats a name another field of the same process reads, an alias without an `env_var`, and aliases on a frontend config field.
+- The typed-config guardrail flags `os.Getenv` whatever the name, so a raw read of an alias is a finding exactly like a read of the primary.
+
 ### Per-binary config (no project-global AppConfig)
 
 A project can move config OWNERSHIP off a single shared `AppConfig` onto each binary's own message — annotate a config message with `option (forge.v1.binary_config) = {binary: "<cmd/name>"};` (see `forge skill load db` / the config proto's own header for the full mechanics). Doing this for EVERY config message — deleting `AppConfig` entirely — is a legitimate end state, not a half-migration: forge still emits a complete Go/KCL/env surface per binary.

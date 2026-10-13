@@ -806,21 +806,26 @@ func extractConfigMessage(msg *protogen.Message) (codegen.ConfigMessage, bool) {
 			continue
 		}
 
+		var aliases []codegen.EnvVarAlias
+		for _, a := range cf.GetEnvVarAliases() {
+			aliases = append(aliases, codegen.EnvVarAlias{Name: a.GetName(), Deprecated: a.GetDeprecated()})
+		}
 		configFields = append(configFields, codegen.ConfigField{
-			Name:         string(f.Desc.Name()),
-			GoName:       f.GoName,
-			GoType:       codegen.ProtoTypeToGoType(protoKindToString(f.Desc.Kind())),
-			ProtoType:    protoKindToString(f.Desc.Kind()),
-			EnvVar:       cf.GetEnvVar(),
-			Flag:         cf.GetFlag(),
-			DefaultValue: cf.GetDefaultValue(),
-			Required:     cf.GetRequired(),
-			Optional:     cf.GetOptional(),
-			Description:  cf.GetDescription(),
-			Sensitive:    cf.GetSensitive(),
-			Category:     cf.GetCategory(),
-			Role:         configFieldRoleString(cf.GetRole()),
-			ProtoFile:    declaredIn,
+			Name:          string(f.Desc.Name()),
+			GoName:        f.GoName,
+			GoType:        codegen.ProtoTypeToGoType(protoKindToString(f.Desc.Kind())),
+			ProtoType:     protoKindToString(f.Desc.Kind()),
+			EnvVar:        cf.GetEnvVar(),
+			EnvVarAliases: aliases,
+			Flag:          cf.GetFlag(),
+			DefaultValue:  cf.GetDefaultValue(),
+			Required:      cf.GetRequired(),
+			Optional:      cf.GetOptional(),
+			Description:   cf.GetDescription(),
+			Sensitive:     cf.GetSensitive(),
+			Category:      cf.GetCategory(),
+			Role:          configFieldRoleString(cf.GetRole()),
+			ProtoFile:     declaredIn,
 		})
 	}
 

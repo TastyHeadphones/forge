@@ -1808,6 +1808,11 @@ func stepFrontendConfig(ctx *pipelineContext) error {
 	if err := codegen.ValidateFrontendConfigs(messages); err != nil {
 		return err
 	}
+	// Frontend fields take no env_var_aliases (they read no environment);
+	// refused here too, since this step runs without the Go config loader.
+	if err := codegen.ValidateConfigEnvAliases(messages); err != nil {
+		return err
+	}
 	return generateFrontendConfigModules(ctx.Cfg, messages, ctx.ProjectDir, ctx.Checksums)
 }
 
