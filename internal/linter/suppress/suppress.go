@@ -100,10 +100,12 @@ const (
 const Wildcard = "*"
 
 // Suppression records one honored directive: which rule it silenced,
-// where, and why. Retained (rather than being applied and forgotten) so
-// `forge lint --show-suppressed` can render what a run chose NOT to
-// tell you. A suppression mechanism whose output is invisible is how a
-// codebase ends up disabling everything one line at a time.
+// where, and why. Retained (rather than being applied and forgotten) so a
+// caller can render what a run chose NOT to tell you. A suppression
+// mechanism whose output is invisible is how a codebase ends up disabling
+// everything one line at a time — which is also why `forge lint
+// --show-suppressed` lists every directive as written (Declarations),
+// whether or not a finding reached it.
 type Suppression struct {
 	Rule   string `json:"rule"`
 	File   string `json:"file"`

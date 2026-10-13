@@ -72,6 +72,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`forge lint --show-suppressed`: every suppression the project declares, in
+  one list.** The `contracts/package-markers` skill told users their
+  allowances were "reported by `--show-suppressed`", and `forge lint` answered
+  `unknown flag`. It now lists, with file:line, what each covers and its stated
+  reason: `forge.yaml` `lint.rules` entries set to off or warn and
+  `contracts.exclude` paths, `//forge:exclude-contract` markers,
+  `forge:lint-disable-file` / `-next-line` / block and `//nolint:` directives,
+  `-- forge:allow-destructive` / `-- forge:allow-unsafe-not-null` migration
+  pragmas, and `// forge:optional-checked`. Each source is read by the code
+  that honours it (`suppress.Declarations`, `migrationlint.Allowances`,
+  `codegen.FindExcludeContractMarker`, the optional-deps guard's own matcher),
+  so the list cannot disagree with the linters. Hand-written files only;
+  generated files, `testdata`, `node_modules` and `vendor` are skipped.
+  Read-only: it runs no linter and exits 0. `--json` and `--scope` combine
+  with it; a lane flag, `--quiet`, `--gate-json` or package paths are refused.
 - **`alerting.RuleSpec.KeepFiringFor` (`keep_firing_for`)**: holds a firing alert open that long after its series stops returning, like Prometheus's rule field of the same name. The shape's `alerts[]` (#684) declares it, so the evaluator now honours it instead of silently ignoring it. The one-evaluation flap damping every rule already had is the floor.
 - **`(forge.v1.config).env_var_aliases`: a config field read from fallback env
   var names.** A field reads `env_var`, then each alias in order, and the first

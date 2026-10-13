@@ -58,6 +58,8 @@ package db
 
 A marker that draws both refusals needs one allowance per rule, stacked. Each covers the marker.
 
+`forge lint --show-suppressed` lists every suppression in the project with its file:line, what it covers and its stated reason: each `//forge:exclude-contract` marker, each allowance like the one above, every other `forge:lint-disable*` and `//nolint:` directive, `forge.yaml`'s `lint.rules` downgrades and `contracts.exclude` paths, and the migration (`forge:allow-destructive`, `forge:allow-unsafe-not-null`) and `forge:optional-checked` pragmas. It is read-only and lints nothing; add `--json` for a machine-readable list, or `--scope <path>` for one slice.
+
 ## Packages the server does not have: `//forge:not-a-component: <why>`
 
 By default every `internal/<pkg>/contract.go` package is a **server component**: `internal/app/compose.go` constructs it, and `forge generate` must resolve every `Deps` field from another component or from `*Infra` (`internal/app/providers.go`), or it fails with `<Pkg>.Deps.<Field> (<type>) has no provider`.
