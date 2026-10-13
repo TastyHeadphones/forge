@@ -679,7 +679,7 @@ github.com/reliant-labs/forge/cmd/forge@<pin> <same args>` that needs no
   the way it vendors `buf/validate/validate.proto`: the first run whose protos
   import it and that finds no copy writes forge's own (with the `forgepb`
   `go_package`); an existing copy is never rewritten, so `forge lint
-  --vendored-protos` stays the drift guard. Because a project's own Go template
+--vendored-protos` stays the drift guard. Because a project's own Go template
   may target all of `proto/`, generate now refuses one whose `protoc-gen-go`
   would compile a vendored proto — a second Go registration of a descriptor
   `forgepb` (or protovalidate) already registers panics every binary at init —
@@ -708,7 +708,7 @@ not exist`, and `AutoMigrate` handed the connection back to the app's pool
   `FORGE_CONFIG`.** Every forge-built binary read `FORGE_CONFIG`, so a shell that
   set it for one forge app made every other forge binary started from that
   shell load that app's file and die at startup (`FORGE_CONFIG=/x.yaml reliant
-  server worker` → `config file "/x.yaml" does not exist`), including a daemon
+server worker` → `config file "/x.yaml" does not exist`), including a daemon
   a desktop app launches with the login environment. The variable is now
   `<BINARY>_CONFIG`, derived from `(forge.v1.binary_config).binary`
   (`RELIANT_CONFIG`, `IDP_PROVISION_ONESHOT_CONFIG`) and shared by a binary's
@@ -719,7 +719,7 @@ not exist`, and `AutoMigrate` handed the connection back to the app's pool
   `config.ConfigPathEnv` is removed from `forge/pkg/config`. The variable is
   recorded on the `--config` flag, so `--help` names it, and a missing file now
   says where its path came from (`(from env RELIANT_CONFIG) ... point
-  RELIANT_CONFIG at a readable file, or unset it`). New in `pkg/config`:
+RELIANT_CONFIG at a readable file, or unset it`). New in `pkg/config`:
   `ConfigPathEnvFor(binary)`, and `RegisterConfigFlag(cmd, env)`, which
   registers `--config` with a chosen variable — called on a binary's root
   before the generated `Register*Flags`, it is the override. `forge generate`
@@ -736,8 +736,8 @@ not exist`, and `AutoMigrate` handed the connection back to the app's pool
   the ones registered on the command path through the cobra-level
   `Register*` functions (recorded on the command), so a key none of them
   declares is still a loud error, now naming them all (`unknown key
-  "jwks_ulr": no config this command loads has such a field (ApiServerConfig,
-  ReliantConfig)`), and nested keys stay strict. One file serves one process:
+"jwks_ulr": no config this command loads has such a field (ApiServerConfig,
+ReliantConfig)`), and nested keys stay strict. One file serves one process:
   `server worker` refuses a key only `server api` reads. A key two loaded
   configs both declare is refused at load, and `forge generate` refuses a root
   and a command config of one binary that share a top-level field name, as it
