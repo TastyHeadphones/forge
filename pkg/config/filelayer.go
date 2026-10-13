@@ -281,12 +281,9 @@ func resolveConfigPath(cmd *cobra.Command, msg proto.Message) (path, source stri
 // Implementation note: protojson.Unmarshal RESETS its target before decoding,
 // so it cannot decode directly into the defaults-populated msg without wiping
 // the defaults. Instead the file is decoded into a FRESH message of the same
-// type and then proto.Merge'd onto msg: Merge copies the file's populated
-// fields over the defaults and recurses into nested blocks, while fields the
-// file did not populate keep their default. (Proto3 scalar presence is
-// value-based: a file that explicitly writes a scalar's zero value cannot be
-// distinguished from omitting it — declare such a field with a non-zero
-// default or as optional if that distinction matters.)
+// type and then overlaid onto msg by overlayNamed: every field the file NAMES
+// takes the file's value outright, and every field it does not name keeps its
+// default. See overlayNamed for why that is not proto.Merge.
 //
 // shared are the other configs the process loads from the same file (see
 // sharedFileMessages): their top-level keys are skipped here, because their
@@ -315,15 +312,65 @@ func applyConfigFile(msg proto.Message, path, source string, shared []protorefle
 	}
 
 	// Decode into a fresh message of the same type (protojson resets it),
-	// then merge the populated fields onto msg. DiscardUnknown=false makes a
-	// stray/typo'd key below the top level a loud error rather than a silent
-	// drop (ownDocument already refused an unknown top-level key).
+	// then overlay the fields the file names onto msg. DiscardUnknown=false
+	// makes a stray/typo'd key below the top level a loud error rather than a
+	// silent drop (ownDocument already refused an unknown top-level key).
 	fileMsg := msg.ProtoReflect().New().Interface()
 	opts := protojson.UnmarshalOptions{DiscardUnknown: false}
 	if err := opts.Unmarshal(own, fileMsg); err != nil {
 		return fmt.Errorf("config file %q (from %s): invalid config document: %w", path, source, err)
 	}
-	proto.Merge(msg, fileMsg)
+	return overlayNamed(msg.ProtoReflect(), fileMsg.ProtoReflect(), own)
+}
+
+// overlayNamed sets on dst every field the JSON object doc names, to its
+// decoded value in src, and leaves every other field of dst — its default —
+// alone. A nested config block the document names as an object is overlaid
+// the same way, one level down, so a file that sets one leaf of a block keeps
+// the block's other defaults. A key whose value is null names nothing.
+//
+// It replaces proto.Merge, which this layer used to call, for two reasons
+// that are each a silent wrong answer:
+//
+//   - Merge APPENDS a repeated field and unions a map, so a file's
+//     `allowed_registries: [quay.io]` over the default [docker.io, ghcr.io]
+//     loaded all three. Every layer REPLACES a whole list (parseList); the
+//     file now does too, and `[]` clears a defaulted list.
+//   - Merge copies only POPULATED fields, so a value equal to proto3's zero —
+//     `port: 0`, `enabled: false`, `""`, `[]` — was dropped and the default
+//     kept, and it recursed into every message, so "0.5s" over a 30s
+//     Duration default became 30.5s. A field the file names now takes the
+//     file's value whatever it is, and a message that is not a config block
+//     (a Duration) is replaced whole.
+//
+// src is a fresh message decoded from doc and discarded after this, so its
+// values are handed to dst without copying.
+func overlayNamed(dst, src protoreflect.Message, doc []byte) error {
+	var named map[string]json.RawMessage
+	if err := json.Unmarshal(doc, &named); err != nil {
+		return fmt.Errorf("invalid config document: %w", err)
+	}
+	fields := dst.Descriptor().Fields()
+	for key, raw := range named {
+		fd := fields.ByJSONName(key)
+		if fd == nil {
+			fd = fields.ByName(protoreflect.Name(key))
+		}
+		if fd == nil || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			continue // protojson already refused an unknown key; null sets nothing
+		}
+		if isConfigBlock(fd) && bytes.HasPrefix(bytes.TrimSpace(raw), []byte("{")) {
+			if err := overlayNamed(dst.Mutable(fd).Message(), src.Get(fd).Message(), raw); err != nil {
+				return err
+			}
+			continue
+		}
+		if src.Has(fd) {
+			dst.Set(fd, src.Get(fd))
+		} else {
+			dst.Clear(fd) // named with its zero value: [] / {} / 0 / false / ""
+		}
+	}
 	return nil
 }
 
