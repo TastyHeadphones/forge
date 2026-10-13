@@ -38,8 +38,13 @@ For each *.sql file in --src-dir, the importer:
      writes no .down.sql; each dropped Down section is listed so you can
      see what was discarded.
   2. Drops -- +goose StatementBegin / -- +goose StatementEnd markers.
-  3. Carries -- +goose NO TRANSACTION over to a golang-migrate x-no-tx-wrap
-     header.
+  3. Splits a -- +goose NO TRANSACTION file into one migration per goose
+     statement. goose ran each of those statements on its own, outside any
+     transaction. golang-migrate runs a file as ONE multi-statement query,
+     which postgres runs as one implicit transaction, so two
+     CREATE INDEX CONCURRENTLY statements in one file fail with SQLSTATE
+     25001 and leave the schema dirty. One statement per file runs exactly
+     as goose ran it.
   4. Renumbers starting from the next-available index in --dest-dir, so
      pack-installed migrations (00001-0000N) keep their slots.
 
@@ -124,18 +129,18 @@ func runMigrateImport(opts migrateImportOptions) error {
 		return nil
 	}
 
-	// Allocate one version per source file up front. Some are skipped
-	// during planning (a goose file forge cannot convert), so a few
-	// allocated versions may go unused — harmless, since versions are
-	// sparse by design and nothing assumes version+1 exists.
-	versions, err := migrationver.NextN(destAbs, len(srcFiles))
+	plans, skipped, err := planGooseImport(srcFiles)
 	if err != nil {
 		return err
 	}
-
-	plans, skipped, err := planGooseImport(srcFiles, versions)
+	// One version per migration the import writes, allocated only once the
+	// plan knows how many that is: a NO TRANSACTION file can become several.
+	versions, err := migrationver.NextN(destAbs, len(plans))
 	if err != nil {
 		return err
+	}
+	for i := range plans {
+		plans[i].Version = versions[i]
 	}
 
 	if !opts.Force && !opts.DryRun {
@@ -147,8 +152,10 @@ func runMigrateImport(opts migrateImportOptions) error {
 			if _, err := os.Stat(p.UpPath(destAbs)); err == nil {
 				return fmt.Errorf("target file already exists: %s (pass --force to overwrite)", p.UpPath(destAbs))
 			}
-			if _, ok := existingStems[p.Stem]; ok {
-				return fmt.Errorf("a migration with stem %q already exists in %s (pass --force to overwrite, or rename the source file)", p.Stem, destAbs)
+			for _, stem := range p.stems() {
+				if _, ok := existingStems[stem]; ok {
+					return fmt.Errorf("a migration with stem %q already exists in %s (pass --force to overwrite, or rename the source file)", stem, destAbs)
+				}
 			}
 		}
 	}
@@ -158,13 +165,17 @@ func runMigrateImport(opts migrateImportOptions) error {
 		if err != nil {
 			return err
 		}
+		removed := map[string]bool{}
 		for _, p := range plans {
-			for _, oldPath := range stemToPaths[p.Stem] {
-				if oldPath == p.UpPath(destAbs) {
-					continue
-				}
-				if err := os.Remove(oldPath); err != nil {
-					return fmt.Errorf("--force: remove old %s: %w", oldPath, err)
+			for _, stem := range p.stems() {
+				for _, oldPath := range stemToPaths[stem] {
+					if oldPath == p.UpPath(destAbs) || removed[oldPath] {
+						continue
+					}
+					if err := os.Remove(oldPath); err != nil {
+						return fmt.Errorf("--force: remove old %s: %w", oldPath, err)
+					}
+					removed[oldPath] = true
 				}
 			}
 		}
@@ -175,6 +186,7 @@ func runMigrateImport(opts migrateImportOptions) error {
 		for _, p := range plans {
 			_, _ = fmt.Fprintf(opts.Stdout, "  %s\n", p.UpPath(destAbs))
 		}
+		printNoTxSplits(opts.Stdout, plans)
 		printDroppedDowns(opts.Stdout, plans)
 		printImportSkips(opts.Stdout, skipped)
 		printFKWarnings(opts.Stdout, plans)
@@ -192,6 +204,7 @@ func runMigrateImport(opts migrateImportOptions) error {
 		_, _ = fmt.Fprintf(opts.Stdout, "  Wrote %s\n", p.UpPath(destAbs))
 	}
 
+	printNoTxSplits(opts.Stdout, plans)
 	printDroppedDowns(opts.Stdout, plans)
 	printImportSkips(opts.Stdout, skipped)
 	printFKWarnings(opts.Stdout, plans)
@@ -202,12 +215,20 @@ func runMigrateImport(opts migrateImportOptions) error {
 
 type importPlan struct {
 	// Version is the allocated timestamp version prefix. The importer
-	// allocates the whole batch up front (migrationver.NextN), one distinct
+	// allocates the whole batch at once (migrationver.NextN), one distinct
 	// second each, so an import of forty goose files cannot collide with
 	// itself.
 	Version string
 	Stem    string
+	// SrcStem is the source file's stem. It differs from Stem only for one
+	// statement of a split NO TRANSACTION file (Stem is then
+	// `<SrcStem>_part<N>`), and is checked and replaced like Stem, so a
+	// re-import meets a previous import of the same file under either name.
+	SrcStem string
 	UpBody  string
+	// Part and Parts place one statement of a split NO TRANSACTION file:
+	// statement Part of Parts. Both are zero for a file imported whole.
+	Part, Parts int
 	// DroppedDown reports that the source carried a goose Down section
 	// with SQL in it, which the import discarded (forge rolls forward
 	// only). Surfaced so the drop is visible rather than silent.
@@ -217,6 +238,14 @@ type importPlan struct {
 
 func (p importPlan) UpPath(destDir string) string {
 	return filepath.Join(destDir, fmt.Sprintf("%s_%s.up.sql", p.Version, p.Stem))
+}
+
+// stems is every migration stem this plan's file may already exist under.
+func (p importPlan) stems() []string {
+	if p.SrcStem == "" || p.SrcStem == p.Stem {
+		return []string{p.Stem}
+	}
+	return []string{p.Stem, p.SrcStem}
 }
 
 type importSkip struct {
@@ -290,10 +319,12 @@ func existingMigrationFilesByStem(dir string) (map[string][]string, error) {
 	return out, nil
 }
 
-func planGooseImport(srcFiles []string, versions []string) ([]importPlan, []importSkip, error) {
+// planGooseImport converts every source file into the migrations it becomes,
+// in order. Versions are left for the caller to allocate, once it knows how
+// many migrations the plan holds.
+func planGooseImport(srcFiles []string) ([]importPlan, []importSkip, error) {
 	var plans []importPlan
 	var skips []importSkip
-	next := 0
 	for _, src := range srcFiles {
 		raw, err := os.ReadFile(src)
 		if err != nil {
@@ -304,19 +335,40 @@ func planGooseImport(srcFiles []string, versions []string) ([]importPlan, []impo
 			skips = append(skips, importSkip{Path: src, Reason: reason})
 			continue
 		}
-		if next >= len(versions) {
-			return nil, nil, fmt.Errorf("internal: allocated %d migration versions but the import needs more", len(versions))
+		stem := gooseSlug(src)
+		if len(converted.Ups) == 1 {
+			plans = append(plans, importPlan{
+				Stem:        stem,
+				SrcStem:     stem,
+				UpBody:      converted.Ups[0],
+				DroppedDown: converted.HadDown,
+				SrcPath:     src,
+			})
+			continue
 		}
-		plans = append(plans, importPlan{
-			Version:     versions[next],
-			Stem:        gooseSlug(src),
-			UpBody:      converted.Up,
-			DroppedDown: converted.HadDown,
-			SrcPath:     src,
-		})
-		next++
+		for i, body := range converted.Ups {
+			plans = append(plans, importPlan{
+				Stem:    fmt.Sprintf("%s_part%d", stem, i+1),
+				SrcStem: stem,
+				UpBody:  noTxPartHeader(filepath.Base(src), i+1, len(converted.Ups)) + body,
+				Part:    i + 1,
+				Parts:   len(converted.Ups),
+				// The drop is a fact about the source file: report it once.
+				DroppedDown: converted.HadDown && i == 0,
+				SrcPath:     src,
+			})
+		}
 	}
 	return plans, skips, nil
+}
+
+// noTxPartHeader opens one statement of a split NO TRANSACTION file. It is a
+// comment for the reader, not a directive: the split is what makes the
+// statement run outside a transaction, and nothing needs to read it.
+func noTxPartHeader(srcName string, part, parts int) string {
+	return fmt.Sprintf("-- Statement %d of %d of goose migration %s, which declared NO TRANSACTION.\n"+
+		"-- goose ran each of its statements on its own; golang-migrate runs a file as one\n"+
+		"-- implicit transaction, so each statement is its own migration.\n\n", part, parts, srcName)
 }
 
 func gooseSlug(srcPath string) string {
@@ -328,7 +380,10 @@ func gooseSlug(srcPath string) string {
 }
 
 type convertedGoose struct {
-	Up string
+	// Ups is the body of every migration the file becomes, in order: one,
+	// unless the file declared NO TRANSACTION and holds several statements
+	// (see gooseStatements).
+	Ups []string
 	// HadDown reports a Down section carrying SQL — discarded, not written.
 	HadDown bool
 }
@@ -339,26 +394,111 @@ var (
 	gooseStatementBegin = regexp.MustCompile(`^\s*--\s*\+goose\s+StatementBegin\b`)
 	gooseStatementEnd   = regexp.MustCompile(`^\s*--\s*\+goose\s+StatementEnd\b`)
 	gooseNoTransaction  = regexp.MustCompile(`^\s*--\s*\+goose\s+NO\s+TRANSACTION\b`)
-	noTxWrapHeader      = "-- golang-migrate: no transaction wrap\n-- x-no-tx-wrap: true\n"
 )
 
+// convertGooseFile turns one goose file into the forge migrations it becomes.
+//
+// A NO TRANSACTION file holding several statements becomes one migration per
+// statement. goose runs such a file statement by statement, each on its own,
+// outside any transaction — the reason it is declared at all is usually a
+// statement that cannot run inside one (CREATE INDEX CONCURRENTLY) or one
+// whose effect the next must see committed (ALTER TYPE … ADD VALUE, then a row
+// using the value). golang-migrate has no such mode: it sends a file to
+// postgres as ONE multi-statement query, which postgres runs as one implicit
+// transaction. Kept in one file, those statements fail with SQLSTATE 25001
+// (or 55P04) and leave the schema dirty. A file per statement runs each
+// exactly as goose ran it, and records each as it lands, so a failure part-way
+// leaves only the failed statement to repair.
+//
+// A tx-mode file needs no split: goose ran it in one transaction, and so does
+// golang-migrate.
 func convertGooseFile(content string) (convertedGoose, bool, string) {
 	if !containsGooseMarker(content) {
 		return convertedGoose{}, false, "no goose markers found, skipping"
 	}
 
-	noTx := containsGooseNoTransaction(content)
-
 	upLines, downLines := splitAtGooseDown(content)
-
-	upBody := strings.TrimSpace(stripGooseMarkers(upLines)) + "\n"
 	hadDown := strings.TrimSpace(stripSQLLineComments(stripGooseMarkers(downLines))) != ""
 
-	if noTx {
-		upBody = noTxWrapHeader + upBody
+	if containsGooseNoTransaction(content) {
+		if stmts := gooseStatements(upLines); len(stmts) > 1 {
+			return convertedGoose{Ups: stmts, HadDown: hadDown}, true, ""
+		}
 	}
 
-	return convertedGoose{Up: upBody, HadDown: hadDown}, true, ""
+	upBody := strings.TrimSpace(stripGooseMarkers(upLines)) + "\n"
+	return convertedGoose{Ups: []string{upBody}, HadDown: hadDown}, true, ""
+}
+
+// gooseStatements splits an Up section into the statements goose executes,
+// by goose's own rule (pressly/goose v3, internal/sqlparser): a statement ends
+// at a line whose last word before any `--` comment ends in `;`, except
+// between -- +goose StatementBegin and -- +goose StatementEnd, where it ends
+// at StatementEnd. Comment and blank lines before a statement travel with it:
+// goose skips them, but here they document the statement they precede.
+//
+// goose's rule and not a SQL lexer, because the point is to reproduce what
+// goose RAN. Under NO TRANSACTION goose sent each of these to postgres as one
+// query; golang-migrate sends a migration file as one query. So two
+// statements goose sent together — on one line, or in one StatementBegin
+// block — stay in one migration, exactly as atomic as they were, and a file
+// goose split is split at the same places.
+func gooseStatements(upLines []string) []string {
+	var (
+		stmts   []string
+		pending strings.Builder // comment and blank lines before the next statement
+		stmt    strings.Builder
+		inBlock bool
+	)
+	emit := func() {
+		if strings.TrimSpace(stmt.String()) == "" {
+			return
+		}
+		stmts = append(stmts, strings.TrimSpace(pending.String()+stmt.String())+"\n")
+		pending.Reset()
+		stmt.Reset()
+	}
+	for _, line := range upLines {
+		switch {
+		case gooseStatementBegin.MatchString(line):
+			inBlock = true
+			continue
+		case gooseStatementEnd.MatchString(line):
+			inBlock = false
+			emit()
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if stmt.Len() == 0 && (trimmed == "" || strings.HasPrefix(trimmed, "--")) {
+			pending.WriteString(line + "\n")
+			continue
+		}
+		stmt.WriteString(line + "\n")
+		if !inBlock && gooseEndsStatement(line) {
+			emit()
+		}
+	}
+	// An unterminated tail (goose refuses one) is kept as a statement of its
+	// own rather than dropped. Comments after the last statement stay with it.
+	emit()
+	if trailing := strings.TrimSpace(pending.String()); trailing != "" && len(stmts) > 0 {
+		stmts[len(stmts)-1] += "\n" + trailing + "\n"
+	}
+	return stmts
+}
+
+// gooseEndsStatement is goose's endsWithSemicolon: the line's last
+// whitespace-separated word before the first one opening a `--` comment ends
+// in `;`.
+func gooseEndsStatement(line string) bool {
+	prev := ""
+	for _, word := range strings.Fields(line) {
+		if strings.HasPrefix(word, "--") {
+			break
+		}
+		prev = word
+	}
+	return strings.HasSuffix(prev, ";")
 }
 
 func containsGooseMarker(content string) bool {
@@ -452,6 +592,26 @@ func stripSQLLineComments(body string) string {
 		out.WriteByte('\n')
 	}
 	return out.String()
+}
+
+// printNoTxSplits lists the NO TRANSACTION files the import split into one
+// migration per statement, so the extra files are explained rather than
+// surprising.
+func printNoTxSplits(w interface{ Write(p []byte) (int, error) }, plans []importPlan) {
+	var lines []string
+	for _, p := range plans {
+		if p.Part == 1 {
+			lines = append(lines, fmt.Sprintf("%s → %d migrations, %s_part1 … %s_part%d", filepath.Base(p.SrcPath), p.Parts, p.SrcStem, p.SrcStem, p.Parts))
+		}
+	}
+	if len(lines) == 0 {
+		return
+	}
+	_, _ = fmt.Fprintln(w, "\nSplit -- +goose NO TRANSACTION files into one migration per statement (goose ran each")
+	_, _ = fmt.Fprintln(w, "statement on its own; golang-migrate runs a file as one implicit transaction):")
+	for _, l := range lines {
+		_, _ = fmt.Fprintf(w, "  - %s\n", l)
+	}
 }
 
 // printDroppedDowns lists the source files whose goose Down section was
