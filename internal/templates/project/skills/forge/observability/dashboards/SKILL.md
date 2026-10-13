@@ -10,13 +10,13 @@ project's own metadata: the proto services and rpcs, the frontends and whether a
 database exists. It runs for service projects with observability on and at least
 one service.
 
-| File | What |
-|---|---|
-| `deploy/observability/dashboards/<project>-overview_gen.json` | requests, server errors, p95/p99, request rate and error rate per service, RED table, top errors, DB latency, recent error logs |
-| `.../<project>-service-<svc>_gen.json` | per service: a requests / error-rate / latency row for EVERY rpc, a RED-by-rpc table, DB calls, Go runtime (memory, GC goal, goroutines, allocation), error logs and logs scoped to that service |
-| `.../<project>-frontend_gen.json` | with a web frontend: JS errors, sessions, page views, failed API calls, LCP/INP/CLS p75, page-load percentiles, browser API latency and calls by URL |
-| `.../saved-searches_gen.ndjson` | one error-log search per service |
-| `deploy/observability/dashboard-spec_gen.json` | the renderer-neutral model all of the above come from |
+| File                                                          | What                                                                                                                                                                                             |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `deploy/observability/dashboards/<project>-overview_gen.json` | requests, server errors, p95/p99, request rate and error rate per service, RED table, top errors, DB latency, recent error logs                                                                  |
+| `.../<project>-service-<svc>_gen.json`                        | per service: a requests / error-rate / latency row for EVERY rpc, a RED-by-rpc table, DB calls, Go runtime (memory, GC goal, goroutines, allocation), error logs and logs scoped to that service |
+| `.../<project>-frontend_gen.json`                             | with a web frontend: JS errors, sessions, page views, failed API calls, LCP/INP/CLS p75, page-load percentiles, browser API latency and calls by URL                                             |
+| `.../saved-searches_gen.ndjson`                               | one error-log search per service                                                                                                                                                                 |
+| `deploy/observability/dashboard-spec_gen.json`                | the renderer-neutral model all of the above come from                                                                                                                                            |
 
 Every dashboard has `service.name` and `deployment.environment.name` filters.
 
@@ -50,11 +50,11 @@ exists forge stops writing (and removes a pristine) `x_gen.json`. Any other
 
 `forge env build <env> --release <v>` puts the dashboards into the release bundle, so the Reliant console shows the set that belongs to the release that is running (and a rollback shows the older one):
 
-| In the bundle | What |
-|---|---|
+| In the bundle                                      | What                                                                                                                        |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | `observability/dashboards/<project>-<id>_gen.json` | each dashboard of `dashboard-spec_gen.json`, plus `<project>-custom-metrics_gen.json` drawn from the build's metrics schema |
-| `observability/dashboards/<name>.json` | a dashboard you own |
-| `observability/metrics-schema.json` | the schema, `forge.metrics/v1` |
+| `observability/dashboards/<name>.json`             | a dashboard you own                                                                                                         |
+| `observability/metrics-schema.json`                | the schema, `forge.metrics/v1`                                                                                              |
 
 They ride in the manifests layer, outside every `manifests/<cluster>/` tree, so nothing is applied from them.
 
@@ -64,7 +64,7 @@ Every file is validated at the cut, and `forge observe dashboards check` runs th
 
 `annotations: [{"source": "releases"}]` on a dashboard asks the console to draw a marker for every promotion on its time-series panels. Generated dashboards declare it.
 
-The *Workloads* dashboard (CPU/memory against requests and limits, restarts and exit reason, image versions, Kubernetes events) and the *Releases* dashboard (request, error and latency by `service.version`) are generated for every project. They read node-derived and release data, so they are empty under `forge env up`.
+The _Workloads_ dashboard (CPU/memory against requests and limits, restarts and exit reason, image versions, Kubernetes events) and the _Releases_ dashboard (request, error and latency by `service.version`) are generated for every project. They read node-derived and release data that a local `forge env up` does not have, so they ship in the spec and the bundle and are not written to `deploy/observability/dashboards/`.
 
 ## Alerts
 

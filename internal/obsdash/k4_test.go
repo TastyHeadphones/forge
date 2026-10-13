@@ -185,7 +185,7 @@ const ownedOverview = `{
 
 func collect(t *testing.T, dir string, schema []byte) BundleSet {
 	t.Helper()
-	set, err := CollectBundleSet(BundleSetInput{ProjectDir: dir, Project: "shop", MetricsSchema: schema})
+	set, err := CollectBundleSet(BundleSetInput{ProjectDir: dir, MetricsSchema: schema})
 	if err != nil {
 		t.Fatalf("CollectBundleSet: %v", err)
 	}
@@ -302,7 +302,7 @@ func TestAHyperDXFileStaysLocalAndOverridesNothing(t *testing.T) {
 func TestADashboardIdIsUniqueAcrossTheBundle(t *testing.T) {
 	dir := writeProject(t)
 	writeOwned(t, dir, "other.json", ownedOverview) // id "overview" again
-	_, err := CollectBundleSet(BundleSetInput{ProjectDir: dir, Project: "shop"})
+	_, err := CollectBundleSet(BundleSetInput{ProjectDir: dir})
 	if err == nil || !strings.Contains(err.Error(), `dashboard id "overview"`) {
 		t.Fatalf("err = %v, want a duplicate-id error", err)
 	}
@@ -451,7 +451,7 @@ func TestValidationRejectsWhatTheEnginesWouldRefuse(t *testing.T) {
 func TestAnInvalidUserFileFailsTheBundleSetWithItsLocation(t *testing.T) {
 	dir := writeProject(t)
 	writeOwned(t, dir, "broken.json", "{\n  \"id\": \"broken\",\n  \"title\": \"B\",\n  \"panels\": [\n    {\"id\": \"p\", \"title\": \"P\", \"kind\": \"cube\", \"signal\": \"traces\"}\n  ]\n}\n")
-	_, err := CollectBundleSet(BundleSetInput{ProjectDir: dir, Project: "shop"})
+	_, err := CollectBundleSet(BundleSetInput{ProjectDir: dir})
 	if err == nil {
 		t.Fatal("an invalid file was accepted")
 	}
@@ -472,5 +472,29 @@ func TestAnAnnotatedUserDashboardRoundTrips(t *testing.T) {
 	}
 	if len(d.Annotations) != 1 || d.Annotations[0].Source != AnnotationReleases || d.Annotations[0].Label != "Deploys" {
 		t.Errorf("annotations = %+v", d.Annotations)
+	}
+}
+
+func TestHostedOnlyDashboardsAreNotWrittenLocally(t *testing.T) {
+	dir := writeProject(t)
+	for _, name := range []string{"shop-workloads_gen.json", "shop-releases_gen.json"} {
+		if _, err := os.Stat(filepath.Join(dir, DashboardsDir, name)); err == nil {
+			t.Errorf("%s was written to the project: it has nothing to draw under forge env up and is constant library text", name)
+		}
+	}
+	for _, name := range []string{"shop-overview_gen.json", "shop-service-orders_gen.json"} {
+		if _, err := os.Stat(filepath.Join(dir, DashboardsDir, name)); err != nil {
+			t.Errorf("%s is missing: %v", name, err)
+		}
+	}
+	// ...but they are in the spec, and so in the bundle.
+	raw, err := os.ReadFile(filepath.Join(dir, SpecFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{`"id": "workloads"`, `"id": "releases"`} {
+		if !strings.Contains(string(raw), id) {
+			t.Errorf("%s is not in dashboard-spec_gen.json", id)
+		}
 	}
 }

@@ -24,10 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   errors before a release is left behind without its bundle; a deploy that
   builds nothing only warns. `forge observe dashboards check` runs the same
   validation and lists what would ship.
-- **Two best-practice dashboards.** *Workloads* draws the customer metadata the
+- **Two best-practice dashboards.** _Workloads_ draws the customer metadata the
   node agent delivers (CPU and memory against requests and limits, restarts and
   the last exit reason, CPU and memory by image tag, Kubernetes events and
-  container terminations). *Releases* splits requests, error rate and latency
+  container terminations). _Releases_ splits requests, error rate and latency
   by `service.version` and adds a per-version comparison table. Neither has a
   heatmap. They draw nothing on a local `forge env up` (no node agent, no
   releases).
@@ -313,7 +313,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `AutoMigrate`, which cannot know its binary's commands, names
   `forge db migrate force N` from a checkout of the release (new
   `migratekit.ForceCommand`, tested to resolve) and the binary's own `db
-  migrate force N` where it has one. The `db` and `db/deploy-migrations`
+migrate force N` where it has one. The `db` and `db/deploy-migrations`
   skills, `docs/concepts.md` and the `forge db squash` doc stop naming the
   golang-migrate CLI or crediting its lock. `db.go` is scaffolded once, so an
   existing project gains `force` by copying it from a fresh scaffold.
@@ -427,7 +427,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   forge's own setters keep to `env_var`: the KCL env map and the secret store
   key name it alone. Flag help now lists the env vars that set a flag,
   permanent aliases included (`--environment string   … [env: RELIANT_ENV,
-  NODE_ENV]`). A required-field error names every alias. `forge generate`
+NODE_ENV]`). A required-field error names every alias. `forge generate`
   refuses an alias that repeats any env var or alias another field of the same
   process reads (a command config counts its binary's root config), repeats
   the field's own `env_var`, has no `env_var` beside it, is not a variable
@@ -439,7 +439,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Alert rules, declared per env: `forge.AlertRule`, `forge.AlertRoute`,
   `forge.AlertDefault`.** On `forge.Observability.alerts = forge.Alerts {rules,
-  defaults, routes}`. A rule is the Prometheus shape with the condition inside
+defaults, routes}`. A rule is the Prometheus shape with the condition inside
   `expr`, a single native ClickHouse SELECT over the OpenTelemetry tables whose
   every row is a firing instance (non-`value` columns are labels, `value` the
   sample); `severity` is a label (critical | warning | info, default warning).
@@ -662,7 +662,7 @@ github.com/reliant-labs/forge/cmd/forge@<pin> <same args>` that needs no
   in-place scaffold into an empty directory, keep `error`. The `migration`
   skill and `docs/concepts.md` now document both defaults and when to flip.
 - **`forge lint` runs every lane flag it is given.** `forge lint --conventions
-  --contract` ran whichever lane came first in the dispatch chain, skipped the
+--contract` ran whichever lane came first in the dispatch chain, skipped the
   other without a word, and printed ✅ — a green verdict over a lane that never
   executed (text mode, `--quiet`/`--scope`, `--json` and `--gate-json` alike).
   Every named lane now runs, each exactly as it runs alone, and one verdict
@@ -692,7 +692,7 @@ github.com/reliant-labs/forge/cmd/forge@<pin> <same args>` that needs no
   pg_dump's session prelude, so the baseline ran
   `SELECT pg_catalog.set_config('search_path', '', false)` on the migrator's
   session: the next migration in the same run failed with `relation "x" does
-  not exist`, and `AutoMigrate` handed the connection back to the app's pool
+not exist`, and `AutoMigrate` handed the connection back to the app's pool
   with an empty `search_path`. Its line filter for psql meta-commands also
   deleted any line beginning with `\` inside a function body or an inserted
   value. squash now reads the dump the way postgres lexes it (quotes, `E''`

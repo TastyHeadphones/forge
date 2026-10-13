@@ -92,10 +92,9 @@ type BundleFile struct {
 
 // BundleSetInput is what CollectBundleSet reads.
 type BundleSetInput struct {
-	// ProjectDir is the project root.
+	// ProjectDir is the project root; the project's name is the one
+	// dashboard-spec_gen.json records.
 	ProjectDir string
-	// Project is the forge project name (forge.yaml name).
-	Project string
 	// MetricsSchema is the raw metrics schema the build produced, or nil.
 	MetricsSchema []byte
 }
@@ -155,7 +154,7 @@ func CollectBundleSet(in BundleSetInput) (BundleSet, error) {
 // dashboard, which needs the built binary's schema and so cannot be in it.
 func generatedDashboards(in BundleSetInput) ([]BundleDashboard, error) {
 	var dashboards []Dashboard
-	project := in.Project
+	project := ""
 
 	raw, err := os.ReadFile(filepath.Join(in.ProjectDir, filepath.FromSlash(SpecFile)))
 	switch {
