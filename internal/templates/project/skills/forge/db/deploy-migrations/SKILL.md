@@ -209,10 +209,12 @@ ls <goose-dir>/*.sql | xargs -n1 basename | cut -d_ -f1 | sort -n | xargs -n8 | 
 
 Build the baseline body with `pg_dump --schema-only --no-owner
 --no-privileges` from a throwaway database the goose history built, excluding
-`goose_db_version`. Then strip pg_dump's session prelude and psql commands:
+`goose_db_version`. Then strip pg_dump's session prelude and psql commands,
+keeping function-body validation off for the baseline's own transaction:
 
 ```bash
-grep -v -e '^SET ' -e '^SELECT pg_catalog.set_config' -e '^\\' dump.sql
+{ echo "SELECT pg_catalog.set_config('check_function_bodies', 'false', true);"
+  grep -v -e '^SET ' -e '^SELECT pg_catalog.set_config' -e '^\\' dump.sql; }
 ```
 
 Leaving them in breaks things, and measurably. The migrator runs the
@@ -221,6 +223,15 @@ persists on that session. The next migration in the same run then fails with
 `relation "…" does not exist`, and under `AutoMigrate` the connection returns
 to the app's pool with an empty `search_path`. `\restrict` (pg_dump ≥ 16.10
 and its sibling minor releases) is a psql command, so it fails as SQL.
+
+The first line replaces the prelude's `SET check_function_bodies = false`.
+pg_dump writes functions before tables, so without it a `LANGUAGE sql`
+function whose body names a table fails with `relation "public.…" does not
+exist`. Its third argument makes it transaction-local, so it ends with the
+baseline. `grep` is line-based: check that no function body or string in the
+dump has a line beginning with `SET ` or `\`, which it would delete.
+`forge db squash` does all of this for a golang-migrate history, reading the
+dump the way postgres lexes it, so its output has no such caveat.
 
 Prove the baseline before shipping it. Build one database with the last goose
 release, and let the new binary adopt it. Build a second fresh database from
