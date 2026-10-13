@@ -97,11 +97,21 @@ func TestReleasesDashboardGolden(t *testing.T) {
 	}
 }
 
+// withCustomMetrics is the project's spec plus the Custom metrics dashboard, as
+// a release bundle carries them.
+func withCustomMetrics(t *testing.T) Spec {
+	t.Helper()
+	sp := Build(fixture())
+	d, ok := BuildCustomMetrics("shop", customSchema(t))
+	if !ok {
+		t.Fatal("no custom-metrics dashboard for a schema that declares metrics")
+	}
+	sp.Dashboards = append(sp.Dashboards, d)
+	return sp
+}
+
 func TestNoGeneratedDashboardDrawsAHeatmap(t *testing.T) {
-	custom := customSchema(t)
-	in := fixture()
-	in.Metrics = &custom
-	files, err := RenderHyperDX(Build(in))
+	files, err := RenderHyperDX(withCustomMetrics(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,10 +123,7 @@ func TestNoGeneratedDashboardDrawsAHeatmap(t *testing.T) {
 }
 
 func TestReleaseMarkersAreDeclaredWhereATimeSeriesExists(t *testing.T) {
-	custom := customSchema(t)
-	in := fixture()
-	in.Metrics = &custom
-	for _, d := range Build(in).Dashboards {
+	for _, d := range withCustomMetrics(t).Dashboards {
 		hasLine := false
 		for _, p := range d.Panels {
 			hasLine = hasLine || p.Kind == KindLine
@@ -330,10 +337,7 @@ func TestBundleSetIsDeterministic(t *testing.T) {
 }
 
 func TestEveryGeneratedDashboardPassesTheValidator(t *testing.T) {
-	custom := customSchema(t)
-	in := fixture()
-	in.Metrics = &custom
-	for _, d := range Build(in).Dashboards {
+	for _, d := range withCustomMetrics(t).Dashboards {
 		b, _ := marshalDashboardFile(d)
 		if _, err := ParseDashboard(d.ID, b); err != nil {
 			t.Errorf("%s: %v", d.ID, err)

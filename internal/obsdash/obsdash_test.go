@@ -271,20 +271,12 @@ func TestCustomMetricsDashboardIsOmittedWithoutCustomMetrics(t *testing.T) {
 	if _, ok := BuildCustomMetrics("shop", builtinOnly); ok {
 		t.Error("a schema of only built-in metrics produced a custom dashboard")
 	}
-	in := fixture()
-	in.Metrics = &builtinOnly
-	for _, d := range Build(in).Dashboards {
+	// The Custom metrics dashboard needs the built binary's schema, which
+	// `forge generate` never has: it is added at release cut (CollectBundleSet),
+	// not by Build.
+	for _, d := range Build(fixture()).Dashboards {
 		if d.ID == CustomMetricsID {
-			t.Error("Build added an empty custom-metrics dashboard")
+			t.Error("Build added a custom-metrics dashboard; it is drawn from a schema Build is never given")
 		}
-	}
-	custom := customSchema(t)
-	in.Metrics = &custom
-	var ids []string
-	for _, d := range Build(in).Dashboards {
-		ids = append(ids, d.ID)
-	}
-	if got, want := strings.Join(ids, ","), "overview,service-billing,service-orders,custom-metrics,workloads,releases,frontend"; got != want {
-		t.Errorf("dashboards = %s, want %s", got, want)
 	}
 }

@@ -25,8 +25,6 @@ package obsdash
 import (
 	"fmt"
 	"sort"
-
-	"github.com/reliant-labs/forge/pkg/observe/metrics"
 )
 
 // SpecVersion identifies the serialized shape of Spec. Bump it on a breaking
@@ -265,11 +263,6 @@ type Input struct {
 	// HasDatabase adds the database panels: true once the project has a
 	// migration, since the panels read spans the ORM's query hook emits.
 	HasDatabase bool
-	// Metrics, when set, is the project's metrics schema (forge.metrics/v1,
-	// from `<bin> metrics schema --json`). Build adds the "Custom metrics"
-	// dashboard for the metrics it declares. Nil adds nothing: generating
-	// needs no built binary, so the schema is supplied by whoever has one.
-	Metrics *metrics.Schema
 }
 
 // maxPerRPCRows bounds the per-rpc RED rows: past this a service gets the
@@ -303,12 +296,6 @@ func Build(in Input) Spec {
 			Where:   append(serviceLogScope(s), errorLogs),
 			Columns: logColumns,
 		})
-	}
-
-	if in.Metrics != nil {
-		if d, ok := BuildCustomMetrics(in.Project, *in.Metrics); ok {
-			sp.Dashboards = append(sp.Dashboards, d)
-		}
 	}
 
 	sp.Dashboards = append(sp.Dashboards, BuildWorkloads(in.Project), BuildReleases(in.Project))
