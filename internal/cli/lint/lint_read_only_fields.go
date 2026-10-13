@@ -131,6 +131,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/naming"
+	"github.com/reliant-labs/forge/internal/sqlident"
 	"github.com/reliant-labs/forge/pkg/schemadef"
 )
 
@@ -530,13 +531,13 @@ type sqlColumn struct {
 
 var (
 	alterAddColumnRe = regexp.MustCompile(
-		`(?is)\bALTER\s+TABLE\s+(?:ONLY\s+)?("?[\w.]+"?)\s+ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?([^;]+)`)
+		`(?is)\bALTER\s+TABLE\s+(?:ONLY\s+)?(` + sqlident.Qualified + `)\s+ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?([^;]+)`)
 	alterDropColumnRe = regexp.MustCompile(
-		`(?is)\bALTER\s+TABLE\s+(?:ONLY\s+)?("?[\w.]+"?)\s+DROP\s+COLUMN\s+(?:IF\s+EXISTS\s+)?("?[\w]+"?)`)
+		`(?is)\bALTER\s+TABLE\s+(?:ONLY\s+)?(` + sqlident.Qualified + `)\s+DROP\s+COLUMN\s+(?:IF\s+EXISTS\s+)?(` + sqlident.Part + `)`)
 	alterSetDefaultRe = regexp.MustCompile(
-		`(?is)\bALTER\s+TABLE\s+(?:ONLY\s+)?("?[\w.]+"?)\s+ALTER\s+(?:COLUMN\s+)?("?[\w]+"?)\s+SET\s+DEFAULT\s+([^;]+)`)
+		`(?is)\bALTER\s+TABLE\s+(?:ONLY\s+)?(` + sqlident.Qualified + `)\s+ALTER\s+(?:COLUMN\s+)?(` + sqlident.Part + `)\s+SET\s+DEFAULT\s+([^;]+)`)
 	alterDropDefaultRe = regexp.MustCompile(
-		`(?is)\bALTER\s+TABLE\s+(?:ONLY\s+)?("?[\w.]+"?)\s+ALTER\s+(?:COLUMN\s+)?("?[\w]+"?)\s+DROP\s+DEFAULT`)
+		`(?is)\bALTER\s+TABLE\s+(?:ONLY\s+)?(` + sqlident.Qualified + `)\s+ALTER\s+(?:COLUMN\s+)?(` + sqlident.Part + `)\s+DROP\s+DEFAULT`)
 	columnDefaultRe = regexp.MustCompile(`(?is)\bDEFAULT\s+(.+?)(?:\s+(?:NOT\s+NULL|NULL|PRIMARY\s+KEY|UNIQUE|REFERENCES|CHECK|GENERATED|COLLATE)\b|$)`)
 	generatedColRe  = regexp.MustCompile(`(?is)\bGENERATED\s+ALWAYS\s+AS\s*\(`)
 	notNullColRe    = regexp.MustCompile(`(?is)\bNOT\s+NULL\b`)
@@ -835,12 +836,12 @@ func applyFillMarkers(live map[string]map[string]sqlColumn, content string) {
 		if !fillMarkerRe.MatchString(m[2]) {
 			continue
 		}
-		object := strings.Trim(strings.TrimSpace(m[1]), `"`)
-		dot := strings.LastIndex(object, ".")
-		if dot < 0 {
+		// `table.column`, or `schema.table.column` when qualified.
+		parts := sqlident.Parts(m[1])
+		if len(parts) < 2 {
 			continue
 		}
-		table, name := normIdent(object[:dot]), normIdent(object[dot+1:])
+		table, name := parts[len(parts)-2], parts[len(parts)-1]
 		col, ok := live[table][name]
 		if !ok {
 			continue

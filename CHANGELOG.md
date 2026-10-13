@@ -39,6 +39,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Schema-qualified and quoted table names read as the table, everywhere
+  forge reads migration DDL as text.** pg_dump writes every table qualified
+  (`CREATE TABLE public.tasks`), and `forge project shapes --kind table`
+  named each one `public`. The same short pattern was spelled separately in
+  `forge map`, the migration-context reader behind entity births, the
+  read-only-fields and column-markers lints, and the unscoped_auth audit
+  (its `forge:owner` reader and its handler-SQL table scan); some read the
+  schema as the table, others missed `"public"."tasks"` and `public."Tasks"`
+  outright, so a `forge:owner` or `forge:fill` declared on a quoted name went
+  unseen. They now share one identifier grammar (`internal/sqlident`): one to
+  three dot-separated parts, each unquoted (folded to lower case, as postgres
+  folds it) or double-quoted (kept verbatim, `""` for a quote). `shapes`
+  reports the schema as `schema=<name>` detail.
+
 - **A failed `forge generate` that changed no Go file no longer builds the
   project to report on its rollback.** After reverting a failed run, generate
   ran `go build ./...` over the restored tree to say whether it compiles. It

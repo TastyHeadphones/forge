@@ -12,13 +12,17 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/sqlident"
 )
 
 // createTableRE naïvely matches "CREATE TABLE [IF NOT EXISTS] <name>". It's a
 // rough heuristic — the authoritative answer would parse SQL — but it captures
 // the 95% case and the 5% it misses tend to be exotic forms (DDL inside CTE,
-// etc.) that would never appear in a forge-generated migration.
-var createTableRE = regexp.MustCompile(`(?i)CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?\s+["` + "`" + `]?([a-zA-Z_][a-zA-Z0-9_]*)["` + "`" + `]?`)
+// etc.) that would never appear in a forge-generated migration. The name may
+// be schema-qualified and quoted (`public.tasks`, `"public"."Tasks"`);
+// sqlident reads it.
+var createTableRE = regexp.MustCompile(`(?i)CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?\s+(` + sqlident.Qualified + `)`)
 
 // tablesFromMigrations greps CREATE TABLE statements out of every .sql under
 // dir (skipping .down. migrations, which DROP rather than CREATE).
@@ -41,7 +45,7 @@ func tablesFromMigrations(dir string) map[string]struct{} {
 		}
 		for _, m := range createTableRE.FindAllStringSubmatch(string(data), -1) {
 			if len(m) > 1 {
-				out[strings.ToLower(m[1])] = struct{}{}
+				out[sqlident.Last(m[1])] = struct{}{}
 			}
 		}
 		return nil

@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/sqlident"
 )
 
 // MigrationOptions controls what context is included when creating a new migration.
@@ -49,9 +51,12 @@ type PreviousMigrationInfo struct {
 // --- Schema parsing from migration files ---
 
 var (
-	createTableRe = regexp.MustCompile(`(?i)CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)\s*\(`)
-	alterTableRe  = regexp.MustCompile(`(?i)ALTER\s+TABLE\s+(?:ONLY\s+)?(\w+)\s+ADD\s+(?:COLUMN\s+)?(\w+)\s+(.+?)(?:;|$)`)
-	dropTableRe   = regexp.MustCompile(`(?i)DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(\w+)`)
+	// Table names may be schema-qualified and quoted (pg_dump writes
+	// `CREATE TABLE public.tasks`); sqlident.Last reads the table out of
+	// whatever these capture.
+	createTableRe = regexp.MustCompile(`(?i)CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(` + sqlident.Qualified + `)\s*\(`)
+	alterTableRe  = regexp.MustCompile(`(?i)ALTER\s+TABLE\s+(?:ONLY\s+)?(` + sqlident.Qualified + `)\s+ADD\s+(?:COLUMN\s+)?(` + sqlident.Part + `)\s+(.+?)(?:;|$)`)
+	dropTableRe   = regexp.MustCompile(`(?i)DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(` + sqlident.Qualified + `)`)
 	columnLineRe  = regexp.MustCompile(`^\s*(\w+)\s+(\S+(?:\s+\S+)?)\s*(.*?)(?:,?\s*)$`)
 )
 
@@ -105,7 +110,7 @@ func parseSQL(content string, tableMap map[string]*ParsedTable) {
 
 	// Handle DROP TABLE — remove from map.
 	for _, match := range dropTableRe.FindAllStringSubmatch(content, -1) {
-		delete(tableMap, match[1])
+		delete(tableMap, sqlident.Last(match[1]))
 	}
 
 	// Handle CREATE TABLE.
@@ -113,8 +118,8 @@ func parseSQL(content string, tableMap map[string]*ParsedTable) {
 
 	// Handle ALTER TABLE ADD COLUMN.
 	for _, match := range alterTableRe.FindAllStringSubmatch(content, -1) {
-		tableName := match[1]
-		colName := match[2]
+		tableName := sqlident.Last(match[1])
+		colName := sqlident.Last(match[2])
 		colRest := strings.TrimSpace(match[3])
 
 		t, ok := tableMap[tableName]
@@ -157,7 +162,7 @@ func stripSQLComments(content string) string {
 func parseCreateTables(content string, tableMap map[string]*ParsedTable) {
 	matches := createTableRe.FindAllStringSubmatchIndex(content, -1)
 	for _, loc := range matches {
-		tableName := content[loc[2]:loc[3]]
+		tableName := sqlident.Last(content[loc[2]:loc[3]])
 		// Find the matching closing paren by counting parens from the opening.
 		start := loc[1] // position after the opening paren
 		depth := 1

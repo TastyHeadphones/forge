@@ -82,3 +82,23 @@ func mustWriteFile(t *testing.T, path, body string) {
 		t.Fatal(err)
 	}
 }
+
+// tablesFromMigrations reads a pg_dump-style qualified name as its table,
+// never as the schema.
+func TestTablesFromMigrations_SchemaQualified(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "00001_baseline.up.sql"),
+		[]byte("CREATE TABLE public.tasks (id text);\nCREATE TABLE \"public\".\"Orders\" (id text);\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := tablesFromMigrations(dir)
+	if _, ok := got["tasks"]; !ok {
+		t.Errorf("tasks missing: %v", got)
+	}
+	if _, ok := got["Orders"]; !ok {
+		t.Errorf("quoted Orders missing (postgres keeps a quoted name's case): %v", got)
+	}
+	if _, ok := got["public"]; ok {
+		t.Errorf("a schema was read as a table: %v", got)
+	}
+}

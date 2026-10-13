@@ -15,6 +15,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/sqlident"
 )
 
 // matchParen returns the offset of the ')' closing the '(' at open, ignoring
@@ -47,16 +49,11 @@ func matchParen(s string, open int) (int, bool) {
 	return 0, false
 }
 
-// normIdent strips quoting and schema qualification from an identifier and
-// folds it to lower case, matching how postgres resolves the unquoted names
-// forge generates.
+// normIdent strips schema qualification and quoting from an identifier the
+// way postgres resolves it: an unquoted name folds to lower case, a quoted
+// one is kept verbatim (see sqlident).
 func normIdent(s string) string {
-	s = strings.TrimSpace(s)
-	s = strings.Trim(s, `"`)
-	if i := strings.LastIndex(s, "."); i >= 0 {
-		s = strings.Trim(s[i+1:], `"`)
-	}
-	return strings.ToLower(s)
+	return sqlident.Last(s)
 }
 
 // blankSQLComments replaces SQL comments with spaces, preserving both the
@@ -111,9 +108,9 @@ func blankSQLComments(s string) string {
 
 var (
 	dropTableRe = regexp.MustCompile(
-		`(?is)\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?("?[\w.]+"?)`)
+		`(?is)\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(` + sqlident.Qualified + `)`)
 	createTableRe = regexp.MustCompile(
-		`(?is)\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?("?[\w.]+"?)\s*\(`)
+		`(?is)\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(` + sqlident.Qualified + `)\s*\(`)
 )
 
 // isConstraintKeyword reports whether tok opens a table-level constraint

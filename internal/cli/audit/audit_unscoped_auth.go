@@ -157,6 +157,7 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/naming"
+	"github.com/reliant-labs/forge/internal/sqlident"
 	"github.com/reliant-labs/forge/pkg/schemadef"
 )
 
@@ -513,7 +514,7 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 // '...'` statement, capturing the dotted object and the comment body.
 // It mirrors internal/cli/lint's commentOnColumnRe — the same statement
 // form, read for a different question.
-var commentOnColumnOwnerRE = regexp.MustCompile(`(?is)\bcomment\s+on\s+column\s+"?([\w.]+)"?\s+is\s+'((?:[^']|'')*)'`)
+var commentOnColumnOwnerRE = regexp.MustCompile(`(?is)\bcomment\s+on\s+column\s+(` + sqlident.Qualified + `)\s+is\s+'((?:[^']|'')*)'`)
 
 // ownerMarkerTokenRE finds a `forge:owner` declaration as a WHOLE
 // token. The trailing boundary is what keeps a future or unrelated
@@ -578,9 +579,10 @@ func ownerScopedTablesIn(sql string) map[string]string {
 			continue
 		}
 		// object is `table.column`, or `schema.table.column` when
-		// qualified. The table is the second-to-last segment; a
-		// bare column name (no dot) names no table and is skipped.
-		parts := strings.Split(object, ".")
+		// qualified, any part possibly quoted. The table is the
+		// second-to-last part; a bare column name (no dot) names no
+		// table and is skipped.
+		parts := sqlident.Parts(object)
 		if len(parts) < 2 {
 			continue
 		}

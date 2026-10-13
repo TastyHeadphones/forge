@@ -217,3 +217,37 @@ func TestCreateMigrationWithContext(t *testing.T) {
 		t.Error("expected PREVIOUS MIGRATION section")
 	}
 }
+
+// TestParseMigrationsForSchema_SchemaQualified: CREATE, ALTER and DROP may
+// all name the table schema-qualified and quoted (pg_dump style), and each
+// must resolve to the same table — never to one named after the schema.
+func TestParseMigrationsForSchema_SchemaQualified(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, sql string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(sql), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("001_create.up.sql", `CREATE TABLE public.tasks (id TEXT PRIMARY KEY);
+CREATE TABLE "public"."scratch" (id TEXT);
+`)
+	write("002_alter.up.sql", `ALTER TABLE ONLY "public"."tasks" ADD COLUMN title TEXT;
+DROP TABLE public.scratch;
+`)
+
+	tables, err := ParseMigrationsForSchema(dir)
+	if err != nil {
+		t.Fatalf("ParseMigrationsForSchema() error = %v", err)
+	}
+	if len(tables) != 1 || tables[0].Name != "tasks" {
+		t.Fatalf("tables = %+v, want exactly [tasks]", tables)
+	}
+	var cols []string
+	for _, c := range tables[0].Columns {
+		cols = append(cols, c.Name)
+	}
+	if strings.Join(cols, ",") != "id,title" {
+		t.Errorf("tasks columns = %v, want [id title]", cols)
+	}
+}
