@@ -180,7 +180,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     own `pkg/middleware` has no `ContextWithClaims` (P3b F14), the error
     names that seam and the one function to add. It no longer calls the
     failure a forge codegen bug.
-
+- **The test harness's auto-stubs refuse an unprogrammed call instead of
+  answering `(nil, nil)`, and a test can program them.** The harness stubs
+  every required interface-typed Deps field so `NewTest<Svc>(t)` constructs.
+  Each stubbed method returning `(*T, error)` returned `(nil, nil)`, which a
+  handler reads as "found" and dereferences, so a test could not reach a
+  not-found or failure branch through the stub; reliant's P3b lanes hand-wrote
+  fakes instead. A stub now has the shape of a contract mock: it is exported as
+  `Stub<Field>` (`StubRepo` for `Deps.Repo`; it was `stub<Pkg><Field>`), has a
+  `<Method>Func` field per method and embeds `contractkit.Recorder`. Every
+  unprogrammed method whose last result is `error` returns
+  `testkit.StubNotConfigured`, which applied only to error-only methods before;
+  its message now leads with `<Stub>.<Method>Func not set`, the same
+  fingerprint as `contractkit.MockNotSet`. A method with no error result still
+  returns its zero values. Program one with
+  `WithXDeps(Deps{Repo: &StubRepo{GetChatFunc: ...}})`. A test that called
+  through an unprogrammed stub and relied on the zero answer now gets the
+  error, which names the method to program.
 - **A failed `forge generate` that changed no Go file no longer builds the
   project to report on its rollback.** After reverting a failed run, generate
   ran `go build ./...` over the restored tree to say whether it compiles. It

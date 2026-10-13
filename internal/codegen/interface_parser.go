@@ -71,9 +71,31 @@ type InterfaceMethod struct {
 	// multiple, e.g. "(*db.User, error)". Empty when the method
 	// returns nothing.
 	Results string
-	// ReturnStatement is the body of a stub implementation: either
-	// "return <zeroes>" or empty when the method returns nothing.
+	// ReturnStatement is what the stub returns when the test has not
+	// programmed the method: "return <zeroes>" as the builders render it,
+	// or empty when the method returns nothing. programStubMethods then
+	// replaces a trailing error's nil with testkit.StubNotConfigured.
 	ReturnStatement string
+
+	// ParamTypes is Params one entry per parameter (a variadic last one
+	// spelled `...T`), and ResultTypes / ResultZeros are the result types
+	// and the zero-value expression of each. The rendered strings above
+	// cannot be split back apart — a func-typed parameter has commas of
+	// its own — and the programmable stub needs each one: it names every
+	// parameter to forward it, and swaps the trailing error's zero.
+	ParamTypes  []string
+	ResultTypes []string
+	ResultZeros []string
+
+	// The fields below are the programmable stub's rendering of the
+	// method, filled by programStubMethods. Receiver and the parameter
+	// names are chosen per method so neither can shadow a package the
+	// body spells (see InterfaceMethod.Params).
+	Receiver    string
+	NamedParams string // "a0 context.Context, a1 ...string"
+	CallArgs    string // "a0, a1..." — forwards to <Name>Func
+	RecordArgs  string // "a0, a1"   — what Recorder.Record captures
+	FuncType    string // "func(context.Context, ...string) error"
 }
 
 // ParseLocalInterfaces returns every interface type declared in non-
@@ -344,6 +366,7 @@ func buildInterfaceMethod(fset *token.FileSet, name string, ft *ast.FuncType, lo
 			}
 		}
 		m.Params = strings.Join(parts, ", ")
+		m.ParamTypes = parts
 	}
 
 	// Results: collect into a flat list of type expressions. The
@@ -361,20 +384,20 @@ func buildInterfaceMethod(fset *token.FileSet, name string, ft *ast.FuncType, lo
 			}
 		}
 	}
+	m.ResultTypes = resultTypes
+	for _, t := range resultTypes {
+		m.ResultZeros = append(m.ResultZeros, zeroValueForResultType(t, localIfaceNames[strings.TrimSpace(t)]))
+	}
 	switch len(resultTypes) {
 	case 0:
 		m.Results = ""
 		m.ReturnStatement = ""
 	case 1:
 		m.Results = resultTypes[0]
-		m.ReturnStatement = "return " + zeroValueForResultType(resultTypes[0], localIfaceNames[strings.TrimSpace(resultTypes[0])])
+		m.ReturnStatement = "return " + m.ResultZeros[0]
 	default:
 		m.Results = "(" + strings.Join(resultTypes, ", ") + ")"
-		var zeroes []string
-		for _, t := range resultTypes {
-			zeroes = append(zeroes, zeroValueForResultType(t, localIfaceNames[strings.TrimSpace(t)]))
-		}
-		m.ReturnStatement = "return " + strings.Join(zeroes, ", ")
+		m.ReturnStatement = "return " + strings.Join(m.ResultZeros, ", ")
 	}
 
 	return m

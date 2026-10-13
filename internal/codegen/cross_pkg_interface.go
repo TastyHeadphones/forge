@@ -181,6 +181,7 @@ func ResolveCrossPkgInterface(handlerDir, pkgAlias, typeName string) (CrossPkgIn
 			paramParts[len(paramParts)-1] = last
 		}
 		m.Params = strings.Join(paramParts, ", ")
+		m.ParamTypes = paramParts
 
 		// Results: collect types, defer the parens decision to match
 		// the existing buildInterfaceMethod shape.
@@ -200,20 +201,20 @@ func ResolveCrossPkgInterface(handlerDir, pkgAlias, typeName string) (CrossPkgIn
 			resultTypes = append(resultTypes, tStr)
 			resultIsIface = append(resultIsIface, types.IsInterface(r.Type()))
 		}
+		m.ResultTypes = resultTypes
+		for idx, t := range resultTypes {
+			m.ResultZeros = append(m.ResultZeros, zeroValueForResultType(t, resultIsIface[idx]))
+		}
 		switch len(resultTypes) {
 		case 0:
 			m.Results = ""
 			m.ReturnStatement = ""
 		case 1:
 			m.Results = resultTypes[0]
-			m.ReturnStatement = "return " + zeroValueForResultType(resultTypes[0], resultIsIface[0])
+			m.ReturnStatement = "return " + m.ResultZeros[0]
 		default:
 			m.Results = "(" + strings.Join(resultTypes, ", ") + ")"
-			var zeroes []string
-			for idx, t := range resultTypes {
-				zeroes = append(zeroes, zeroValueForResultType(t, resultIsIface[idx]))
-			}
-			m.ReturnStatement = "return " + strings.Join(zeroes, ", ")
+			m.ReturnStatement = "return " + strings.Join(m.ResultZeros, ", ")
 		}
 		methods = append(methods, m)
 	}

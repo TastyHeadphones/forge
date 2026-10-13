@@ -289,8 +289,8 @@ func TestComputeAutoStubs_CrossPackage(t *testing.T) {
 	if s.InterfaceQualified != "repo.Repository" {
 		t.Errorf("InterfaceQualified = %q, want %q", s.InterfaceQualified, "repo.Repository")
 	}
-	if s.StubType != "stubBillingRepo" {
-		t.Errorf("StubType = %q, want %q", s.StubType, "stubBillingRepo")
+	if s.StubType != "StubRepo" {
+		t.Errorf("StubType = %q, want %q", s.StubType, "StubRepo")
 	}
 	if len(s.ExtraImports) == 0 {
 		t.Error("CrossPackage stub should carry ExtraImports")
@@ -394,11 +394,11 @@ func TestGenerateBootstrapTesting_CrossPackageStub(t *testing.T) {
 		{"cross-package import block has repo path",
 			`repo "example.com/proj/internal/repo"`},
 		{"NewTestBilling assigns the auto-stub",
-			"deps.Repo = stubBillingRepo{}"},
+			"deps.Repo = &StubRepo{}"},
 		{"stub struct is declared",
-			"type stubBillingRepo struct{}"},
+			"type StubRepo struct {"},
 		{"stub method GetByID is emitted with qualified types",
-			"GetByID(context.Context, string) (*repo.User, error)"},
+			"GetByID(a0 context.Context, a1 string) (*repo.User, error)"},
 	}
 	for _, a := range assertions {
 		if !strings.Contains(content, a.want) {
@@ -458,12 +458,14 @@ func TestGenerateBootstrapTesting_CrossPackageStubImportUsed(t *testing.T) {
 		Alias:                  "billing", VarName: "billing",
 		AutoStubs: []DepsAutoStub{{
 			FieldName:          "Users",
-			StubType:           "stubBillingUsers",
+			StubType:           "StubUsers",
 			InterfaceQualified: "userpkg.Service",
 			CrossPackage:       true,
 			Methods: []InterfaceMethod{{
-				Name: "GetUser", Params: "ctx context.Context, id string",
-				Results: "(*dbpkg.User, error)", ReturnStatement: "return nil, nil",
+				Name: "GetUser", Params: "context.Context, string",
+				ParamTypes: []string{"context.Context", "string"},
+				Results:    "(*dbpkg.User, error)", ResultTypes: []string{"*dbpkg.User", "error"},
+				ResultZeros: []string{"nil", "nil"}, ReturnStatement: "return nil, nil",
 			}},
 			ExtraImports: []ExtraImport{
 				{Alias: "userpkg", Path: "example.com/proj/internal/user"},
@@ -471,6 +473,7 @@ func TestGenerateBootstrapTesting_CrossPackageStubImportUsed(t *testing.T) {
 			},
 		}},
 	}
+	programStubMethods(&svc.AutoStubs[0])
 	data := componentTestHelperData{
 		Module:                 "example.com/proj",
 		Package:                svc.Package,
@@ -496,7 +499,7 @@ func TestGenerateBootstrapTesting_CrossPackageStubImportUsed(t *testing.T) {
 
 	// The compile-time guard must reference the interface in CODE (not just a
 	// comment), so the import imported solely for the stub is genuinely used.
-	if !strings.Contains(content, "var _ userpkg.Service = stubBillingUsers{}") {
+	if !strings.Contains(content, "var _ userpkg.Service = (*StubUsers)(nil)") {
 		t.Errorf("helpers must emit the cross-package stub interface assertion:\n%s", content)
 	}
 	mustParseGo(t, "helpers_gen_test.go", body)
