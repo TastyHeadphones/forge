@@ -17,13 +17,16 @@ package cli
 // Every project command warns. The commands that BUILD, RELEASE or DEPLOY
 // refuse, because what they produce is a function of the binary (a bundle
 // records the forge that rendered it), and an artifact made by an unpinned
-// forge is one the project cannot reproduce. --allow-version-skew (or
-// FORGE_ALLOW_VERSION_SKEW=1) proceeds anyway.
+// forge is one the project cannot reproduce. So do the commands that
+// REWRITE the project's files from the binary's templates (generate,
+// scaffold, ...): 2026-10-12, two agents ran `forge
+// generate` under a stale forge on PATH and it silently rewrote unrelated
+// generated files (otel, frontend, descriptor) until typecheck broke.
+// --allow-version-skew (or FORGE_ALLOW_VERSION_SKEW=1) proceeds anyway.
 
 import (
 	"fmt"
 	"io"
-	"os"
 	"regexp"
 	"strings"
 
@@ -36,11 +39,75 @@ import (
 )
 
 // pinGatedCommands are the commands, relative to forge's root, that refuse
-// to run under a forge other than the pinned one.
-var pinGatedCommands = map[string]bool{
+// to run under a forge other than the pinned one. The value lists boolean
+// flags that make a run read-only (a plan, a dry run, a check): when one is
+// set the command is not refused, because nothing is written. The build and
+// deploy commands list none — their plan/explain output is itself a function
+// of the binary and is gated like the real run.
+var pinGatedCommands = map[string][]string{
+	"env deploy": nil,
+	"env build":  nil,
+	"build":      nil,
+
+	// Commands that rewrite the project's files from this binary's templates.
+	// `lint` is deliberately absent: its auto-fix pass runs gofmt, golangci,
+	// prettier and eslint, whose output does not depend on forge's templates.
+	"generate":           {"dry-run", "check"},
+	"package new":        nil,
+	"component install":  nil,
+	"env new":            {"check"},
+	"project rescaffold": nil,
+	"project disown":     {"dry-run"},
+}
+
+// pinBuildCommands are the gated commands whose product is an artifact, not
+// an edit to the tree. They are strict about every skew, including a
+// development binary against a project pinned to a published tag. The
+// rewriting commands tolerate that one pairing: it is how forge's own e2e
+// lanes and every forge developer scaffold and generate (a binary built from
+// the checkout, a project on the published floor), and generate already
+// judges it with its own compatibility verdicts (generate_pkg_compat.go).
+var pinBuildCommands = map[string]bool{
 	"env deploy": true,
 	"env build":  true,
 	"build":      true,
+}
+
+// pinGatedGroups are command groups whose every subcommand mutates the
+// project, so a subcommand added later is gated without anyone remembering
+// to list it. Subcommands of a group honour the same read-only flags.
+var pinGatedGroups = map[string][]string{
+	"scaffold":        {"dry-run"},
+	"project delete":  {"dry-run"},
+	"project migrate": {"dry-run"},
+}
+
+// pinGateFor reports whether rel (a command path relative to forge's root)
+// is pin-gated, and the flags that make a run of it read-only.
+func pinGateFor(rel string) (readOnlyFlags []string, gated bool) {
+	if flags, ok := pinGatedCommands[rel]; ok {
+		return flags, true
+	}
+	for group, flags := range pinGatedGroups {
+		if rel == group || strings.HasPrefix(rel, group+" ") {
+			return flags, true
+		}
+	}
+	return nil, false
+}
+
+// readOnlyRun reports whether cmd was invoked with one of the gate's
+// read-only flags.
+func readOnlyRun(cmd *cobra.Command, readOnlyFlags []string) bool {
+	for _, name := range readOnlyFlags {
+		if cmd.Flags().Lookup(name) == nil {
+			continue
+		}
+		if on, _ := cmd.Flags().GetBool(name); on {
+			return true
+		}
+	}
+	return false
 }
 
 // allowVersionSkewEnv proceeds past the refusal, like --allow-version-skew.
@@ -56,7 +123,7 @@ func registerVersionSkewFlags(root *cobra.Command) {
 	var walk func(c *cobra.Command)
 	walk = func(c *cobra.Command) {
 		rel := strings.TrimSpace(strings.TrimPrefix(c.CommandPath(), root.CommandPath()))
-		if pinGatedCommands[rel] && c.Flags().Lookup(allowVersionSkewFlag) == nil {
+		if _, gated := pinGateFor(rel); gated && c.Flags().Lookup(allowVersionSkewFlag) == nil {
 			c.Flags().Bool(allowVersionSkewFlag, false,
 				"Run even though this forge is not the forge_version forge.yaml pins (also "+allowVersionSkewEnv+"=1)")
 		}
@@ -103,21 +170,26 @@ func pinSkew(pin, binary, binaryCommit string) (skewed, ok bool) {
 	return want != have, true
 }
 
-// checkForgePinSkew is the root command's check, for cmd. It warns on w, and
-// returns a refusal for a pin-gated command unless allowed.
-func checkForgePinSkew(cmd, root *cobra.Command, w io.Writer, allow bool) error {
-	projectRoot, err := cmdutil.FindProjectRoot()
-	if err != nil || projectRoot == "" {
-		return nil
-	}
+// pinSkewFor reports the pin and the running binary's version when they are
+// different forges (devAgainstTag: a development binary against a pin that
+// is a published tag), or skewed=false when nothing is to be said: no project,
+// forge's own repository, a project bridged to the checkout this binary was
+// built from, a replaced (local) forge, or a side that names no forge.
+func pinSkewFor(projectRoot string) (pin, binary string, skewed, devAgainstTag bool) {
 	cfg, err := config.LoadProjectDir(projectRoot)
 	if err != nil || cfg == nil {
-		return nil
+		return "", "", false, false
 	}
 	// forge's own repository is built and run from source by the people
 	// changing it; the pin there describes the scaffolds, not the binary.
 	if cfg.ModulePath == forgeModulePathForSkew {
-		return nil
+		return "", "", false, false
+	}
+	build := buildinfo.Current()
+	// `replace github.com/reliant-labs/forge => ../forge` in the embedding
+	// binary: the running forge is a local checkout, not a version.
+	if build.ReplacedBy != "" {
+		return "", "", false, false
 	}
 	// A project bridged (go.work) to the local forge checkout this very
 	// binary was built from is someone running the forge they are working
@@ -126,25 +198,81 @@ func checkForgePinSkew(cmd, root *cobra.Command, w io.Writer, allow bool) error 
 	// project run by a binary that is NOT its checkout's — a stale
 	// ~/go/bin/forge, the 2026-10-07 case — is checked like any other.
 	if rep := forgecompat.InspectBridge(projectRoot); rep.Bridged && rep.CheckoutOK && !rep.Skewed {
+		return "", "", false, false
+	}
+	// build.Commit, not buildinfo.GitCommit(): the latter falls back to the
+	// vcs revision of the HOST binary when forge is embedded (`reliant
+	// forge`), which would compare reliant's commit against forge's pin.
+	pin, binary = cfg.ForgeVersion, buildinfo.Version()
+	skew, ok := pinSkew(pin, binary, build.Commit)
+	if !ok || !skew {
+		return "", "", false, false
+	}
+	devAgainstTag = !buildinfo.IsDevVersion(pin) && buildinfo.IsDevVersion(binary)
+	return pin, binary, true, devAgainstTag
+}
+
+// pinSkewRefusal is the runbook printed when a command is refused: which
+// forge is running, which the project pins, and the literal commands that fix it.
+func pinSkewRefusal(projectRoot, pin, binary, what string) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "this forge is %s, but %s/forge.yaml pins forge_version %s.\n", binary, projectRoot, pin)
+	fmt.Fprintf(&b, "  `%s` rewrites or produces files from the binary's own templates, so it runs only under the pinned forge —\n", what)
+	b.WriteString("  a different one silently rewrites unrelated generated files.\n")
+	b.WriteString("  Run it with the pinned forge, installing nothing:\n")
+	fmt.Fprintf(&b, "      %s\n", forgecompat.RunPinnedCommand(pin, forgeInvocationArgs()))
+	b.WriteString("  or install the pinned forge (from outside the project's module):\n")
+	fmt.Fprintf(&b, "      cd \"$(mktemp -d)\" && GOPRIVATE='github.com/reliant-labs/*' go install github.com/reliant-labs/forge/cmd/forge@%s\n", pin)
+	if cur := buildinfo.Current(); cur.Embedded {
+		host := cur.Embedder
+		if host == "" {
+			host = "another binary"
+		}
+		fmt.Fprintf(&b, "  This forge is embedded in %s, so installing forge does not change `%s`: use the `go run` form above,\n"+
+			"  or rebuild/upgrade %s so it embeds the pinned forge.\n", host, Name(), host)
+	}
+	fmt.Fprintf(&b, "  If the PIN is what is wrong, move it deliberately: `%s project upgrade`.\n", Name())
+	fmt.Fprintf(&b, "  To proceed anyway, knowingly (forge developers): --%s, or %s=1", allowVersionSkewFlag, allowVersionSkewEnv)
+	return fmt.Errorf("%s", b.String())
+}
+
+// checkForgePinSkew is the root command's check, for cmd. It warns on w, and
+// returns a refusal for a pin-gated command unless allowed.
+func checkForgePinSkew(cmd, root *cobra.Command, w io.Writer, allow bool) error {
+	projectRoot, err := cmdutil.FindProjectRoot()
+	if err != nil || projectRoot == "" {
 		return nil
 	}
-	pin, binary := cfg.ForgeVersion, buildinfo.Version()
-	skewed, ok := pinSkew(pin, binary, buildinfo.GitCommit())
-	if !ok || !skewed {
+	pin, binary, skewed, devAgainstTag := pinSkewFor(projectRoot)
+	if !skewed {
 		return nil
 	}
 	rel := strings.TrimSpace(strings.TrimPrefix(cmd.CommandPath(), root.CommandPath()))
-	gated := pinGatedCommands[rel]
-	if gated && !allow && os.Getenv(allowVersionSkewEnv) == "" {
-		return fmt.Errorf("this forge is %s, but %s/forge.yaml pins forge_version %s.\n"+
-			"  `forge %s` produces artifacts that record the forge that made them, so it runs only under the pinned forge.\n"+
-			"  Install the pinned one:  go install github.com/reliant-labs/forge/cmd/forge@%s\n"+
-			"  (or proceed anyway, knowingly: --allow-version-skew, or %s=1)",
-			binary, projectRoot, pin, rel, pin, allowVersionSkewEnv)
+	if readOnlyFlags, gated := pinGateFor(rel); gated && !readOnlyRun(cmd, readOnlyFlags) &&
+		!(devAgainstTag && !pinBuildCommands[rel]) &&
+		!allow && !forgecompat.SkewOverridden() {
+		return pinSkewRefusal(projectRoot, pin, binary, "forge "+rel)
 	}
 	_, _ = fmt.Fprintf(w, "⚠️  this forge is %s, but forge.yaml pins forge_version %s — a different forge than the project's.\n"+
 		"   Install the pinned one: go install github.com/reliant-labs/forge/cmd/forge@%s\n", binary, pin, pin)
 	return nil
+}
+
+// refuseGenerateUnderPinSkew is the check for the paths that run the
+// generate pipeline on the user's behalf without being the `generate`
+// command (ensureGeneratedCode, reached from `forge env up`): the pipeline
+// rewrites the tree exactly as `forge generate` would, so it needs the same
+// guard. Only the environment variable can lift it there — the callers have
+// no flag of their own; --no-generate skips the pipeline instead.
+func refuseGenerateUnderPinSkew(projectRoot string) error {
+	if forgecompat.SkewOverridden() {
+		return nil
+	}
+	pin, binary, skewed, devAgainstTag := pinSkewFor(projectRoot)
+	if !skewed || devAgainstTag {
+		return nil
+	}
+	return pinSkewRefusal(projectRoot, pin, binary, "forge generate (run automatically because generated code is stale)")
 }
 
 // forgeModulePathForSkew is forge's own module path.

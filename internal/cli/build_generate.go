@@ -37,6 +37,9 @@ func ensureGeneratedCode(projectDir string, skip bool) error {
 	if !needs {
 		return nil
 	}
+	if err := refuseGenerateUnderPinSkew(projectDir); err != nil {
+		return fmt.Errorf("generated code %s, and refreshing it would rewrite files under the wrong forge (or pass --no-generate): %w", reason, err)
+	}
 	fmt.Printf("[build] generated code %s — running `forge generate` first (pass --no-generate to skip)\n", reason)
 	err := withGenerateLock(projectDir, func() error {
 		return runGeneratePipelineFlags(projectDir, pipelineFlags{})

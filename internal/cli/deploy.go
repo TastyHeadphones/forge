@@ -4534,13 +4534,10 @@ type secretPlacement struct {
 // including the ones in the render — once per cluster.
 type secretSink func(ctx context.Context, p secretPlacement) error
 
-// secretTarget is where validated placements go and whether a non-local
-// cluster may receive them. Direct deploys refuse plaintext Secrets for a
-// remote cluster; the Flux path's deploy-time sync is the sanctioned transport
-// for them, so it opts in.
+// secretTarget is where validated placements go. Plaintext Secrets are
+// refused for a remote cluster; there is no sanctioned transport for them.
 type secretTarget struct {
-	sink        secretSink
-	allowRemote bool
+	sink secretSink
 }
 
 // applySecretsWithKubectl is the direct-deploy sink.
@@ -4611,7 +4608,7 @@ func applyK8sSecretsFromProviderTo(ctx context.Context, entities *KCLEntities, g
 		if g.ProviderID != "k8s-cluster" {
 			continue
 		}
-		if !target.allowRemote && !isLocalCluster(g.Cluster) {
+		if !isLocalCluster(g.Cluster) {
 			return fmt.Errorf(
 				"secret_provider %q renders plaintext Secrets and is for LOCAL clusters only; target cluster %q is not local. "+
 					"Use secret_provider = forge.ExternalSecrets {} (Secrets provisioned out-of-band) for remote clusters",
@@ -4820,7 +4817,7 @@ func applyDeclaredSecretsTo(ctx context.Context, entities *KCLEntities, groups [
 		// GUARD: PLAINTEXT Secrets — local clusters only. Checked for
 		// every placement up front, so a bad one refuses the whole set
 		// rather than leaving half of it applied.
-		if !target.allowRemote && !isLocalCluster(p.cluster) {
+		if !isLocalCluster(p.cluster) {
 			return fmt.Errorf(
 				"rendered Secret(s) %s would land in cluster %q, which is not local: forge renders these as plaintext "+
 					"and applies them to LOCAL clusters only. Declare the Secret as a forge.ExternalSecret in "+
