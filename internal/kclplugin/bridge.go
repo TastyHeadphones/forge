@@ -174,6 +174,10 @@ func install() {
 				installErr = fmt.Errorf("load the KCL runtime: %v", r)
 			}
 		}()
+		if err := unscopeFileBuiltins(); err != nil {
+			installErr = err
+			return
+		}
 		native.NewNativeServiceClientWithPluginAgent(uint64(purego.NewCallback(proxy)))
 	})
 }

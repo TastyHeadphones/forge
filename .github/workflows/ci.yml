@@ -412,6 +412,9 @@ jobs:
       # empty tag and dies with "The KCL version is not found", failing CI
       # for a reason that has nothing to do with the commit. Pinning also
       # stops a KCL release from changing this build without a commit.
+      # The pin is templates.KCLVersion; TestKCLVersionIsPinnedEverywhere
+      # holds it equal to the kcl-lang.io modules in go.mod, so the `kcl`
+      # the tests shell out to is the KCL forge embeds.
       #
       # Not cached, and no ~/.kcl on PATH: on Linux the installer puts kcl in
       # /usr/local/bin, which is already on PATH. The cache stored the ~/.kcl
@@ -421,7 +424,7 @@ jobs:
       # whole workflow.
       - name: Install KCL
         env:
-          KCL_VERSION: v0.11.2
+          KCL_VERSION: v0.13.1
         run: |
           curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
           command -v kcl
