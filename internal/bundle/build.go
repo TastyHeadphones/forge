@@ -301,6 +301,12 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 	if err != nil {
 		return Bundle{}, fmt.Errorf("bundle %s/%s: pack manifests: %w", in.Project, in.Env, err)
 	}
+	// THE INGEST GATE, run at build so forge refuses to cut a bundle the
+	// control plane would refuse to record. It is the same function, over the
+	// final layer bytes — what the shared controller would be handed.
+	if _, err := release.ValidateManifestsLayer(bytes.NewReader(manifestsLayer)); err != nil {
+		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)
+	}
 	configDigest, err := release.ConfigDigest(shape)
 	if err != nil {
 		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)
