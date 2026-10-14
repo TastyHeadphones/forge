@@ -20,7 +20,7 @@ package release
 //   - every kind that runs the release's code (Deployment, StatefulSet,
 //     DaemonSet, ReplicaSet, ReplicationController, Pod, CronJob) is
 //     [PhaseRollout];
-//   - everything else (Namespaces, CRDs, RBAC, ConfigMaps, Services,
+//   - everything else (Namespaces, CRDs, Roles, ConfigMaps, Services,
 //     NetworkPolicies, the ServiceAccount a Job's pod needs) is the SUPPORT a
 //     pre-rollout Job rests on, so it is also [PhasePre]. Direct apply sends
 //     the support objects first and then the Jobs; a tree sends them in one
