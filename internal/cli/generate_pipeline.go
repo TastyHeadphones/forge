@@ -1959,7 +1959,8 @@ func stepInternalDBORM(ctx *pipelineContext) error {
 		}
 	}
 	planEntities := codegen.EntityDefsToPlanEntities(entities)
-	if err := generator.GeneratePlanORM(ctx.ProjectDir, ctx.ModulePath, svcName, planEntities, ctx.Checksums); err != nil {
+	if err := withDeclaredEntityRPCs(ctx,
+		generator.GeneratePlanORM(ctx.ProjectDir, ctx.ModulePath, svcName, planEntities, ctx.Checksums)); err != nil {
 		// Recorded whether or not --strict makes it fatal: without --strict
 		// the run continues, and every step that consumes the ORM must say
 		// it was skipped instead of reporting output it never wrote.
@@ -1970,6 +1971,24 @@ func stepInternalDBORM(ctx *pipelineContext) error {
 	// proto-entity era's alias file) itself — and only a forge-written one.
 	fmt.Printf("  ✅ Generated internal/db/ (%d entity ORM files)\n", len(entities))
 	return nil
+}
+
+// withDeclaredEntityRPCs fills an ORM name-collision refusal with the rpcs
+// this project declares for each colliding entity, so its advice names them
+// (with file:line) instead of the five a CRUD quintet would have. Any other
+// error, and nil, pass through.
+func withDeclaredEntityRPCs(ctx *pipelineContext, err error) error {
+	var collision *generator.ORMCollisionError
+	if !errors.As(err, &collision) {
+		return err
+	}
+	collision.EntityRPCs = map[string][]string{}
+	for entity, rpcs := range codegen.EntityRPCs(ctx.ProjectDir, ctx.Services, collision.Entities()) {
+		for _, r := range rpcs {
+			collision.EntityRPCs[entity] = append(collision.EntityRPCs[entity], r.String())
+		}
+	}
+	return err
 }
 
 // stepCRUDHandlers — was Step 4b.

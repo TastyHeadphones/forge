@@ -314,6 +314,15 @@ FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
   overlap — and says why. Any command run by the pinned forge (`forge
   generate` after a pin bump) points the driver at itself; a forge that is not
   the pin never replaces a working driver.
+- **The ORM name-collision refusal names the rpcs you declared.** Advising how
+  to keep a table off forge's ORM, it listed the CRUD quintet the entity's
+  name implies — `CreateMessage, GetMessage, UpdateMessage, DeleteMessage,
+  ListMessages` on reliant — whatever the project declared. It now lists the
+  declared, unmarked rpcs that make the table an entity, each with its
+  `file:line` (`MessageService.GetMessage (proto/reliant/v1/message.proto:14),
+  ChatService.ListMessages (proto/reliant/v1/chat.proto:221)`), by the same
+  rule that decides what is an entity. The refusal is now a typed
+  `*generator.ORMCollisionError`.
 
 - **`forgeconv-no-handler-error-mapping` fires only on sentinels mapped to
   connect errors.** The body-shape signal counted every `errors.Is` /
