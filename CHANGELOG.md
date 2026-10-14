@@ -164,6 +164,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   embed cannot be read (its package does not type-check, or it has an
   unexported method), the harness no longer emits a stub that cannot compile:
   the Deps field is left to the test, with a TODO naming the embed.
+- **A package directive means the same thing whichever file declares it.**
+  `forge lint` read a package's `//forge:exclude-contract` (and
+  `//forge:not-a-component`) from the first reasoned marker by file name and
+  honoured only the `forge:lint-disable` allowances above that one marker, so
+  the package's answer depended on file order: when reliant moved
+  `approval.go`, which held the outbound-io allowance, out of
+  `internal/grpc/services`, `connection.go`'s marker became the declaration
+  and the package was refused although nothing about it had changed. A
+  directive now applies to the whole package from any file, and a package
+  that repeats one must repeat it identically (reason and allowances). Two
+  declarations that disagree — different reasons, a bare marker beside a
+  reasoned one, an allowance on one and not the other — are refused by the
+  new `forge-exclude-contract-conflict` / `forge-not-a-component-conflict`,
+  naming both `file:line`s. **Upgrading:** a package whose markers disagree
+  now fails `forge lint`; keep one declaration, in the package's `doc.go`,
+  which the docs and remediation text now recommend.
 
 - **A release commit's E2E Scaffold waits out the proxy's negative cache.**
   `release-forge.sh` checks that the version was never published by asking
