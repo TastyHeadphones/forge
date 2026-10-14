@@ -259,6 +259,27 @@ func runEnvRender(cmd *cobra.Command, envName string, opts envRenderOptions) err
 	return renderEnvTo(cmd, out, envName, opts)
 }
 
+// declarationFor is env's declaration for the render: probed when
+// activateDevStackRendered already rendered it, else a fresh RenderKCL.
+//
+// The declaration is evaluated ONCE per render. Deciding the purpose already
+// rendered it when the env runs nowhere on this machine (every cloud env), in
+// the very render context every later read shares, so that render IS the
+// declaration; and the ledger selection reads these entities
+// (ledgerForRendered) rather than rendering them again. Each of those used to
+// be its own evaluation of the env's KCL: four per `forge env render`, ~20
+// CPU-seconds for a large prod env, where two do the work.
+func declarationFor(ctx context.Context, projectDir, envName string, probed *KCLEntities) (*KCLEntities, error) {
+	if probed != nil {
+		return probed, nil
+	}
+	entities, err := RenderKCL(ctx, projectDir, envName)
+	if err != nil {
+		return nil, fmt.Errorf("render deploy/kcl/%s/: %w", envName, err)
+	}
+	return entities, nil
+}
+
 // renderEnvTo is the render itself. out receives the manifest stream (or the
 // --list table) and nothing else; see runEnvRender.
 func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRenderOptions) error {
@@ -313,19 +334,9 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 		reportDeclinedWrites(errOut, kclplugin.SuppressedWrites())
 	}()
 
-	// The declaration is evaluated ONCE per render. Deciding the purpose
-	// already rendered it when the env runs nowhere on this machine (every
-	// cloud env), in the very render context every later read shares, so
-	// that render IS the declaration; and the ledger selection below reads
-	// these entities rather than rendering them again. Each of those used to
-	// be its own evaluation of the env's KCL: four per `forge env render`,
-	// ~20 CPU-seconds for a large prod env, where two do the work.
-	entities := probed
-	if entities == nil {
-		var kerr error
-		if entities, kerr = RenderKCL(ctx, projectDir, envName); kerr != nil {
-			return fmt.Errorf("render deploy/kcl/%s/: %w", envName, kerr)
-		}
+	entities, kerr := declarationFor(ctx, projectDir, envName, probed)
+	if kerr != nil {
+		return kerr
 	}
 
 	namespace := opts.namespace
