@@ -438,3 +438,183 @@ func TestShipLog(t *testing.T) {
 		t.Fatal("a deploy that shipped nothing records its error unchanged")
 	}
 }
+
+// ─── The frontend preflight is a finding for a plan, a refusal for a deploy ───
+
+// firebaseFrontendProject is a project dir with one Firebase frontend and no
+// `firebase` on PATH — control-plane prod in a sandbox.
+func firebaseFrontendProject(t *testing.T) (string, *KCLEntities) {
+	t.Helper()
+	t.Setenv("PATH", t.TempDir())
+	dir := t.TempDir()
+	web := filepath.Join(dir, "web")
+	if err := os.MkdirAll(web, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir, &KCLEntities{Frontends: []FrontendEntity{{
+		Name: "reliant-web", Path: web, Runtime: FrontendRuntime{Type: FrontendRuntimeFirebase},
+	}}}
+}
+
+// stubPreflightFrontend replaces the client-side apply with one that runs the
+// frontend step of runDeploy's preflight-only pass against entities, which is
+// the only part of the real apply these tests are about. It returns the count
+// of real (non-preflight) applies.
+func stubPreflightFrontend(t *testing.T, dir string, entities *KCLEntities) *int {
+	t.Helper()
+	applies := new(int)
+	prev := runPromoteClientDeploy
+	runPromoteClientDeploy = func(ctx context.Context, _ string, opts deployOptions) error {
+		if !opts.preflightOnly {
+			*applies++
+			return nil
+		}
+		return opts.preflightFrontend(ctx, entities, dir)
+	}
+	t.Cleanup(func() { runPromoteClientDeploy = prev })
+	return applies
+}
+
+func TestDeployOptions_PreflightFrontend(t *testing.T) {
+	dir, entities := firebaseFrontendProject(t)
+
+	// Strict (a real deploy): refused, naming the frontend and the CLI.
+	err := deployOptions{}.preflightFrontend(context.Background(), entities, dir)
+	if err == nil || !strings.Contains(err.Error(), "reliant-web") || !strings.Contains(err.Error(), "--skip-frontend") {
+		t.Fatalf("strict preflight must refuse with the fix, got %v", err)
+	}
+
+	// Collecting (a plan): no error, one named finding.
+	var findings []frontendPreflightFinding
+	if err := (deployOptions{frontendFindings: &findings}).preflightFrontend(context.Background(), entities, dir); err != nil {
+		t.Fatalf("a collecting preflight must not fail: %v", err)
+	}
+	if len(findings) != 1 || findings[0].Check != "frontend_firebase_cli" ||
+		len(findings[0].Frontends) != 1 || findings[0].Frontends[0] != "reliant-web" {
+		t.Fatalf("want one frontend_firebase_cli finding naming reliant-web, got %+v", findings)
+	}
+
+	// --skip-frontend waives it in both modes.
+	findings = nil
+	if err := (deployOptions{skipFrontend: true}).preflightFrontend(context.Background(), entities, dir); err != nil {
+		t.Fatalf("--skip-frontend must waive the strict preflight: %v", err)
+	}
+	if err := (deployOptions{skipFrontend: true, frontendFindings: &findings}).preflightFrontend(context.Background(), entities, dir); err != nil || len(findings) != 0 {
+		t.Fatalf("--skip-frontend must waive the finding too: err=%v findings=%+v", err, findings)
+	}
+}
+
+// Every failing check is reported, not only the first.
+func TestCheckFrontendDeploys_ReportsEveryFinding(t *testing.T) {
+	dir, entities := firebaseFrontendProject(t)
+	if err := os.WriteFile(filepath.Join(entities.Frontends[0].Path, ".env.local"), []byte("NEXT_PUBLIC_MOCK_API=true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	checks := map[string]bool{}
+	for _, f := range checkFrontendDeploys(context.Background(), entities, dir) {
+		checks[f.Check] = true
+	}
+	if !checks["frontend_env_files"] || !checks["frontend_firebase_cli"] {
+		t.Fatalf("want both the dotenv gate and the missing CLI reported, got %v", checks)
+	}
+}
+
+// --plan / --plan-only / --dry-run print the whole plan and name the missing
+// CLI as its own finding; a real deploy of the same env still refuses.
+func TestDeployRelease_FrontendPreflight_PlanReportsDeployRefuses(t *testing.T) {
+	cases := []struct {
+		name       string
+		opts       func(*promoteOptions)
+		follow     func(*promoteFollowOptions)
+		wantRefuse bool
+	}{
+		{name: "--plan", opts: func(o *promoteOptions) { o.DryRun = true }},
+		{name: "--plan-only", opts: func(o *promoteOptions) {
+			o.Confirm = &deployConfirm{PlanOnly: true}
+		}},
+		{name: "--dry-run", follow: func(f *promoteFollowOptions) { f.clientDeploy.dryRun = true }},
+		{name: "real deploy", wantRefuse: true, opts: func(o *promoteOptions) {
+			o.Confirm = &deployConfirm{Yes: true}
+		}},
+		{name: "real deploy with --skip-frontend", opts: func(o *promoteOptions) {
+			o.Confirm = &deployConfirm{Yes: true}
+		}, follow: func(f *promoteFollowOptions) { f.clientDeploy.skipFrontend = true }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, entities := firebaseFrontendProject(t)
+			applies := stubPreflightFrontend(t, dir, entities)
+			store, releases := selfManagedFixture()
+
+			follow := &promoteFollowOptions{}
+			if tc.follow != nil {
+				tc.follow(follow)
+			}
+			opts := promoteOptions{
+				ProjectDir: dir, Git: allCommitsPresent(), Follow: follow,
+				Ledger: envLedger{Bindings: store, Releases: releases},
+			}
+			opts.Run.None = true
+			if tc.opts != nil {
+				tc.opts(&opts)
+			}
+			var err error
+			out := captureStdout(t, func() { err = runPromote(context.Background(), "v2", "prod", opts) })
+
+			if tc.wantRefuse {
+				if *applies != 0 {
+					t.Fatalf("a refused deploy reached the apply %d time(s)", *applies)
+				}
+				if err == nil || !strings.Contains(err.Error(), "NOTHING WAS RECORDED") || !strings.Contains(err.Error(), "firebase") {
+					t.Fatalf("a real deploy must still refuse before recording, got %v", err)
+				}
+				if cur, _, _ := store.Current(context.Background(), "prod"); cur.Release != "v1" {
+					t.Fatalf("the refused deploy moved the binding to %s", cur.Release)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("must not refuse: %v\n%s", err, out)
+			}
+			if !strings.Contains(out, "PLAN") && !strings.Contains(out, "direction") {
+				// --plan-only prints through the confirmation gate.
+				t.Fatalf("the plan must still be printed:\n%s", out)
+			}
+			if (tc.name == "--plan" || tc.name == "--plan-only") && *applies != 0 {
+				t.Fatalf("%s reached the real apply %d time(s)", tc.name, *applies)
+			}
+			skipped := strings.Contains(tc.name, "skip-frontend")
+			named := strings.Contains(out, "FRONTEND PREFLIGHT  frontend_firebase_cli")
+			if skipped == named {
+				t.Fatalf("finding named = %v with --skip-frontend = %v:\n%s", named, skipped, out)
+			}
+		})
+	}
+}
+
+// --json carries the finding as its own field beside the plan.
+func TestDeployRelease_FrontendPreflight_JSONField(t *testing.T) {
+	dir, entities := firebaseFrontendProject(t)
+	stubPreflightFrontend(t, dir, entities)
+	store, releases := selfManagedFixture()
+	opts := promoteOptions{
+		ProjectDir: dir, Git: allCommitsPresent(), Follow: &promoteFollowOptions{}, JSON: true, DryRun: true,
+		Ledger: envLedger{Bindings: store, Releases: releases},
+	}
+	opts.Run.None = true
+	var err error
+	doc := captureStdout(t, func() { err = runPromote(context.Background(), "v2", "prod", opts) })
+	if err != nil {
+		t.Fatalf("plan --json: %v", err)
+	}
+	var parsed struct {
+		Direction         string                     `json:"direction"`
+		FrontendPreflight []frontendPreflightFinding `json:"frontend_preflight"`
+	}
+	if err := json.Unmarshal([]byte(doc), &parsed); err != nil {
+		t.Fatalf("decode: %v\n%s", err, doc)
+	}
+	if parsed.Direction == "" || len(parsed.FrontendPreflight) != 1 || parsed.FrontendPreflight[0].Check != "frontend_firebase_cli" {
+		t.Fatalf("want the plan plus one named finding, got %+v\n%s", parsed, doc)
+	}
+}

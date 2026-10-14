@@ -531,25 +531,58 @@ func TestTopology_DefaultsToDeclaredEnvs(t *testing.T) {
 	}
 }
 
-// TestSortReleasesNewestFirst pins semver ordering over lexical and over
-// created_at. A lexical sort puts v1.5.9 after v1.5.15, which would make every
-// "releases behind" count wrong; a timestamp sort trusts whichever machine's
-// clock cut the release.
+// TestSortReleasesNewestFirst pins CUT TIME as the order, across version
+// schemes. Semver cannot parse a date-named auto cut, so a semver-first sort
+// ranked every v1.x.y above every date-named release and called a forward move
+// from v1.7.40 to 20261014.042859-cd678a0d6531 "67 releases OLDER". A lexical
+// sort additionally puts v1.5.9 after v1.5.15.
 func TestSortReleasesNewestFirst(t *testing.T) {
-	releases := []release.Release{
-		{Version: "v1.5.9", CreatedAt: mustTime(t, "2026-08-01T00:00:00Z")},
-		{Version: "v1.5.15", CreatedAt: mustTime(t, "2026-07-01T00:00:00Z")}, // skewed clock
-		{Version: "v1.3.0", CreatedAt: mustTime(t, "2026-06-01T00:00:00Z")},
-	}
-	sortReleasesNewestFirst(releases)
-
-	want := []string{"v1.5.15", "v1.5.9", "v1.3.0"}
-	for i, w := range want {
-		if releases[i].Version != w {
-			t.Fatalf("order = %v, want %v (semver leads; a lexical sort would put v1.5.9 first and a timestamp sort would too)",
-				[]string{releases[0].Version, releases[1].Version, releases[2].Version}, want)
+	t.Run("date-named cuts after semver cuts are newer", func(t *testing.T) {
+		releases := []release.Release{
+			{Version: "v1.7.38", CreatedAt: mustTime(t, "2026-10-09T00:00:00Z")},
+			{Version: "20261014.042859-cd678a0d6531", CreatedAt: mustTime(t, "2026-10-14T04:28:59Z")},
+			{Version: "v1.7.40", CreatedAt: mustTime(t, "2026-10-12T00:00:00Z")},
+			{Version: "20261013.002646-aaaaaaaaaaaa", CreatedAt: mustTime(t, "2026-10-13T00:26:46Z")},
 		}
+		sortReleasesNewestFirst(releases)
+		want := []string{"20261014.042859-cd678a0d6531", "20261013.002646-aaaaaaaaaaaa", "v1.7.40", "v1.7.38"}
+		for i, w := range want {
+			if releases[i].Version != w {
+				t.Fatalf("order[%d] = %q, want %q (full: %v)", i, releases[i].Version, w, versionsOf(releases))
+			}
+		}
+	})
+
+	t.Run("semver labels cut at the same instant fall back to semver, not lexical", func(t *testing.T) {
+		at := mustTime(t, "2026-08-01T00:00:00Z")
+		releases := []release.Release{
+			{Version: "v1.5.9", CreatedAt: at}, {Version: "v1.5.15", CreatedAt: at}, {Version: "v1.3.0", CreatedAt: at},
+		}
+		sortReleasesNewestFirst(releases)
+		if got := versionsOf(releases); got[0] != "v1.5.15" || got[1] != "v1.5.9" || got[2] != "v1.3.0" {
+			t.Fatalf("order = %v, want [v1.5.15 v1.5.9 v1.3.0]", got)
+		}
+	})
+
+	t.Run("an unknown cut time sorts oldest and the order is a stable total order", func(t *testing.T) {
+		releases := []release.Release{
+			{Version: "v1.0.0"},
+			{Version: "v1.1.0", CreatedAt: mustTime(t, "2026-01-01T00:00:00Z")},
+			{Version: "20260301.000000-abc", CreatedAt: mustTime(t, "2026-03-01T00:00:00Z")},
+		}
+		sortReleasesNewestFirst(releases)
+		if got := versionsOf(releases); got[0] != "20260301.000000-abc" || got[1] != "v1.1.0" || got[2] != "v1.0.0" {
+			t.Fatalf("order = %v", got)
+		}
+	})
+}
+
+func versionsOf(rs []release.Release) []string {
+	out := make([]string, len(rs))
+	for i, r := range rs {
+		out[i] = r.Version
 	}
+	return out
 }
 
 // TestTopologyImageState_RejectsUnknown: an unrecognized state must NOT decode
