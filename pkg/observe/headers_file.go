@@ -10,10 +10,13 @@
 //   - HTTP exporters get an http.Client whose RoundTripper adds the headers;
 //   - gRPC exporters and the profiles sender get them as per-RPC metadata.
 //
-// There is no watcher goroutine. A request re-stats the file when the last
-// check is older than headersFileRecheck, and re-reads it only when the file's
-// identity or mtime moved, so a steady state costs one stat per interval per
-// process, shared by all four signals.
+// There is no watcher goroutine. A request re-reads the file when the last
+// check is older than headersFileRecheck and re-parses it only when its bytes
+// changed, so a steady state costs one small read per interval per process,
+// shared by all four signals. Change is decided by content, not by the file's
+// identity, size and mtime: on Windows os.SameFile resolves a stat'ed path when
+// it is called, so it compares the current file with itself, and an mtime
+// cannot tell apart two same-size writes inside one clock tick on any OS.
 //
 // Precedence: a header named in OTEL_EXPORTER_OTLP_HEADERS or a per-signal
 // OTEL_EXPORTER_OTLP_<SIGNAL>_HEADERS is never overridden by the file. The file
@@ -27,6 +30,7 @@
 package observe
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -46,7 +50,7 @@ import (
 // OTEL_EXPORTER_OTLP_<SIGNAL>_HEADERS_FILE overrides it for that signal.
 const EnvOTLPHeadersFile = "OTEL_EXPORTER_OTLP_HEADERS_FILE"
 
-// How often a request may re-stat the file, and how often a persistent failure
+// How often a request may re-read the file, and how often a persistent failure
 // is logged. Variables so tests can shrink them.
 var (
 	headersFileRecheck   = 5 * time.Second
@@ -84,7 +88,7 @@ type headerFile struct {
 
 	mu       sync.Mutex
 	checked  time.Time
-	info     os.FileInfo // identity of the content currently cached
+	raw      []byte // the file content the cached headers were parsed from
 	headers  []headerKV
 	lastWarn time.Time
 	failing  bool
@@ -123,36 +127,30 @@ func (f *headerFile) current() []headerKV {
 }
 
 func (f *headerFile) refreshLocked(now time.Time) {
-	info, err := os.Stat(f.path)
-	if err != nil {
-		f.failLocked(now, err)
-		return
-	}
-	if f.info != nil && !f.failing && os.SameFile(f.info, info) && f.info.ModTime().Equal(info.ModTime()) && f.info.Size() == info.Size() {
-		return
-	}
 	raw, err := os.ReadFile(f.path)
 	if err != nil {
 		f.failLocked(now, err)
 		return
 	}
+	if !f.failing && f.raw != nil && bytes.Equal(raw, f.raw) {
+		return
+	}
 	hs := parseOTLPHeaders(string(raw))
 	if len(hs) == 0 {
 		f.failLocked(now, fmt.Errorf("file contains no key=value headers"))
-		f.info = info
 		return
 	}
 	if f.failing {
 		f.log.Info("OTLP headers file is readable again", "path", f.path, "headers", len(hs))
 	}
 	f.failing = false
-	f.info, f.headers = info, hs
+	f.raw, f.headers = raw, hs
 }
 
 // failLocked drops the cached headers (the file no longer says what they were)
 // and warns, at most once per headersFileWarnEvery.
 func (f *headerFile) failLocked(now time.Time, err error) {
-	f.headers, f.info = nil, nil
+	f.headers, f.raw = nil, nil
 	f.failing = true
 	if f.lastWarn.IsZero() || now.Sub(f.lastWarn) >= headersFileWarnEvery {
 		f.lastWarn = now

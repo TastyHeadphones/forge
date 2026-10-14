@@ -27,7 +27,7 @@ func init() {
 	otelEnvVars = append(otelEnvVars, EnvOTLPHeadersFile, "OTEL_EXPORTER_OTLP_TRACES_HEADERS_FILE")
 }
 
-// recheckEveryRequest makes every request re-stat the file, and restores the
+// recheckEveryRequest makes every request re-read the file, and restores the
 // production intervals afterwards.
 func recheckEveryRequest(t *testing.T) {
 	t.Helper()
@@ -37,8 +37,7 @@ func recheckEveryRequest(t *testing.T) {
 }
 
 // writeHeadersFile atomically replaces path, the way a kubelet Secret refresh
-// swaps its symlink, and bumps the mtime so a coarse filesystem clock cannot
-// hide the change.
+// swaps its symlink.
 func writeHeadersFile(t *testing.T, path, content string) {
 	t.Helper()
 	tmp := path + ".tmp"
@@ -85,7 +84,7 @@ func TestHeadersFileIsReReadOnlyWhenItChanges(t *testing.T) {
 	if got := f.current(); len(got) != 1 || got[0].value != "one" {
 		t.Fatalf("first read = %v", got)
 	}
-	// Inside the recheck window nothing is even stat-ed, so the cache answers.
+	// Inside the recheck window nothing is even read, so the cache answers.
 	writeHeadersFile(t, path, "authorization=two")
 	if got := f.current(); got[0].value != "one" {
 		t.Fatalf("within the recheck window the cached value must be served, got %v", got)
@@ -93,6 +92,46 @@ func TestHeadersFileIsReReadOnlyWhenItChanges(t *testing.T) {
 	now = now.Add(headersFileRecheck + time.Second)
 	if got := f.current(); got[0].value != "two" {
 		t.Fatalf("after the window the new content must be read, got %v", got)
+	}
+}
+
+// TestHeadersFileChangeIsDecidedByContent rewrites the file in place with
+// content of the same size and puts its mtime back: the same file, the same
+// size, the same mtime. That is what two writes inside one coarse filesystem
+// clock tick look like, and on Windows os.SameFile cannot tell even a replaced
+// file from its predecessor. Only the bytes say the credential changed.
+func TestHeadersFileChangeIsDecidedByContent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "headers")
+	if err := os.WriteFile(path, []byte("authorization=one"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_000_000, 0)
+	f := &headerFile{path: path, now: func() time.Time { return now }, log: slog.Default()}
+	if got := f.current(); len(got) != 1 || got[0].value != "one" {
+		t.Fatalf("first read = %v", got)
+	}
+
+	if err := os.WriteFile(path, []byte("authorization=two"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, before.ModTime(), before.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
+		t.Fatalf("premise broken: size %d→%d, mtime %v→%v must not move", before.Size(), after.Size(), before.ModTime(), after.ModTime())
+	}
+
+	now = now.Add(headersFileRecheck + time.Second)
+	if got := f.current(); len(got) != 1 || got[0].value != "two" {
+		t.Fatalf("a rewrite that keeps size and mtime must still be read, got %v", got)
 	}
 }
 
