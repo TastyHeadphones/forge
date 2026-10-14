@@ -1,12 +1,15 @@
 package codegen
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/printer"
 	"go/token"
+	"go/types"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -15,19 +18,24 @@ import (
 // to synthesize zero-value implementations for service-owned Deps
 // fields whose type is locally declared.
 //
-// We only consider interfaces declared in the same package as the
-// service: cross-package interfaces would force the testing.go
-// generator to chase imports across the project, and the interfaces
-// that fail "Repo is required" today (Repository, CommandPublisher,
-// AuditStore, etc.) are uniformly local to the handler that uses
-// them. If a future need arises for cross-package stubs the parser
-// can grow without changing the consumer's call sites.
+// Only interfaces DECLARED in the package are listed (a Deps field typed
+// `pkg.Iface` goes through ResolveCrossPkgInterface instead), but their
+// method sets are complete: an embedded interface contributes its methods
+// whether it is declared here, in another package (`worktreesweep.Store`,
+// resolved through go/types), or is the predeclared `error`.
 type LocalInterface struct {
 	// Name is the interface type name as declared (e.g. "Repository").
 	Name string
 	// Methods enumerates the interface's method set, with embedded
 	// interfaces flattened so callers get a single list to walk.
 	Methods []InterfaceMethod
+	// Unresolved names each embedded interface whose methods could not be
+	// read — `pkg.Store` whose package does not type-check, has an
+	// unexported method, or an embed of a shape the parser does not know.
+	// Methods is then missing what that embed contributes, and a stub
+	// built from it would not compile, so the harness leaves such a field
+	// to the test (computeAutoStubs reports it unresolved).
+	Unresolved []string
 	// ExtraImports lists every package the flattened method signatures
 	// reference by qualifier, resolved through the import block of the
 	// file each method was declared in.
@@ -129,6 +137,10 @@ func ParseLocalInterfaces(dir string) (map[string]LocalInterface, error) {
 		fileImports map[string]string
 	}
 	var entries2 []entry
+	// ownPkg is the package clause: an import alias equal to it is taken
+	// for the package's own import and dropped from the stub's file (see
+	// extraImportsExcluding), so a cross-package embed must not choose it.
+	var ownPkg string
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
 			continue
@@ -145,6 +157,9 @@ func ParseLocalInterfaces(dir string) (map[string]LocalInterface, error) {
 		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
 		if err != nil {
 			continue
+		}
+		if ownPkg == "" && file.Name != nil {
+			ownPkg = file.Name.Name
 		}
 		fileImports := fileImportMap(file)
 		for _, decl := range file.Decls {
@@ -185,6 +200,12 @@ func ParseLocalInterfaces(dir string) (map[string]LocalInterface, error) {
 	// Build raw method maps + embed maps, then flatten.
 	directMethods := map[string][]InterfaceMethod{}
 	embeds := map[string][]string{}
+	// foreign holds each interface's cross-package embeds, and
+	// unknownEmbeds the embeds no resolver can read (a generic
+	// instantiation, an alias the declaring file does not import).
+	foreign := map[string][]foreignEmbed{}
+	unknownEmbeds := map[string][]string{}
+	foreignPaths := map[string]bool{}
 	// declFileImports records which file each interface was declared in,
 	// so a flattened embed's signatures resolve through the EMBEDDED
 	// interface's imports rather than the embedder's.
@@ -202,42 +223,177 @@ func ParseLocalInterfaces(dir string) (map[string]LocalInterface, error) {
 					directMethods[e.name] = append(directMethods[e.name], m)
 				}
 			case *ast.Ident:
-				// Embedded same-package interface.
-				embeds[e.name] = append(embeds[e.name], ft.Name)
+				switch {
+				case localIfaceNames[ft.Name]:
+					// Embedded same-package interface.
+					embeds[e.name] = append(embeds[e.name], ft.Name)
+				case ft.Name == "error":
+					// The predeclared error contributes Error() string.
+					directMethods[e.name] = append(directMethods[e.name], errorMethod())
+				case ft.Name == "any" || ft.Name == "comparable":
+					// No methods.
+				default:
+					unknownEmbeds[e.name] = append(unknownEmbeds[e.name], ft.Name)
+				}
 			case *ast.SelectorExpr:
-				// Cross-package embed — skip; callers can hand-write
-				// a stub override if they need it.
+				// Cross-package embed (`worktreesweep.StorageStore`). Its
+				// methods are read from the type-checked package below —
+				// go/types flattens whatever IT embeds, at any depth.
+				alias, ok := ft.X.(*ast.Ident)
+				path := ""
+				if ok {
+					path = e.fileImports[alias.Name]
+				}
+				if path == "" {
+					unknownEmbeds[e.name] = append(unknownEmbeds[e.name], printType(fset, ft))
+					continue
+				}
+				foreign[e.name] = append(foreign[e.name], foreignEmbed{
+					expr: printType(fset, ft), importPath: path, typeName: ft.Sel.Name,
+					fileImports: e.fileImports,
+				})
+				foreignPaths[path] = true
+			default:
+				unknownEmbeds[e.name] = append(unknownEmbeds[e.name], printType(fset, field.Type))
 			}
 		}
 	}
 
 	// needed accumulates import path -> alias for the signatures walked
 	// so far. It is filled per declaring interface, so an embedded
-	// interface contributes its OWN file's import bindings.
-	var resolve func(name string, visited map[string]bool, needed map[string]string) []InterfaceMethod
-	resolve = func(name string, visited map[string]bool, needed map[string]string) []InterfaceMethod {
+	// interface contributes its OWN file's import bindings. The walk
+	// covers same-package embeds; the cross-package ones it reaches are
+	// gathered into pending and rendered after it (below), once every
+	// local signature has claimed its alias.
+	var resolve func(name string, visited map[string]bool, needed map[string]string, pending *[]foreignEmbed, unresolved *[]string) []InterfaceMethod
+	resolve = func(name string, visited map[string]bool, needed map[string]string, pending *[]foreignEmbed, unresolved *[]string) []InterfaceMethod {
 		if visited[name] {
 			return nil
 		}
 		visited[name] = true
 		methods := append([]InterfaceMethod{}, directMethods[name]...)
 		collectSignatureImports(directMethods[name], declFileImports[name], needed)
+		*pending = append(*pending, foreign[name]...)
+		*unresolved = append(*unresolved, unknownEmbeds[name]...)
 		for _, em := range embeds[name] {
-			methods = append(methods, resolve(em, visited, needed)...)
+			methods = append(methods, resolve(em, visited, needed, pending, unresolved)...)
 		}
 		return methods
 	}
 
+	resolver := newEmbedResolver(dir, sortedPathSet(foreignPaths))
 	for _, e := range entries2 {
 		needed := map[string]string{}
-		methods := resolve(e.name, map[string]bool{}, needed)
+		var pending []foreignEmbed
+		var unresolved []string
+		methods := resolve(e.name, map[string]bool{}, needed, &pending, &unresolved)
+		for _, fe := range pending {
+			iface, ok := resolver.lookup(fe.importPath, fe.typeName)
+			if !ok {
+				unresolved = append(unresolved, fe.expr)
+				continue
+			}
+			embedded, ok := typedInterfaceMethods(iface, embedQualifier(needed, fe.fileImports, ownPkg))
+			if !ok {
+				unresolved = append(unresolved, fe.expr)
+				continue
+			}
+			methods = append(methods, embedded...)
+		}
 		out[e.name] = LocalInterface{
-			Name:         e.name,
-			Methods:      methods,
+			Name: e.name,
+			// Go accepts one method reached through two embeds (identical
+			// signatures, since 1.14); a stub declaring it twice does not
+			// compile.
+			Methods:      dedupeMethods(methods),
+			Unresolved:   unresolved,
 			ExtraImports: SortedNeededImports(needed),
 		}
 	}
 	return out, nil
+}
+
+// foreignEmbed is an interface embedded from another package, as the
+// embedding file spells it.
+type foreignEmbed struct {
+	expr        string // "worktreesweep.StorageStore"
+	importPath  string
+	typeName    string
+	fileImports map[string]string // the embedding file's alias -> path
+}
+
+// embedQualifier names each package a cross-package embed's signatures
+// reference, recording it in needed (path -> alias). A path some signature
+// already claimed keeps that alias; otherwise the embedding file's own alias
+// for it is preferred, then the package's declared name. An alias already
+// bound to a DIFFERENT path, or equal to the package's own name, gets a
+// numeric suffix — the import is emitted with its alias, so any spelling
+// compiles.
+func embedQualifier(needed, fileImports map[string]string, ownPkg string) types.Qualifier {
+	return func(p *types.Package) string {
+		path := p.Path()
+		if alias, ok := needed[path]; ok {
+			return alias
+		}
+		base := p.Name()
+		for alias, imported := range fileImports {
+			if imported == path {
+				base = alias
+				break
+			}
+		}
+		taken := func(alias string) bool {
+			if alias == ownPkg {
+				return true
+			}
+			for other, a := range needed {
+				if a == alias && other != path {
+					return true
+				}
+			}
+			return false
+		}
+		alias := base
+		for n := 2; taken(alias); n++ {
+			alias = fmt.Sprintf("%s%d", base, n)
+		}
+		needed[path] = alias
+		return alias
+	}
+}
+
+// errorMethod is the method the predeclared error interface contributes.
+func errorMethod() InterfaceMethod {
+	return InterfaceMethod{
+		Name:            "Error",
+		Results:         "string",
+		ResultTypes:     []string{"string"},
+		ResultZeros:     []string{`""`},
+		ReturnStatement: `return ""`,
+	}
+}
+
+// dedupeMethods keeps the first method of each name, in order.
+func dedupeMethods(methods []InterfaceMethod) []InterfaceMethod {
+	seen := make(map[string]bool, len(methods))
+	out := methods[:0:0]
+	for _, m := range methods {
+		if seen[m.Name] {
+			continue
+		}
+		seen[m.Name] = true
+		out = append(out, m)
+	}
+	return out
+}
+
+func sortedPathSet(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // fileImportMap renders one file's import block as alias -> path, where

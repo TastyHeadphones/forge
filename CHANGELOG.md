@@ -147,6 +147,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An interface that embeds another package's interface keeps its embedded
+  methods in every generated double.** The handler test harness, the contract
+  mock (`mock_gen.go`) and the observe decorator (`middleware_gen.go`) read
+  interfaces from syntax and skipped every `pkg.Iface` embed, so a stub or
+  mock had none of its methods and did not compile. reliant's
+  `inbox.Repository` embeds `worktreesweep.StorageStore` (which embeds
+  `worktreesweep.Store`), and `forge generate` failed its validate with
+  `*StubRepo does not implement Repository (missing method
+  AdoptWorktreeDaemon)`; a contract `Service` embedding `io.Closer` produced a
+  mock failing its own `var _ Service` check. A cross-package embed is now
+  read from the type-checked package, so its embeds at any depth come with it;
+  the predeclared `error` contributes `Error() string`, and a method reached
+  through two embeds is declared once. The harness imports the packages the
+  embedded signatures name under the embedding file's own aliases. When an
+  embed cannot be read (its package does not type-check, or it has an
+  unexported method), the harness no longer emits a stub that cannot compile:
+  the Deps field is left to the test, with a TODO naming the embed.
+
 - **A release commit's E2E Scaffold waits out the proxy's negative cache.**
   `release-forge.sh` checks that the version was never published by asking
   proxy.golang.org for it moments before tagging, and the proxy caches that

@@ -579,6 +579,9 @@ type UnresolvedAutoStub struct {
 	// TypeExpr is the unresolved type expression as written in the
 	// Deps struct (e.g. "external.Client").
 	TypeExpr string
+	// Reason says why, when it is not the default (the package did not
+	// load, or the type is not an interface).
+	Reason string
 }
 
 // DepsFuncDefault describes one required func-typed Deps field the test
@@ -1537,6 +1540,17 @@ func computeAutoStubs(handlerDir, _ string) ([]DepsAutoStub, []UnresolvedAutoStu
 
 		// (1) Bare-identifier interface declared in this package.
 		if iface, ok := locals[t]; ok {
+			if len(iface.Unresolved) > 0 {
+				// A stub missing the methods of an embed it could not
+				// read would not compile; leave the field to the test.
+				unresolved = append(unresolved, UnresolvedAutoStub{
+					FieldName: f.Name,
+					TypeExpr:  t,
+					Reason: "forge couldn't read the methods of its embedded " +
+						strings.Join(iface.Unresolved, ", "),
+				})
+				continue
+			}
 			stubs = append(stubs, DepsAutoStub{
 				FieldName:          f.Name,
 				StubType:           "", // resolved below from handlerDir's package

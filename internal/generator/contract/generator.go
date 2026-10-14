@@ -377,6 +377,10 @@ func ParseContractWith(path string, r *Resolver) (*File, error) {
 	// Build a map of interface name → direct methods (no embedding resolved yet).
 	ifaceMethodMap := make(map[string][]MethodDef)
 	ifaceEmbeds := make(map[string][]string) // interface name → embedded interface names
+	// Embeds from other packages contribute their methods from the
+	// type-checked package. A mock or decorator missing them fails its own
+	// compile-time `var _ Service = ...` check.
+	embedAliases := newImportAliases(cf.Imports, cf.ExplicitImports, r)
 	for _, entry := range ifaceEntries {
 		if entry.ifaceType.Methods != nil {
 			for _, field := range entry.ifaceType.Methods.List {
@@ -392,12 +396,33 @@ func ParseContractWith(path string, r *Resolver) (*File, error) {
 						ifaceMethodMap[entry.name] = append(ifaceMethodMap[entry.name], md)
 					}
 				case *ast.Ident:
+					if ft.Name == "error" {
+						// The predeclared error contributes Error() string.
+						ifaceMethodMap[entry.name] = append(ifaceMethodMap[entry.name],
+							MethodDef{Name: "Error", Results: []ParamDef{{TypeExpr: "string"}}})
+						continue
+					}
 					// Embedded interface from same package, e.g. "CommandPublisher"
 					ifaceEmbeds[entry.name] = append(ifaceEmbeds[entry.name], ft.Name)
 				case *ast.SelectorExpr:
-					// Embedded interface from another package — skip for now
+					// Embedded interface from another package: its whole method
+					// set, flattened by go/types at every depth.
+					ifaceMethodMap[entry.name] = append(ifaceMethodMap[entry.name],
+						embeddedMethods(ft, cf.Imports, r, embedAliases)...)
 				}
 			}
+		}
+	}
+	// The packages those embedded signatures reference join contract.go's
+	// import set, so collectImports finds them for the mock and the
+	// decorator alike.
+	for _, imp := range embedAliases.neededImports() {
+		if _, ok := cf.Imports[imp.Name]; ok {
+			continue
+		}
+		cf.Imports[imp.Name] = imp.Path
+		if imp.Explicit {
+			cf.ExplicitImports[imp.Name] = true
 		}
 	}
 
@@ -415,11 +440,13 @@ func ParseContractWith(path string, r *Resolver) (*File, error) {
 		return methods
 	}
 
-	// Second pass: build InterfaceDefs with resolved methods.
+	// Second pass: build InterfaceDefs with resolved methods. Go accepts one
+	// method reached through two embeds (identical signatures, since 1.14);
+	// a mock declaring it twice does not compile, so the first one stands.
 	for _, entry := range ifaceEntries {
 		iface := InterfaceDef{
 			Name:    entry.name,
-			Methods: resolveMethods(entry.name, make(map[string]bool)),
+			Methods: dedupeMethodDefs(resolveMethods(entry.name, make(map[string]bool))),
 		}
 		cf.Interfaces = append(cf.Interfaces, iface)
 	}
