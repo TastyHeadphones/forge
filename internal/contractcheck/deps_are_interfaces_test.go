@@ -2,7 +2,9 @@ package contractcheck
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -340,6 +342,50 @@ func TestLintDepsAreInterfaces_ResolvesOffModuleSelectors(t *testing.T) {
 	}
 	if strings.Contains(got[0].Message, "Events") {
 		t.Errorf("stream.Publisher is an interface in another module and must not be flagged; got: %s", got[0].Message)
+	}
+}
+
+// TestLintDepsAreInterfaces_FailedLookupIsAnErrorNotAFinding pins what the
+// rule does when it cannot ASK where an off-module package lives.
+//
+// An unresolvable selector is judged concrete, which is right for a package
+// that is not on disk and wrong for a `go list` that never answered. The two
+// used to be one case: on a loaded box (load ~1500) the lookup of
+// controller-runtime's client package outlived its 20s bound, and `forge
+// lint` failed control-plane on five `client.Client` / `client.Reader` Deps
+// fields — interfaces — at error severity, while a rerun of the same tree
+// passed. A failed lookup must fail the rule with its cause, and report no
+// findings built on the unanswered question.
+//
+// The same fixture as the off-module test, with a `go` on PATH that fails
+// the way a broken toolchain does. Not parallel: it sets PATH.
+func TestLintDepsAreInterfaces_FailedLookupIsAnErrorNotAFinding(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the failing `go` stub is a POSIX sh script; the lookup code it exercises is not OS-specific")
+	}
+	t.Setenv("GOWORK", "off")
+	bin := t.TempDir()
+	stub := "#!/bin/sh\necho 'go: simulated toolchain failure' >&2\nexit 2\n"
+	if err := os.WriteFile(filepath.Join(bin, "go"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+
+	root := filepath.Join("testdata", "deps_offmodule")
+	fs, err := Inspect(context.Background(), root,
+		Options{Rules: []Rule{RuleDepsAreInterfaces}},
+	)
+	if err == nil {
+		t.Fatalf("a failed go list must fail the rule; got no error and %d finding(s):\n%s",
+			len(fs), AsResult(fs).FormatText())
+	}
+	for _, want := range []string{"go list ", "simulated toolchain failure", string(RuleDepsAreInterfaces)} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should name %q so the cause is readable; got: %v", want, err)
+		}
+	}
+	if len(fs) != 0 {
+		t.Errorf("no findings may be reported from an unanswered lookup; got:\n%s", AsResult(fs).FormatText())
 	}
 }
 
