@@ -1054,6 +1054,13 @@ type deployOptions struct {
 	// dryRun, so nothing on the way to the preflight writes either.
 	preflightOnly bool
 
+	// frontendFindings, when non-nil, makes the preflight-only pass COLLECT
+	// the frontend half's refusals into it instead of returning them. Set
+	// only for a pass whose result is a plan nothing will ship from
+	// (--plan, --plan-only, --dry-run); a real deploy leaves it nil and is
+	// refused as before.
+	frontendFindings *[]frontendPreflightFinding
+
 	// noDigest, when true, forces deploy to reference the mutable :tag even
 	// when the build state captured an immutable content-addressed digest.
 	// By default (false) forge prefers the digest — pinning the manifest to
@@ -1439,10 +1446,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 		}
 		// The frontend half's own refusals, which otherwise fire only AFTER
 		// the cluster apply above has shipped — see preflightFrontendDeploys.
-		if opts.skipFrontend {
-			return nil
-		}
-		return preflightFrontendDeploys(ctx, entities, projectDir)
+		return opts.preflightFrontend(ctx, entities, projectDir)
 	}
 
 	// Everything from here on changes a live target. Each stage is recorded
@@ -2416,6 +2420,56 @@ func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, project
 // and the ledger called the whole apply FAILED. Each of these checks depends on
 // nothing the apply does, so each refuses before the promotion is written.
 func preflightFrontendDeploys(ctx context.Context, entities *KCLEntities, projectDir string) error {
+	return frontendPreflightError(checkFrontendDeploys(ctx, entities, projectDir))
+}
+
+// frontendPreflightFinding is one reason the frontend half of a deploy would
+// be refused. It is a finding rather than an error so a PLAN can report it
+// beside everything else it computed: the missing `firebase` CLI of a sandbox
+// is a fact about the machine, not about the release, and refusing to print
+// the plan for it hid the answer to every other question the plan answers.
+type frontendPreflightFinding struct {
+	// Check names the gate: frontend_sources, frontend_mock_api,
+	// frontend_env_files or frontend_firebase_cli.
+	Check string `json:"check"`
+	// Frontends are the frontends the finding is about.
+	Frontends []string `json:"frontends,omitempty"`
+	// Detail is the refusal a real deploy would print, fix included.
+	Detail string `json:"detail"`
+}
+
+// preflightFrontend is the preflight-only pass's frontend step: nothing under
+// --skip-frontend; else the findings, handed to the plan when it asked to
+// collect them (frontendFindings) and returned as the refusal when it did not.
+func (o deployOptions) preflightFrontend(ctx context.Context, entities *KCLEntities, projectDir string) error {
+	if o.skipFrontend {
+		return nil
+	}
+	findings := checkFrontendDeploys(ctx, entities, projectDir)
+	if o.frontendFindings != nil {
+		*o.frontendFindings = append(*o.frontendFindings, findings...)
+		return nil
+	}
+	return frontendPreflightError(findings)
+}
+
+// frontendPreflightError is the refusal a real deploy makes of findings: nil
+// for none, else every detail, in order.
+func frontendPreflightError(findings []frontendPreflightFinding) error {
+	if len(findings) == 0 {
+		return nil
+	}
+	details := make([]string, 0, len(findings))
+	for _, f := range findings {
+		details = append(details, f.Detail)
+	}
+	return errors.New(strings.Join(details, "\n"))
+}
+
+// checkFrontendDeploys is preflightFrontendDeploys' checks, collected instead
+// of returned at the first failure — so a plan can name each one, and a real
+// deploy prints every gap at once.
+func checkFrontendDeploys(ctx context.Context, entities *KCLEntities, projectDir string) []frontendPreflightFinding {
 	if entities == nil {
 		return nil
 	}
@@ -2429,33 +2483,39 @@ func preflightFrontendDeploys(ctx context.Context, entities *KCLEntities, projec
 	if !slices.ContainsFunc(entities.Frontends, ships) {
 		return nil
 	}
+	var findings []frontendPreflightFinding
 	if err := resolveFrontendEntitySources(ctx, projectDir, entities); err != nil {
-		return err
+		// Every later check reads a frontend's resolved path.
+		return append(findings, frontendPreflightFinding{Check: "frontend_sources", Detail: err.Error()})
 	}
-	var dirs, firebase []string
+	var dirs, names, firebase []string
 	for _, f := range entities.Frontends {
 		if !ships(f) {
 			continue
 		}
 		if err := checkDeployableFrontendMock(f); err != nil {
-			return err
+			findings = append(findings, frontendPreflightFinding{Check: "frontend_mock_api", Frontends: []string{f.Name}, Detail: err.Error()})
 		}
 		dirs = append(dirs, f.Path)
+		names = append(names, f.Name)
 		if f.Runtime.Type == FrontendRuntimeFirebase {
 			firebase = append(firebase, f.Name)
 		}
 	}
 	if err := gateFrontendEnvFiles(projectDir, dirs); err != nil {
-		return err
+		findings = append(findings, frontendPreflightFinding{Check: "frontend_env_files", Frontends: names, Detail: err.Error()})
 	}
 	if len(firebase) > 0 {
 		if _, err := exec.LookPath(deploytarget.FirebaseCLI); err != nil {
-			return fmt.Errorf("frontend(s) %s ship to Firebase Hosting, which runs the `%s` CLI, and it is not "+
-				"installed here (%v).\n  Install it (npm install -g firebase-tools), or ship everything else with "+
-				"--skip-frontend", strings.Join(firebase, ", "), deploytarget.FirebaseCLI, err)
+			findings = append(findings, frontendPreflightFinding{
+				Check: "frontend_firebase_cli", Frontends: firebase,
+				Detail: fmt.Sprintf("frontend(s) %s ship to Firebase Hosting, which runs the `%s` CLI, and it is not "+
+					"installed here (%v).\n  Install it (npm install -g firebase-tools), or ship everything else with "+
+					"--skip-frontend", strings.Join(firebase, ", "), deploytarget.FirebaseCLI, err),
+			})
 		}
 	}
-	return nil
+	return findings
 }
 
 // hasShippableFrontend reports whether any rendered frontend is bound to a

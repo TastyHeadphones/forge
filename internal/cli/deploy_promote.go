@@ -391,9 +391,12 @@ func preflightFollow(ctx context.Context, env, version, projectDir string, ledge
 			return fmt.Errorf("%w\n\nNOTHING WAS RECORDED: env %q's binding did not move", err, env)
 		}
 	}
-	if err := preflightBeforeRecord(ctx, env, version, ledger, follow); err != nil {
+	nonBinding := opts.DryRun || follow.clientDeploy.dryRun || (opts.Confirm != nil && opts.Confirm.PlanOnly)
+	findings, err := preflightBeforeRecord(ctx, env, version, ledger, follow, nonBinding)
+	if err != nil {
 		return err
 	}
+	plan.FrontendPreflight = findings
 	// The converger's half of the same question, for an env the hub
 	// applies: can anything apply this at all? See deploy_hub_ready.go.
 	if follow.skipHubCheck {

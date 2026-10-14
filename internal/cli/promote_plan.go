@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -516,6 +517,14 @@ type promotePlan struct {
 	// for the first time, and any it leaves unpublished. Nil for an env
 	// with no control-plane ledger.
 	Converges *promotePlanConverges `json:"converges,omitempty"`
+	// FrontendPreflight is what would REFUSE the frontend half of a real
+	// deploy of this plan from the machine that computed it — typically
+	// the `firebase` CLI not being installed. Reported only by a plan that
+	// ships nothing (--plan, --plan-only, --dry-run), where it is a finding
+	// and not a failure; a real deploy is refused instead, and
+	// --skip-frontend waives the check. Empty when there is nothing to
+	// report.
+	FrontendPreflight []frontendPreflightFinding `json:"frontend_preflight,omitempty"`
 	// followed is set once the deploy verb's follow-through ran, which is
 	// what decides whether the footer reports what shipped or names the
 	// deploy that will ship it.
@@ -615,6 +624,10 @@ type promoteGitReader interface {
 	// CommitsBetween lists commits reachable from `to` but not `from`,
 	// newest first, as "<short-sha> <subject>".
 	CommitsBetween(ctx context.Context, dir, from, to string) ([]string, error)
+	// IsAncestor reports whether commit a is an ancestor of (or equal to)
+	// commit b. The error is "could not tell" — git unavailable, a commit
+	// absent — which is distinct from a clean "no".
+	IsAncestor(ctx context.Context, dir, a, b string) (bool, error)
 }
 
 // gitCommitReader is the production reader: plain read-only git invocations,
@@ -654,6 +667,24 @@ func (gitCommitReader) CommitsBetween(ctx context.Context, dir, from, to string)
 		}
 	}
 	return commits, nil
+}
+
+func (gitCommitReader) IsAncestor(ctx context.Context, dir, a, b string) (bool, error) {
+	cctx, cancel := context.WithTimeout(ctx, promoteGitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(cctx, "git", "merge-base", "--is-ancestor", a, b)
+	cmd.Dir = dir
+	err := cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	// Exit 1 is the definite "not an ancestor"; anything else (128: bad
+	// object, a git that cannot run) is "could not tell".
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, err
 }
 
 // ─── Computation ─────────────────────────────────────────────────────────────
@@ -827,8 +858,12 @@ func computePromotePlan(ctx context.Context, opts promotePlanOptions) (promotePl
 	plan.Changed = plan.Tally.Changed > 0 || plan.Tally.Added > 0 || plan.Tally.Removed > 0 ||
 		!hadPrev || prev.Release != opts.Version || plan.Current.NotApplied
 
+	ancestry := promoteAncestryUnknown
+	if hadPrev && currentKnown {
+		ancestry = promoteAncestryOf(ctx, git, projectDir, currentRel, target)
+	}
 	plan.Direction, plan.ReleasesBetween, plan.DirectionDetail =
-		promoteDirectionFor(releases, hadPrev, prev.Release, opts.Version)
+		promoteDirectionFor(releases, ancestry, hadPrev, prev.Release, opts.Version)
 	if plan.Current.NotApplied {
 		live := "an earlier release the ledger cannot name"
 		if plan.Current.LiveRelease != "" {
@@ -1020,17 +1055,69 @@ func tallyPromoteImages(images []promoteImageChange) promoteImageTally {
 	return t
 }
 
-// promoteDirectionFor places the target relative to the current release in the
-// project's release ordering.
+// promoteAncestry is what the two releases' commits say about which is newer.
+type promoteAncestry int
+
+const (
+	// promoteAncestryUnknown: the commits cannot order the releases — a
+	// dirty or missing commit, a commit absent from this checkout, a git
+	// that cannot run, the same commit on both, or diverged histories.
+	promoteAncestryUnknown promoteAncestry = iota
+	// promoteAncestryForward: the current release's commit is an ancestor
+	// of the target's, so the target is the newer source.
+	promoteAncestryForward
+	// promoteAncestryBackward: the target's commit is an ancestor of the
+	// current release's.
+	promoteAncestryBackward
+)
+
+// promoteAncestryOf asks git which of two releases' commits is the ancestor.
 //
-// The ordering is the newest-first list, so comparing INDEXES is what decides
-// the direction — not a semver comparison done here. That is deliberate:
-// sortReleasesNewestFirst already decided the order once, including the
-// fallbacks for labels semver cannot parse, and a second comparison in this
-// function would eventually disagree with `forge env status` about which of
-// two releases is newer. The direction of a promote is precisely the fact that
-// must not have two answers.
-func promoteDirectionFor(releases []release.Release, hadPrev bool, currentVersion, targetVersion string) (promoteDirection, int, string) {
+// Ancestry is the ground truth for "is this a rollback": it is what the commit
+// range printed beneath the direction line is computed from, so the two can
+// never disagree. It abstains (Unknown) whenever it would be guessing — a dirty
+// endpoint's recorded commit is real but does not describe the bytes that
+// shipped, and a commit this checkout does not have cannot be placed.
+func promoteAncestryOf(ctx context.Context, git promoteGitReader, dir string, current, target release.Release) promoteAncestry {
+	cur, tgt := current.Git.Commit, target.Git.Commit
+	if cur == "" || tgt == "" || cur == tgt || current.Git.Dirty || target.Git.Dirty {
+		return promoteAncestryUnknown
+	}
+	if !git.HasCommit(ctx, dir, cur) || !git.HasCommit(ctx, dir, tgt) {
+		return promoteAncestryUnknown
+	}
+	curIsAncestor, err := git.IsAncestor(ctx, dir, cur, tgt)
+	if err != nil {
+		return promoteAncestryUnknown
+	}
+	tgtIsAncestor, err := git.IsAncestor(ctx, dir, tgt, cur)
+	if err != nil {
+		return promoteAncestryUnknown
+	}
+	switch {
+	case curIsAncestor && !tgtIsAncestor:
+		return promoteAncestryForward
+	case tgtIsAncestor && !curIsAncestor:
+		return promoteAncestryBackward
+	}
+	return promoteAncestryUnknown
+}
+
+// promoteDirectionFor places the target relative to the current release.
+//
+// TWO SOURCES, IN ORDER: commit ancestry, then the ledger's cut-time order.
+// Ancestry decides when git can say — it is what the commit range is read
+// from, so the direction and the range cannot disagree. When it cannot (a
+// dirty cut, a commit this checkout lacks, diverged histories) the release
+// list's own newest-first order decides: that order is by cut time
+// (sortReleasesNewestFirst), never by comparing version labels, which do not
+// share one scheme — v1.7.40 and 20261014.042859-cd678a0d6531 have no
+// meaningful string or semver order, and treating them as if they did is what
+// reported a forward move as "67 releases OLDER".
+//
+// releases is the newest-first list; comparing INDEXES supplies the order and
+// the "N releases" count. A smaller index is a newer release.
+func promoteDirectionFor(releases []release.Release, ancestry promoteAncestry, hadPrev bool, currentVersion, targetVersion string) (promoteDirection, int, string) {
 	if !hadPrev {
 		return promoteDirectionInitial, 0,
 			"FIRST PROMOTE — this environment has never been bound to a release, so there is nothing to move from"
@@ -1048,11 +1135,20 @@ func promoteDirectionFor(releases []release.Release, hadPrev bool, currentVersio
 			tgtIdx = i
 		}
 	}
-	if curIdx < 0 || tgtIdx < 0 {
-		// One of the two is not in this checkout's release set, so the
-		// ordering cannot place them. UNKNOWN rather than a guess: a
-		// direction invented here is the one number on the screen that
-		// would be believed without checking.
+	known := curIdx >= 0 && tgtIdx >= 0
+
+	var ahead bool
+	switch {
+	case ancestry == promoteAncestryForward:
+		ahead = true
+	case ancestry == promoteAncestryBackward:
+		ahead = false
+	case known:
+		ahead = tgtIdx < curIdx
+	default:
+		// Neither git nor the ledger can place them. UNKNOWN rather than a
+		// guess: a direction invented here is the one number on the screen
+		// that would be believed without checking.
 		missing := currentVersion
 		if tgtIdx < 0 {
 			missing = targetVersion
@@ -1061,14 +1157,37 @@ func promoteDirectionFor(releases []release.Release, hadPrev bool, currentVersio
 			"DIRECTION UNKNOWN — release %s has no ledger in this checkout, so forge cannot tell whether %s is newer or older than %s",
 			missing, targetVersion, currentVersion)
 	}
-	// Newest first, so a SMALLER index is a NEWER release.
-	if tgtIdx < curIdx {
-		return promoteDirectionAhead, curIdx - tgtIdx, fmt.Sprintf(
-			"FORWARD — %s is %d release(s) NEWER than %s", targetVersion, curIdx-tgtIdx, currentVersion)
+
+	// The count is the ledger's, so it is only quoted when it points the
+	// same way as the verdict. Ancestry and cut time can disagree (a
+	// release cut from an older branch after a newer one); then the verdict
+	// stands and the count is omitted rather than contradicting it.
+	between := 0
+	if known && (tgtIdx < curIdx) == ahead {
+		between = curIdx - tgtIdx
+		if between < 0 {
+			between = -between
+		}
 	}
-	return promoteDirectionBehind, tgtIdx - curIdx, fmt.Sprintf(
-		"BEHIND — %s is %d release(s) OLDER than %s. This moves the environment BACKWARDS; it undoes nothing %s did",
-		targetVersion, tgtIdx-curIdx, currentVersion, currentVersion)
+	basis := "by commit ancestry"
+	if ancestry == promoteAncestryUnknown {
+		basis = "by cut time"
+	}
+	if ahead {
+		how := "a newer release"
+		if between > 0 {
+			how = fmt.Sprintf("%d release(s) NEWER", between)
+		}
+		return promoteDirectionAhead, between, fmt.Sprintf(
+			"FORWARD — %s is %s than %s (%s)", targetVersion, how, currentVersion, basis)
+	}
+	how := "an older release"
+	if between > 0 {
+		how = fmt.Sprintf("%d release(s) OLDER", between)
+	}
+	return promoteDirectionBehind, between, fmt.Sprintf(
+		"BEHIND — %s is %s than %s (%s). This moves the environment BACKWARDS; it undoes nothing %s did",
+		targetVersion, how, currentVersion, basis, currentVersion)
 }
 
 // promoteRangeInput is what the commit-range computation needs, gathered so
@@ -1293,6 +1412,7 @@ func renderPromotePlanText(out io.Writer, plan promotePlan) {
 		fmt.Fprintf(out, "  WARNING   %s\n", plan.SourceNote)
 	}
 	renderConvergesSection(out, plan.Converges)
+	renderFrontendPreflightSection(out, plan.FrontendPreflight)
 
 	renderCapacitySection(out, plan.Capacity)
 
@@ -1381,6 +1501,19 @@ func renderPromotePlanFooter(out io.Writer, plan promotePlan) {
 		fmt.Fprintf(out, "  Deploy:   forge env deploy %s\n", plan.Env)
 	}
 	fmt.Fprintf(out, "  Verify:   forge env status %s\n", plan.Env)
+}
+
+// renderFrontendPreflightSection names each frontend preflight finding as its
+// own block, separate from the release change set above it: the plan is whole
+// and correct, and these are the reasons the frontend half of a real deploy
+// from THIS machine would be refused.
+func renderFrontendPreflightSection(out io.Writer, findings []frontendPreflightFinding) {
+	for _, f := range findings {
+		fmt.Fprintf(out, "  FRONTEND PREFLIGHT  %s — not fatal to this plan; a real deploy from this machine is refused for it (--skip-frontend ships everything else)\n", f.Check)
+		for _, line := range strings.Split(f.Detail, "\n") {
+			fmt.Fprintf(out, "      %s\n", strings.TrimSpace(line))
+		}
+	}
 }
 
 // renderShippedStages lists what the deploy's follow-through shipped, one stage

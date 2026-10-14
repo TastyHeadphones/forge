@@ -883,31 +883,43 @@ func readReleaseLedgers(projectDir string) []release.Release {
 	return all
 }
 
-// sortReleasesNewestFirst orders releases newest first.
+// sortReleasesNewestFirst orders releases newest first, by WHEN THEY WERE CUT.
 //
-// SEMVER FIRST, TIMESTAMP AS THE TIE-BREAK, and the order of those two matters.
-// created_at is wall-clock from whichever machine cut the release, so a
-// clock-skewed CI runner or a release re-cut out of order would reorder the
-// history and change every environment's "releases behind" count. The version
-// label is the thing a team actually reasons about, so it leads. A label
-// semver cannot order (a date stamp, a build name) falls back to the
-// timestamp, and finally to the label itself so the order is at least stable
-// across runs rather than dependent on directory iteration.
+// CUT TIME LEADS, and the version label never decides recency between two
+// releases that were cut at different moments. A project's labels are not one
+// scheme: control-plane's ledger holds semver names (v1.7.38, v1.7.40) AND
+// date-named auto cuts (20261014.042859-cd678a0d6531). Semver cannot parse the
+// date names, so a semver-first comparator ranked EVERY v1.x.y above EVERY
+// date-named cut — and a forward promote from v1.7.40 to a cut made days later
+// was reported as "BEHIND, 67 releases OLDER". Time is the one key every
+// scheme shares.
+//
+// Where the cut times are equal or unknown (a zero created_at sorts as oldest),
+// semver orders two parseable labels, a parseable label precedes an
+// unparseable one, and the label itself is the final tie-break so the order is
+// stable across runs rather than dependent on directory iteration. Each of
+// those is a total order on its own, so the composite is one too — a
+// comparator that mixed "semver when both parse, time otherwise" would be
+// intransitive and sort differently from run to run.
+//
+// Callers that need the DIRECTION of a move between two releases consult
+// commit ancestry first (promoteDirectionFor); this order is the fallback for
+// releases whose commits are not comparable, and what "latest" and "releases
+// behind" count by.
 func sortReleasesNewestFirst(releases []release.Release) {
 	sort.SliceStable(releases, func(i, j int) bool {
-		vi, vj := semverKey(releases[i].Version), semverKey(releases[j].Version)
-		if vi != "" && vj != "" && semver.Compare(vi, vj) != 0 {
-			return semver.Compare(vi, vj) > 0
-		}
-		if vi != "" && vj == "" {
-			return true
-		}
-		if vi == "" && vj != "" {
-			return false
-		}
 		ti, tj := releases[i].CreatedAt, releases[j].CreatedAt
-		if !ti.IsZero() && !tj.IsZero() && !ti.Equal(tj) {
+		if !ti.Equal(tj) {
 			return ti.After(tj)
+		}
+		vi, vj := semverKey(releases[i].Version), semverKey(releases[j].Version)
+		if vi != "" && vj != "" {
+			if c := semver.Compare(vi, vj); c != 0 {
+				return c > 0
+			}
+		}
+		if (vi != "") != (vj != "") {
+			return vi != ""
 		}
 		return releases[i].Version > releases[j].Version
 	})
