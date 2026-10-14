@@ -61,6 +61,9 @@ func TestGenerateHelpSurface(t *testing.T) {
 		"dry-run",
 		"explain",
 		"force",
+		// VISIBLE on purpose: a run that keeps hand-edited stale files
+		// names this flag as the way to delete them, so --help must show it.
+		"force-cleanup",
 		"heal",
 		"help-dev",
 		"verbose",
@@ -69,7 +72,6 @@ func TestGenerateHelpSurface(t *testing.T) {
 
 	assertStringSlicesEqual(t, "generate hidden flags", hiddenFlagNames(cmd), []string{
 		"explain-drift",
-		"force-cleanup",
 		"no-revert",
 		"plan",
 		"skip-config-check",

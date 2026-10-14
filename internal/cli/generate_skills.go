@@ -38,8 +38,8 @@ func stepRetireAgentSkills(ctx *pipelineContext) error {
 // skills, and migration skills delivered before they were excluded from
 // default delivery.
 //
-// Why this is safe to do unconditionally (unlike the general
-// report-only stale sweep in cleanupStaleArtifacts):
+// Why this is safe to do unconditionally (the general stale sweep in
+// cleanupStaleArtifacts keeps hand-edited files; this one does not):
 //
 //   - Scope is exactly the manifest entries under .claude/skills/, and
 //     the ONLY writer of tracked paths there is this step. A tracked
@@ -54,9 +54,8 @@ func stepRetireAgentSkills(ctx *pipelineContext) error {
 //     dropped (forge stops claiming a path it no longer manages).
 //
 // Without this, retired skills lingered forever as Tier-1 entries: the
-// general stale sweep only reports them (deletion is gated on
-// --force-cleanup, and the sweep itself is gated on codegen being
-// active), so every regenerated project accumulated dead guidance.
+// general stale sweep is gated on codegen being active, so a project
+// without services never ran it and accumulated dead guidance.
 func gcRetiredAgentSkills(ctx *pipelineContext, skillsDir string, expected map[string]bool) {
 	cs := ctx.Checksums
 

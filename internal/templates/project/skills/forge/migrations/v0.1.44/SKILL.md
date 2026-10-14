@@ -208,9 +208,9 @@ temporary directory, and copy from it.
    pipeline) and `deploy/observability/dashboards/` (the dashboard provisioner
    directory) from the scaffold.
 4. **Remove the dead files.** `deploy/alloy-config.alloy` and
-   `deploy/observability/grafana/` are no longer written. `forge generate` lists
-   them as stale; `forge generate --force-cleanup` deletes the untouched ones.
-   Delete any you edited by hand.
+   `deploy/observability/grafana/` are no longer written. `forge generate`
+   deletes the untouched ones and lists any you edited by hand;
+   `forge generate --force-cleanup` deletes those too.
 5. `forge generate && forge env render dev`, then `forge env up dev`. The summary
    lists the HyperDX UI; `forge env status dev` reports traces, metrics and logs
    by service name.

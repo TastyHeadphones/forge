@@ -66,15 +66,15 @@ func TestCleanupStaleArtifacts_SkipsUpgradeManagedPaths(t *testing.T) {
 	cs := &checksums.FileChecksums{}
 
 	ctx := newCleanupCtx(dir, cs, []codegen.ServiceDef{{Name: "SomeService"}}, nil)
-	removed, handEdited, err := cleanupStaleArtifacts(ctx)
+	sweep, err := cleanupStaleArtifacts(ctx)
 	if err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
-	if len(removed) != 0 {
-		t.Errorf("removed = %v, want empty (upgrade-managed paths must not be flagged stale)", removed)
+	if len(sweep.Removed) != 0 {
+		t.Errorf("removed = %v, want empty (upgrade-managed paths must not be flagged stale)", sweep.Removed)
 	}
-	if len(handEdited) != 0 {
-		t.Errorf("handEdited = %v, want empty", handEdited)
+	if len(sweep.HandEdited) != 0 {
+		t.Errorf("handEdited = %v, want empty", sweep.HandEdited)
 	}
 }
 
@@ -165,15 +165,15 @@ func TestCleanupStaleArtifacts_StillFlagsRealStaleAfterExclusion(t *testing.T) {
 	cs := &checksums.FileChecksums{}
 
 	ctx := newCleanupCtx(dir, cs, []codegen.ServiceDef{{Name: "KeptService"}}, nil)
-	removed, _, err := cleanupStaleArtifacts(ctx)
+	sweep, err := cleanupStaleArtifacts(ctx)
 	if err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
 	// Only the renamed handler should be flagged stale; cmd/cmd/serve.go
 	// excluded by UpgradeManagedPaths.
-	want := []string{stale}
-	if !reflect.DeepEqual(removed, want) {
-		t.Errorf("removed = %v, want %v", removed, want)
+	want := []string{"internal/handlers/renamed/handlers_crud_gen.go"}
+	if !reflect.DeepEqual(sweep.Removed, want) {
+		t.Errorf("removed = %v, want %v", sweep.Removed, want)
 	}
 }
 

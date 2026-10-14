@@ -169,15 +169,13 @@ type pipelineContext struct {
 	// for the rationale; consumed by the gate-loop in runGeneratePipelineFlags.
 	Verbose bool
 
-	// ForceCleanup opts in to the destructive stale-artifact sweep. The
-	// historical behavior (delete every manifest-recorded path the run
-	// did not re-emit) was load-bearing for cp-forge-style projects but
-	// surprised users running `forge generate` while iterating on a
-	// service rename — a single mistimed run could nuke files the user
-	// hadn't realized were stale. The default is now report-only:
-	// stepCleanupStale walks the same candidates and prints a warning
-	// listing what WOULD be deleted, but leaves the files in place.
-	// Pass --force-cleanup to actually delete.
+	// ForceCleanup makes the stale-artifact sweep delete hand-edited
+	// stale files too. Without it the sweep deletes only pristine ones —
+	// certified files no emitter wrote this run, byte-identical to what
+	// forge rendered, so a run mid-way through a rename loses nothing
+	// the next run cannot re-render — and lists the hand-edited ones,
+	// whose bytes are the user's. --force-cleanup is the user's answer
+	// to that list (generate_cleanup.go).
 	ForceCleanup bool
 
 	// TemplatesOnly narrows the pipeline to template-driven render
@@ -1861,42 +1859,55 @@ func stepFrontendConfig(ctx *pipelineContext) error {
 // Only runs when len(services) > 0 — on a freshly-scaffolded project
 // the descriptor may be empty (or buf hasn't run successfully yet);
 // the empty-services short-circuit keeps the legacy contract.
+//
+// Skipped when an earlier step failed as a warning (no --strict): that
+// step wrote none of its outputs, so they look exactly like files no
+// emitter produces any more, and deleting them would turn a warning
+// into missing code.
 func stepCleanupStale(ctx *pipelineContext) error {
 	if len(ctx.Services) == 0 {
 		return nil
 	}
-	candidates, handEdited, cerr := cleanupStaleArtifacts(ctx)
+	if len(ctx.SoftFailures) > 0 {
+		fmt.Fprintf(os.Stderr, "\n⏭️  Stale-file sweep skipped: %s failed this run, so files it would have written look stale. "+
+			"Fix it and re-run `%s generate` to remove the files no emitter writes any more.\n",
+			strings.Join(ctx.SoftFailures, ", "), Name())
+		return nil
+	}
+	sweep, cerr := cleanupStaleArtifacts(ctx)
 	if cerr != nil {
 		return ctx.warnOrFail("stale-artifact cleanup", cerr)
 	}
-	if len(candidates) > 0 {
-		if ctx.ForceCleanup {
-			fmt.Println("\n🧹 Removed stale codegen artifacts:")
-			for _, p := range candidates {
-				rel, _ := filepath.Rel(ctx.ProjectDir, p)
-				if rel == "" {
-					rel = p
-				}
-				fmt.Printf("  - %s\n", rel)
-			}
-		} else {
-			fmt.Fprintf(os.Stderr, "\n⚠️  forge generate found %d stale generated file(s). Run with --force-cleanup to delete them, or run `%s project audit` for details:\n", len(candidates), Name())
-			for _, p := range candidates {
-				rel, _ := filepath.Rel(ctx.ProjectDir, p)
-				if rel == "" {
-					rel = p
-				}
-				fmt.Fprintf(os.Stderr, "  - %s\n", rel)
-			}
-		}
-	}
-	if len(handEdited) > 0 {
-		fmt.Fprintf(os.Stderr, "\n⚠️  Stale generated file(s) with hand-edits — no emitter writes them anymore, but the bytes are yours so forge won't delete them (remove by hand, or `forge project disown` to keep them deliberately):\n")
-		for _, rel := range handEdited {
-			fmt.Fprintf(os.Stderr, "  - %s\n", rel)
-		}
-	}
+	printStaleSweep(os.Stdout, os.Stderr, sweep, ctx.ForceCleanup)
 	return nil
+}
+
+// printStaleSweep reports a stale-file sweep: what it removed (stdout),
+// and the hand-edited files it kept with the two ways to settle them
+// (stderr, so a kept file is not lost in a long run's output).
+func printStaleSweep(out, errOut io.Writer, sweep staleSweep, forceCleanup bool) {
+	if len(sweep.Removed) > 0 {
+		handEdited := make(map[string]bool, len(sweep.HandEdited))
+		for _, rel := range sweep.HandEdited {
+			handEdited[rel] = true
+		}
+		fmt.Fprintf(out, "\n🧹 Removed %d stale generated file(s) — no emitter writes them any more:\n", len(sweep.Removed))
+		for _, rel := range sweep.Removed {
+			if handEdited[rel] {
+				fmt.Fprintf(out, "  - %s (hand-edited; --force-cleanup)\n", rel)
+				continue
+			}
+			fmt.Fprintf(out, "  - %s\n", rel)
+		}
+	}
+	if len(sweep.HandEdited) > 0 && !forceCleanup {
+		fmt.Fprintf(errOut, "\n⚠️  Kept %d stale generated file(s) with hand-edits — no emitter writes them any more, but the edits are yours. "+
+			"Delete them with `%s generate --force-cleanup`, or keep one as your own with `%s project disown <path>`:\n",
+			len(sweep.HandEdited), Name(), Name())
+		for _, rel := range sweep.HandEdited {
+			fmt.Fprintf(errOut, "  - %s\n", rel)
+		}
+	}
 }
 
 // stepServiceStubs — was Step 4.

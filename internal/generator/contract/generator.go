@@ -157,8 +157,8 @@ type Options struct {
 	// the per-run WrittenThisRun set. Without this, the stale-artifact
 	// sweep saw every manifest-tracked mock_gen.go as "tracked but not
 	// re-emitted this run" and flagged it for deletion on every
-	// `forge generate` — and `--force-cleanup` would actually delete
-	// live mocks (kalshi-trader FORGE_BACKLOG #15).
+	// `forge generate` — and the sweep would delete live mocks
+	// (kalshi-trader FORGE_BACKLOG #15).
 	//
 	// ProjectRoot is the project root (the directory containing .forge/);
 	// relative manifest paths are computed against it. Both fields nil

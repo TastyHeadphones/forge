@@ -132,7 +132,8 @@ func frontendLintTemplatePath(tree string) string {
 //
 // The stale-artifact sweep needs this. That sweep deletes any file carrying
 // forge's certification marker that the current `forge generate` run did
-// not write, and `--force-cleanup` deletes the pristine ones outright. A
+// not write: the pristine ones outright, the hand-edited ones under
+// `--force-cleanup`. A
 // Tier-2 managed file is stamped and is written by `forge project upgrade`,
 // not by `forge generate`, so it lands in the sweep's crosshairs exactly as
 // the command-tree files did — the data-loss incident UpgradeManagedPaths

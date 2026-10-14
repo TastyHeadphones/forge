@@ -44,8 +44,8 @@
 // Retirement of a pre-existing handlers/<svc>/ scaffold reuses the
 // manifest-driven stale sweep (generate_cleanup.go): the gated emitters
 // stop writing the tracked Tier-1 files, so they fall out of
-// WrittenThisRun and become report-only removal candidates (deleted
-// under --force-cleanup); Tier-2 user-owned files in the same dir are
+// WrittenThisRun and are removed (the hand-edited ones only under
+// --force-cleanup); Tier-2 user-owned files in the same dir are
 // never candidates. `forge project audit` surfaces both halves via the codegen
 // category's unregistered_services finding.
 package cli
