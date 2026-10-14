@@ -373,6 +373,10 @@ func (l *depsLinter) lintPkg(pkgDir string) ([]forgeconv.Finding, error) {
 		if l.concreteTypeIsData(field.Type, fileImports) {
 			continue
 		}
+		remediation := depsRemediation
+		if l.isValueStruct(field.Type, fileImports) {
+			remediation = valueStructRemediation + remediation
+		}
 		// Report each concrete field separately so users see every
 		// site that needs an interface lift.
 		for _, n := range field.Names {
@@ -385,18 +389,65 @@ func (l *depsLinter) lintPkg(pkgDir string) ([]forgeconv.Finding, error) {
 				Message: fmt.Sprintf(
 					"Deps field %q has concrete type %s; deps should be interfaces so this package is testable with all-mock deps",
 					n.Name, exprString(field.Type)),
-				Remediation: "type the field with an interface. Look for an existing one first — the dep's own contract.go " +
-					"interface (already mocked in its mock_gen.go by `forge generate`), a stdlib one like http.Handler, or, " +
-					"if this package only FORWARDS the dep, the interface the real consumer one frame down already declares. " +
-					"Only mint a new one when none fits, and then name just the methods this package calls. " +
-					"If the field is `// forge:optional-dep`, assign it CONDITIONALLY (`if x != nil { deps.X = x }`): " +
-					"a nil concrete pointer stored in an interface field is not a nil interface, so an unconditional " +
-					"assignment turns your `if deps.X == nil` guard into a nil-receiver panic. " +
-					"Skill: forge skill load service-layer",
+				Remediation: remediation,
 			})
 		}
 	}
 	return findings, nil
+}
+
+// depsRemediation is the fix every finding of this rule carries.
+const depsRemediation = "type the field with an interface. Look for an existing one first — the dep's own contract.go " +
+	"interface (already mocked in its mock_gen.go by `forge generate`), a stdlib one like http.Handler, or, " +
+	"if this package only FORWARDS the dep, the interface the real consumer one frame down already declares. " +
+	"Only mint a new one when none fits, and then name just the methods this package calls. " +
+	"If the field is `// forge:optional-dep`, assign it CONDITIONALLY (`if x != nil { deps.X = x }`): " +
+	"a nil concrete pointer stored in an interface field is not a nil interface, so an unconditional " +
+	"assignment turns your `if deps.X == nil` guard into a nil-receiver panic. " +
+	"Skill: forge skill load service-layer"
+
+// valueStructRemediation leads the fix for a field typed as a struct VALUE.
+//
+// # Why a value struct with func-field seams is still a finding
+//
+// isFuncSeam accepts a func-typed field because a test replaces it in one
+// line, and an unset one is nil: calling it panics, loudly, instead of
+// reaching anything real. Bundling such fields into a value struct
+// (`netguard.Policy{AllowPrivate bool; LookupIP func(...)}`) looks like the
+// same seam, and would be if the struct's methods reached the world ONLY
+// through those fields. That is not what such types do: the typical method
+// falls back to the real thing when its func field is nil
+// (`net.DefaultResolver` when LookupIP is unset), or builds a live handle
+// itself (`Transport()` returns a dialing *http.Transport). A value field
+// cannot be left unset, so its zero value — which is what a test that says
+// `Deps{}` passes, and what the generated harness passes, since it cannot
+// stub a struct — is LIVE: reliant's model_endpoint handler resolved real DNS
+// in a unit test of an endpoint URL.
+//
+// So the field is reported, with the two fixes that fit this shape first.
+const valueStructRemediation = "this field is a struct VALUE, and its zero value — what `Deps{}` and the generated " +
+	"test harness pass — is live: a func field it falls back from when nil, or a handle a method builds, reaches the " +
+	"real thing. When the value is DERIVED FROM CONFIGURATION (a policy, a limits table), drop the field, take the " +
+	"config block it is derived from (a generated config message is accepted on Deps), and derive it in New " +
+	"(`netguard.ForDeployment(deps.ControlPlane.GetUrl())`): the test then chooses it by choosing config. Otherwise "
+
+// isValueStruct reports whether expr is `pkg.T` — no pointer — where pkg
+// declares T as a struct.
+func (l *depsLinter) isValueStruct(expr ast.Expr, imports map[string]string) bool {
+	sel, ok := expr.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	pkgIdent, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	dir := l.dirForQualifier(pkgIdent.Name, imports)
+	if dir == "" {
+		return false
+	}
+	_, isStruct := l.packageTypeDecls(dir).structs[sel.Sel.Name]
+	return isStruct
 }
 
 // genericBase returns the generic type an instantiation names —

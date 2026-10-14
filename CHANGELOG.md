@@ -76,6 +76,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A namespace holding Flux objects needs `flux_namespace_bindings` or its source and
   apply fail `Forbidden`. See `migrations/v0.1.46` and
   `docs/runbooks/flux-patch-and-upgrade.md`.
+- **`forgeconv-deps-are-interfaces` explains a struct-VALUE dep.** A Deps
+  field typed as a struct value (`Policy netguard.Policy`) is still reported
+  — deliberately, though its exported func fields look like the func seams the
+  rule accepts: such a type's methods fall back to the real thing when a func
+  field is nil (the system resolver) or build live handles (a dialing
+  `*http.Transport`), and a value cannot be left unset, so the zero value
+  `Deps{}` and the generated harness pass reaches the network. The finding now
+  leads with the fix that fits: when the value is derived from configuration,
+  take the config block and derive it in `New`.
 
 - **Each object's tree (`<unit>/<phase>`) is part of the bundle's config digest**,
   so a release that re-homes an object has a different digest even when its bytes
