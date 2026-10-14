@@ -86,7 +86,7 @@ To forward a dependency's verdict on purpose, return it (or `svcerr.Wrap` it) di
 
 Redaction applies only to that fallback: codes you choose (`InvalidArgument`, `NotFound`, …) keep the message you gave them, because it is part of your API. So never put a driver error inside one — `svcerr.InvalidArgument(err.Error())` opts out of every protection above.
 
-`forge lint --conventions` warns (`forgeconv-no-handler-error-mapping`) on a re-rolled per-service mapper.
+`forge lint --conventions` warns (`forgeconv-no-handler-error-mapping`) on a re-rolled per-service mapper: two or more `errors.Is`/`errors.As` sentinels whose arms produce a connect error (return a `connect.NewError`, or return or assign a `connect.Code…`). Sentinels that pick something else — a response status, a retry — are not mapping and do not fire.
 
 ### Domain sentinels
 

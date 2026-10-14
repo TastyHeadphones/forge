@@ -32,8 +32,11 @@
 //
 //   1. Function name matches a known mapping-helper name (mapServiceError,
 //      toConnectError, errToConnect, mapErr, etc.).
-//   2. Body constructs `connect.NewError` AND switches on errors.Is /
-//      errors.As against multiple sentinels.
+//   2. Two or more errors.Is / errors.As sentinel tests select a switch arm
+//      (or an if body) that produces a CONNECT ERROR: it returns a
+//      connect.NewError as its error, or returns or assigns a connect code.
+//      Arms that pick something else — a response status, a retry — are
+//      not mapping, however many sentinels they test.
 //
 // Either signal alone is suspicious; combined they are the duplication
 // pattern this rule targets. Severity is warning (not error): the
@@ -230,46 +233,155 @@ func importsSvcerr(file *ast.File) bool {
 
 // bodyLooksLikeMapper inspects the function body for the canonical
 // "switch on errors.Is(err, sentinel) → connect.NewError(connect.CodeX, err)"
-// shape. Returns (true, sentinelCount) when the body matches with at
-// least two distinct sentinel arms. The threshold is intentionally
-// modest — a one-arm switch could legitimately be a domain-specific
-// translation, but a two-or-more-arm switch on errors.Is paired with
-// connect.NewError construction is the duplication pattern.
+// shape. Returns (true, sentinelCount) when at least two sentinel tests
+// (errors.Is / errors.As) select an arm that MAPS to a connect error. The
+// threshold is intentionally modest — a one-arm switch could legitimately
+// be a domain-specific translation, but two or more sentinels mapped to
+// connect errors is the duplication pattern.
+//
+// An arm is a `case` clause of a switch or the body of an `if`, and it is
+// counted only when what it produces is a connect error (see armMapsToConnect).
+// Seeing errors.Is and connect.NewError anywhere in one function is not
+// enough: a handler routinely does both for unrelated reasons. reliant's
+// PollCopilotDeviceAuth switches on four device-flow sentinels to pick a
+// RESPONSE status (PENDING / EXPIRED / DENIED) and returns connect.NewError
+// only for a missing argument and a failed save — that is not a mapper, and
+// svcerr.Wrap could not replace it.
 func bodyLooksLikeMapper(fn *ast.FuncDecl) (bool, int) {
 	if fn.Body == nil {
 		return false, 0
 	}
+	buildsError := containsNode(fn.Body, isConnectNewError)
 
-	var (
-		sawConnectNewError bool
-		sentinelArms       int
-		sawErrorsIs        bool
-	)
-
+	sentinels := 0
+	arm := func(cond ast.Expr, body []ast.Stmt) {
+		n := countSentinelTests(cond)
+		if n > 0 && armMapsToConnect(body, buildsError) {
+			sentinels += n
+		}
+	}
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		switch x := n.(type) {
-		case *ast.CallExpr:
-			if isQualifiedCall(x.Fun, "connect", "NewError") {
-				sawConnectNewError = true
+		case *ast.CaseClause:
+			for _, e := range x.List {
+				arm(e, x.Body)
 			}
-			if isQualifiedCall(x.Fun, "errors", "Is") || isQualifiedCall(x.Fun, "errors", "As") {
-				sawErrorsIs = true
-				sentinelArms++
-			}
+		case *ast.IfStmt:
+			arm(x.Cond, x.Body.List)
 		}
 		return true
 	})
+	return sentinels >= 2, sentinels
+}
 
-	if !sawConnectNewError {
-		return false, sentinelArms
+// countSentinelTests counts the errors.Is / errors.As calls in a condition.
+func countSentinelTests(cond ast.Expr) int {
+	if cond == nil {
+		return 0
 	}
-	if !sawErrorsIs {
-		return false, sentinelArms
+	n := 0
+	ast.Inspect(cond, func(node ast.Node) bool {
+		if call, ok := node.(*ast.CallExpr); ok &&
+			(isQualifiedCall(call.Fun, "errors", "Is") || isQualifiedCall(call.Fun, "errors", "As")) {
+			n++
+		}
+		return true
+	})
+	return n
+}
+
+// armMapsToConnect reports whether an arm's statements turn the sentinel
+// into a connect error, in one of the three spellings a mapper takes:
+//
+//   - it RETURNS a connect.NewError(...) as its error (the last result);
+//   - it RETURNS a connect code (`return connect.CodeNotFound`, a code
+//     mapper whose caller builds the error);
+//   - it ASSIGNS a connect code (`code = connect.CodeNotFound`) in a
+//     function that builds a connect.NewError — the switch picks the code,
+//     one NewError after it uses it.
+//
+// A nested function literal is its own scope, not the arm's result, and is
+// not looked into.
+func armMapsToConnect(body []ast.Stmt, fnBuildsError bool) bool {
+	found := false
+	for _, stmt := range body {
+		ast.Inspect(stmt, func(n ast.Node) bool {
+			if found {
+				return false
+			}
+			switch x := n.(type) {
+			case *ast.FuncLit:
+				return false
+			case *ast.ReturnStmt:
+				if len(x.Results) == 0 {
+					return true
+				}
+				if containsNode(x.Results[len(x.Results)-1], isConnectNewError) {
+					found = true
+				}
+				for _, r := range x.Results {
+					if isConnectCode(r) {
+						found = true
+					}
+				}
+			case *ast.AssignStmt:
+				if !fnBuildsError {
+					return true
+				}
+				for _, r := range x.Rhs {
+					if isConnectCode(r) {
+						found = true
+					}
+				}
+			case *ast.ValueSpec:
+				if !fnBuildsError {
+					return true
+				}
+				for _, v := range x.Values {
+					if isConnectCode(v) {
+						found = true
+					}
+				}
+			}
+			return true
+		})
+		if found {
+			return true
+		}
 	}
-	if sentinelArms < 2 {
-		return false, sentinelArms
+	return false
+}
+
+// isConnectNewError matches a `connect.NewError(...)` call.
+func isConnectNewError(n ast.Node) bool {
+	call, ok := n.(*ast.CallExpr)
+	return ok && isQualifiedCall(call.Fun, "connect", "NewError")
+}
+
+// isConnectCode matches a `connect.Code<Name>` constant.
+func isConnectCode(e ast.Expr) bool {
+	sel, ok := e.(*ast.SelectorExpr)
+	if !ok || sel.Sel == nil || !strings.HasPrefix(sel.Sel.Name, "Code") || sel.Sel.Name == "Code" {
+		return false
 	}
-	return true, sentinelArms
+	id, ok := sel.X.(*ast.Ident)
+	return ok && id.Name == "connect"
+}
+
+// containsNode reports whether any node under root satisfies match.
+func containsNode(root ast.Node, match func(ast.Node) bool) bool {
+	found := false
+	ast.Inspect(root, func(n ast.Node) bool {
+		if found || n == nil {
+			return false
+		}
+		if match(n) {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 // isQualifiedCall reports whether expr is a selector of the form
@@ -296,7 +408,7 @@ func mappingFindingMessage(name string, nameSuspect, bodySuspect bool, arms int)
 	switch {
 	case nameSuspect && bodySuspect:
 		return fmt.Sprintf(
-			"function %q switches on %d sentinel(s) and constructs connect.NewError — "+
+			"function %q maps %d sentinel(s) to connect errors — "+
 				"this is the per-service mapping helper that pkg/svcerr replaces. "+
 				"Use `svcerr.Wrap(err)` instead.",
 			name, arms)
@@ -307,7 +419,7 @@ func mappingFindingMessage(name string, nameSuspect, bodySuspect bool, arms int)
 			name)
 	default:
 		return fmt.Sprintf(
-			"function %q switches on %d sentinel(s) and constructs connect.NewError — "+
+			"function %q maps %d sentinel(s) to connect errors — "+
 				"this looks like a hand-rolled service-error mapper. "+
 				"Use `svcerr.Wrap(err)` from forge/pkg/svcerr.",
 			name, arms)
