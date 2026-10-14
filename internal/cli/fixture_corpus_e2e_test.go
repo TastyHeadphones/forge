@@ -1700,7 +1700,7 @@ func bootHealthzAndShutdown(t *testing.T, projectDir string, extraEnv ...string)
 	}()
 
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
-	if !waitForServer(t, base+"/healthz", 15*time.Second) {
+	if !waitForServing(t, base, 15*time.Second) {
 		t.Fatalf("server did not become ready\noutput:\n%s", serverOut.String())
 	}
 	resp, err := http.Get(base + "/healthz")
@@ -2724,7 +2724,7 @@ func bootCRUDAuthEnforced(t *testing.T, projectDir string) {
 	}()
 
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
-	if !waitForServer(t, base+"/healthz", 15*time.Second) {
+	if !waitForServing(t, base, 15*time.Second) {
 		t.Fatalf("auth-enforced server did not become ready\noutput:\n%s", serverOut.String())
 	}
 
@@ -2852,7 +2852,7 @@ func bootCustomReadRPC(t *testing.T, projectDir string) {
 	}()
 
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
-	if !waitForServer(t, base+"/healthz", 15*time.Second) {
+	if !waitForServing(t, base, 15*time.Second) {
 		t.Fatalf("custom-read server did not become ready\noutput:\n%s", serverOut.String())
 	}
 

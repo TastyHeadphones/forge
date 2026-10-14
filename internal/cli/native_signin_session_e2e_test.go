@@ -94,7 +94,7 @@ message Widget {
 	}()
 
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
-	if !waitForServer(t, base+"/healthz", 30*time.Second) {
+	if !waitForServing(t, base, 30*time.Second) {
 		t.Fatalf("server did not become ready\nserver output:\n%s", serverOut.String())
 	}
 

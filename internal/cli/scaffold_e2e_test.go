@@ -785,6 +785,17 @@ func waitForServer(t *testing.T, url string, timeout time.Duration) bool {
 	return false
 }
 
+// waitForServing waits until the server at base is composed and serving its
+// routes: /readyz answers 200. /healthz cannot say that. serverkit's boot
+// probes answer it from the top of boot, while the database connect and
+// AutoMigrate are still running and before any route is mounted, so a test
+// that calls a route as soon as /healthz is up races composition and reads
+// the boot listener's 404.
+func waitForServing(t *testing.T, base string, timeout time.Duration) bool {
+	t.Helper()
+	return waitForServer(t, base+"/readyz", timeout)
+}
+
 // assertPathExistsE2E fails the test if the path does not exist.
 func assertPathExistsE2E(t *testing.T, path string) {
 	t.Helper()
