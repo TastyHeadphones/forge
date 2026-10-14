@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/contractcheck"
@@ -48,6 +49,28 @@ func withGenerateLock(projectDir string, fn func() error) error {
 	generateMu.Lock()
 	defer generateMu.Unlock()
 	return fn()
+}
+
+// generateInSlot runs fn holding a host heavy slot (pkg/hostslot): generate is
+// heavy (buf, the schema projection's postgres, a validating compile of every
+// package). The slot is taken BEFORE the project lock: a run holding the
+// project lock must never wait for a slot, or a slot holder waiting for that
+// lock (a gate's verify-generated) deadlocks with it. --plan does no work and
+// takes none; --watch holds it for the first generate only, not the session.
+func generateInSlot(cmd *cobra.Command, fn func() error) error {
+	release, err := cmdutil.HoldHeavySlot(cmd.Context(), cmd.ErrOrStderr())
+	if err != nil {
+		return err
+	}
+	defer release()
+	return fn()
+}
+
+// generateLockedInSlot runs fn under the project's generate lock inside a heavy
+// slot — slot first, then lock (see generateInSlot) — and releases both when
+// fn returns, so `--watch` holds neither for its session.
+func generateLockedInSlot(cmd *cobra.Command, fn func() error) error {
+	return generateInSlot(cmd, func() error { return withGenerateLock(".", fn) })
 }
 
 func newGenerateCmd() *cobra.Command {
@@ -113,7 +136,7 @@ forensics, parallel-lane and migration escape hatches); run
 'forge generate --help-dev' to list them.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if checkOnly {
-				return runGenerateCheck()
+				return generateInSlot(cmd, runGenerateCheck)
 			}
 			if planOnly {
 				return runGeneratePlan(".", pipelineFlags{
@@ -131,7 +154,7 @@ forensics, parallel-lane and migration escape hatches); run
 			// The explain scans run inside the lock too: a concurrent run
 			// finishing between the pre-scan and this run's pipeline would
 			// otherwise be labeled as this run's rewrites.
-			err := withGenerateLock(".", func() error {
+			err := generateLockedInSlot(cmd, func() error {
 				// Capture pre-pipeline body hashes (from the embedded
 				// markers) so --explain can diff against post-pipeline
 				// state to label rewritten vs idempotent.

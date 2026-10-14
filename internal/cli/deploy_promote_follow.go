@@ -374,13 +374,23 @@ func applySelfManaged(ctx context.Context, env string, ledger envLedger, o promo
 // It renders the TARGET release's pins (withHostedPinRelease), not the
 // binding's: the binding still names the CURRENT release at this point, and a
 // preflight of that would check the images that are already running.
-func preflightBeforeRecord(ctx context.Context, env, version string, ledger envLedger, o promoteFollowOptions) error {
+//
+// nonBinding is true when nothing will ship from this invocation (--plan,
+// --plan-only, --dry-run). The frontend half's refusals — the `firebase` CLI
+// missing from the machine printing the plan — are then RETURNED as findings
+// for the plan to name, not as an error that stops the plan from printing. A
+// real deploy gets them as the refusal it always was.
+func preflightBeforeRecord(ctx context.Context, env, version string, ledger envLedger, o promoteFollowOptions, nonBinding bool) ([]frontendPreflightFinding, error) {
 	if !ledger.appliesLocally() || ledger.hubConverged() {
-		return nil
+		return nil, nil
 	}
 	opts := o.clientDeploy
 	opts.dryRun = true
 	opts.preflightOnly = true
+	var findings []frontendPreflightFinding
+	if nonBinding {
+		opts.frontendFindings = &findings
+	}
 	if opts.skipPreflight {
 		o.notice("\nPreflight: --skip-preflight waives the live-target checks; every cluster group of %s is still rendered for %s — before anything is recorded\n", env, version)
 	} else {
@@ -399,10 +409,10 @@ func preflightBeforeRecord(ctx context.Context, env, version string, ledger envL
 		}
 	}
 	if err != nil {
-		return fmt.Errorf("%w\n\nNOTHING WAS RECORDED: env %q's binding did not move. Fix the gaps above and re-run "+
+		return nil, fmt.Errorf("%w\n\nNOTHING WAS RECORDED: env %q's binding did not move. Fix the gaps above and re-run "+
 			"this same command", err, env)
 	}
-	return nil
+	return findings, nil
 }
 
 // captureProcessStdout runs fn with os.Stdout redirected into a buffer and

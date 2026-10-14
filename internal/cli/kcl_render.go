@@ -40,6 +40,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/config"
@@ -1405,6 +1406,11 @@ func RenderKCL(ctx context.Context, projectDir, env string) (*KCLEntities, error
 	return RenderKCLWith(ctx, projectDir, env, nil)
 }
 
+// declarationRenders counts RenderKCLWith calls: every evaluation of an env's
+// declaration. An evaluation of a large env is seconds of CPU, so how many one
+// command makes is a property worth pinning (env_render_kcl_once_test.go).
+var declarationRenders atomic.Int64
+
 // RenderKCLWith is RenderKCL plus additional forge-derived `-D` bindings.
 //
 // It exists for the build render, which must bind values a plain render cannot
@@ -1418,6 +1424,7 @@ func RenderKCL(ctx context.Context, projectDir, env string) (*KCLEntities, error
 // same contract renderKCLRaw's own dArgs use. A key the caller binds here wins
 // over nothing else: these are reserved names no project may set.
 func RenderKCLWith(ctx context.Context, projectDir, env string, extra []string) (*KCLEntities, error) {
+	declarationRenders.Add(1)
 	raw, err := renderKCLRaw(ctx, projectDir, env, extra...)
 	if err != nil {
 		return nil, err

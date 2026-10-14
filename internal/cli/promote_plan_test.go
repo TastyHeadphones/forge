@@ -36,6 +36,30 @@ type fakeGit struct {
 	err error
 	// rangesAsked records every from..to actually requested.
 	rangesAsked []string
+	// ancestors states "a is an ancestor of b" as "a<b". Anything unstated
+	// is a definite no. ancestryErr makes IsAncestor fail ("could not tell").
+	ancestors   map[string]bool
+	ancestryErr error
+}
+
+func (f *fakeGit) IsAncestor(_ context.Context, _, a, b string) (bool, error) {
+	if f.ancestryErr != nil {
+		return false, f.ancestryErr
+	}
+	return f.ancestors[a+"<"+b], nil
+}
+
+// linearHistory states that the commits are a straight line, oldest first:
+// each is an ancestor of every later one.
+func (f *fakeGit) linearHistory(oldestFirst ...string) *fakeGit {
+	f.ancestors = map[string]bool{}
+	for i, a := range oldestFirst {
+		f.have[a] = true
+		for _, b := range oldestFirst[i:] {
+			f.ancestors[a+"<"+b] = true
+		}
+	}
+	return f
 }
 
 func (f *fakeGit) HasCommit(_ context.Context, _, commit string) bool {
@@ -978,4 +1002,164 @@ func TestPromoteEnums_RejectUnknownStrings(t *testing.T) {
 	if (promoteRangeState(0)) != promoteRangeUnknown {
 		t.Error("the zero range state must be unknown, never computed")
 	}
+}
+
+// ─── Direction across mixed version schemes ──────────────────────────────────
+
+// mixedSchemeReleases is control-plane's ledger shape: semver cuts, then
+// date-named auto cuts made later. A semver-first order ranked every v1.x.y
+// above every date name.
+func mixedSchemeReleases() []release.Release {
+	return []release.Release{
+		rel("v1.7.38", "2026-10-09T00:00:00Z", "aaaaaaaaaaaa", false, map[string]string{"reliant": sha("a")}),
+		rel("v1.7.40", "2026-10-12T00:00:00Z", "bbbbbbbbbbbb", false, map[string]string{"reliant": sha("b")}),
+		rel("20261013.002646-cccccccccccc", "2026-10-13T00:26:46Z", "cccccccccccc", false, map[string]string{"reliant": sha("c")}),
+		rel("20261014.042859-dddddddddddd", "2026-10-14T04:28:59Z", "dddddddddddd", false, map[string]string{"reliant": sha("d")}),
+	}
+}
+
+func planMove(t *testing.T, from, to string, git *fakeGit) promotePlan {
+	t.Helper()
+	store := newMemBindingStore(map[string]release.Promotion{
+		"prod": {Release: from, Resolved: map[string]string{"reliant": "sha256:stale"}},
+	})
+	plan, err := computePromotePlan(context.Background(), promotePlanOptions{
+		Env: "prod", Version: to, ProjectDir: t.TempDir(),
+		Bindings: store, Releases: newMemReleaseLedger(mixedSchemeReleases()...), Git: git,
+	})
+	if err != nil {
+		t.Fatalf("compute plan %s → %s: %v", from, to, err)
+	}
+	return plan
+}
+
+// TestPromotePlan_ForwardAcrossVersionSchemes is the prod-rollout report: a
+// forward move from v1.7.40 to a later date-named cut was "BEHIND, 67 releases
+// OLDER", and with 0 commits REVERTED.
+func TestPromotePlan_ForwardAcrossVersionSchemes(t *testing.T) {
+	git := allCommitsPresent().linearHistory("aaaaaaaaaaaa", "bbbbbbbbbbbb", "cccccccccccc", "dddddddddddd")
+	git.commits["bbbbbbbbbbbb..dddddddddddd"] = []string{"d1 third", "c1 second"}
+
+	for _, tc := range []struct {
+		name, from, to string
+		between        int
+	}{
+		{"semver → date-named", "v1.7.40", "20261014.042859-dddddddddddd", 2},
+		{"older semver → date-named", "v1.7.38", "20261013.002646-cccccccccccc", 2},
+		{"date-named → date-named", "20261013.002646-cccccccccccc", "20261014.042859-dddddddddddd", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := planMove(t, tc.from, tc.to, git)
+			if plan.Direction != promoteDirectionAhead {
+				t.Fatalf("direction = %s (%s), want ahead", plan.Direction, plan.DirectionDetail)
+			}
+			if plan.ReleasesBetween != tc.between {
+				t.Errorf("releases between = %d, want %d", plan.ReleasesBetween, tc.between)
+			}
+			if plan.Commits.Reverts {
+				t.Errorf("a forward move must not report commits as REVERTED")
+			}
+			if strings.Contains(plan.DirectionDetail, "OLDER") || strings.Contains(plan.DirectionDetail, "BACKWARDS") {
+				t.Errorf("forward move described as backwards: %s", plan.DirectionDetail)
+			}
+		})
+	}
+}
+
+// TestPromotePlan_RealRollbackAcrossVersionSchemes: the reverse moves are
+// genuinely BEHIND, and the commit range is read target → current.
+func TestPromotePlan_RealRollbackAcrossVersionSchemes(t *testing.T) {
+	git := allCommitsPresent().linearHistory("aaaaaaaaaaaa", "bbbbbbbbbbbb", "cccccccccccc", "dddddddddddd")
+	git.commits["bbbbbbbbbbbb..dddddddddddd"] = []string{"d1 third", "c1 second"}
+
+	plan := planMove(t, "20261014.042859-dddddddddddd", "v1.7.40", git)
+	if plan.Direction != promoteDirectionBehind {
+		t.Fatalf("direction = %s (%s), want behind", plan.Direction, plan.DirectionDetail)
+	}
+	if plan.ReleasesBetween != 2 {
+		t.Errorf("releases between = %d, want 2", plan.ReleasesBetween)
+	}
+	if !plan.Commits.Reverts || plan.Commits.Count != 2 {
+		t.Errorf("a rollback reverts 2 commits, got reverts=%v count=%d", plan.Commits.Reverts, plan.Commits.Count)
+	}
+	if got := git.rangesAsked; len(got) != 1 || got[0] != "bbbbbbbbbbbb..dddddddddddd" {
+		t.Errorf("a rollback reads the range target→current, asked %v", got)
+	}
+}
+
+// TestPromotePlan_AncestryOutranksCutTime: a hotfix cut AFTER a newer-commit
+// release is still the older source. The cut-time order would call the move
+// forward; the commit-ancestry verdict (which the printed range is read from)
+// calls it BEHIND, and the direction must agree with it.
+func TestPromotePlan_AncestryOutranksCutTime(t *testing.T) {
+	// bbbb is an ancestor of dddd, yet bbbb was cut AFTER dddd (re-cut).
+	releases := []release.Release{
+		rel("v1.7.40", "2026-10-15T00:00:00Z", "bbbbbbbbbbbb", false, map[string]string{"reliant": sha("b")}),
+		rel("20261014.042859-dddddddddddd", "2026-10-14T04:28:59Z", "dddddddddddd", false, map[string]string{"reliant": sha("d")}),
+	}
+	git := allCommitsPresent().linearHistory("bbbbbbbbbbbb", "dddddddddddd")
+	store := newMemBindingStore(map[string]release.Promotion{
+		"prod": {Release: "20261014.042859-dddddddddddd", Resolved: map[string]string{"reliant": sha("d")}},
+	})
+	plan, err := computePromotePlan(context.Background(), promotePlanOptions{
+		Env: "prod", Version: "v1.7.40", ProjectDir: t.TempDir(),
+		Bindings: store, Releases: newMemReleaseLedger(releases...), Git: git,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Direction != promoteDirectionBehind {
+		t.Fatalf("direction = %s (%s), want behind (ancestry says the target is the older source)", plan.Direction, plan.DirectionDetail)
+	}
+	if !plan.Commits.Reverts {
+		t.Error("direction and commit range disagree: behind, yet the range is not a revert")
+	}
+}
+
+// TestPromotePlan_DirectionFallsBackToCutTime: with no usable ancestry (a
+// commit absent from the checkout, a dirty cut, diverged histories, a failing
+// git) the ledger's cut-time order decides — and says so.
+func TestPromotePlan_DirectionFallsBackToCutTime(t *testing.T) {
+	failing := allCommitsPresent("bbbbbbbbbbbb", "dddddddddddd")
+	failing.ancestryErr = os.ErrPermission
+	diverged := allCommitsPresent("bbbbbbbbbbbb", "dddddddddddd") // present, neither an ancestor
+
+	for name, git := range map[string]*fakeGit{
+		"commit absent from checkout": allCommitsPresent("bbbbbbbbbbbb"),
+		"git cannot answer":           failing,
+		"diverged histories":          diverged,
+	} {
+		t.Run(name, func(t *testing.T) {
+			plan := planMove(t, "v1.7.40", "20261014.042859-dddddddddddd", git)
+			if plan.Direction != promoteDirectionAhead {
+				t.Fatalf("direction = %s (%s), want ahead from cut time", plan.Direction, plan.DirectionDetail)
+			}
+			if !strings.Contains(plan.DirectionDetail, "by cut time") {
+				t.Errorf("the basis must be stated, got %q", plan.DirectionDetail)
+			}
+			back := planMove(t, "20261014.042859-dddddddddddd", "v1.7.40", git)
+			if back.Direction != promoteDirectionBehind {
+				t.Errorf("reverse = %s, want behind", back.Direction)
+			}
+		})
+	}
+
+	t.Run("dirty cut", func(t *testing.T) {
+		releases := mixedSchemeReleases()
+		releases[3].Git.Dirty = true
+		store := newMemBindingStore(map[string]release.Promotion{
+			"prod": {Release: "v1.7.40", Resolved: map[string]string{"reliant": sha("b")}},
+		})
+		plan, err := computePromotePlan(context.Background(), promotePlanOptions{
+			Env: "prod", Version: "20261014.042859-dddddddddddd", ProjectDir: t.TempDir(),
+			Bindings: store, Releases: newMemReleaseLedger(releases...),
+			Git: allCommitsPresent().linearHistory("bbbbbbbbbbbb", "dddddddddddd"),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plan.Direction != promoteDirectionAhead || !strings.Contains(plan.DirectionDetail, "by cut time") {
+			t.Fatalf("a dirty endpoint's commit must not decide the direction, got %s (%s)", plan.Direction, plan.DirectionDetail)
+		}
+	})
 }

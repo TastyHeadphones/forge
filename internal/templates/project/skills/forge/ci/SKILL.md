@@ -219,6 +219,10 @@ and fails the gate unless named in `CI_SKIP`; tools run at the versions CI pins.
 **Load `ci/gate` for the rules, the check list, `CI_SKIP`, adding your own checks
 (`ci.gate.extra_checks`) and why the workflow has few jobs.**
 
+Heavy lanes (`task test`, `forge generate`, `forge lint`, the gate's heavy
+checks) queue for one of the machine's heavy slots instead of piling up; a
+`⏳ waiting for a heavy slot` line is a queue, not a hang. **Load `ci/slots`.**
+
 ## Tier-1 vs Tier-2 boundary
 
 The forge-generated workflows are Tier-1: they carry the

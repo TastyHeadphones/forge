@@ -284,7 +284,15 @@ func (l envLedger) hubConverged() bool { return l.Hosted && l.HubConverged }
 // still holds — rather than each verb having to remember to ask. See
 // ledger_unimported.go for why that refusal exists at all.
 func ledgerFor(ctx context.Context, projectDir, env string) (envLedger, error) {
-	l, err := selectLedger(ctx, projectDir, env)
+	return ledgerForRendered(ctx, projectDir, env, nil)
+}
+
+// ledgerForRendered is ledgerFor for a caller that has already rendered env's
+// declaration (RenderKCL) in this command's render context: the selection
+// reads those entities instead of evaluating the env's KCL a second time —
+// for a large env, seconds of CPU per command. nil renders, as ledgerFor does.
+func ledgerForRendered(ctx context.Context, projectDir, env string, entities *KCLEntities) (envLedger, error) {
+	l, err := selectLedgerRendered(ctx, projectDir, env, entities)
 	if err != nil {
 		return envLedger{}, err
 	}
@@ -305,6 +313,12 @@ func ledgerFor(ctx context.Context, projectDir, env string) (envLedger, error) {
 // `forge ledger import` itself needs, because the import must be able to
 // open the very ledger the refusal is about in order to fill it.
 func selectLedger(ctx context.Context, projectDir, env string) (envLedger, error) {
+	return selectLedgerRendered(ctx, projectDir, env, nil)
+}
+
+// selectLedgerRendered is selectLedger reading entities, when the caller has
+// them, instead of rendering env's declaration again.
+func selectLedgerRendered(ctx context.Context, projectDir, env string, entities *KCLEntities) (envLedger, error) {
 	// Validated before anything else, so a malformed FORGE_LEDGER fails on
 	// the first command that reaches any ledger — not only once an env
 	// that declares a control plane is rendered.
@@ -322,9 +336,11 @@ func selectLedger(ctx context.Context, projectDir, env string) (envLedger, error
 		}
 		return machineLedger(projectDir)
 	}
-	entities, err := RenderKCL(ctx, projectDir, env)
-	if err != nil {
-		return envLedger{}, fmt.Errorf("choose the release ledger for env %q: render deploy/kcl/%s: %w", env, env, err)
+	if entities == nil {
+		var err error
+		if entities, err = RenderKCL(ctx, projectDir, env); err != nil {
+			return envLedger{}, fmt.Errorf("choose the release ledger for env %q: render deploy/kcl/%s: %w", env, env, err)
+		}
 	}
 	if offlineLedgerRequested(ctx) {
 		return offlineLedgerForEntities(env, entities, projectDir)

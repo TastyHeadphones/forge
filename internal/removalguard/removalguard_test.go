@@ -113,8 +113,6 @@ var removals = []removal{
 					"internal/templates/project/skills/forge/deploy/flux/SKILL.md",
 					"internal/templates/project/skills/forge/migrations/v0.1.46/SKILL.md",
 					"docs/runbooks/flux-patch-and-upgrade.md",
-					// Describes the shared Flux's tenancy (F19's ingest gate).
-					"pkg/release/manifests_layer.go",
 				},
 			},
 			{

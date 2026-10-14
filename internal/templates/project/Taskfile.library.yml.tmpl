@@ -10,6 +10,21 @@ vars:
   # the generated CI workflow passes through forge.yaml's `ci.test.race`.
   # Declared on the task itself it would silently win over the override.
   GOTESTRACE: '-race'
+  # SLOT runs the heavy lanes (`test`, `test:integration`) inside one of this
+  # machine's host-wide heavy slots: `forge slot run` waits while N other heavy
+  # jobs (builds, test lanes, codegen, lints — from any agent, worktree or
+  # terminal) are running, because past a handful every one of them slows
+  # down. N comes from the machine (min(CPUs/4, memory GiB/8)); set
+  # FORGE_HEAVY_SLOTS=<n> to change it or =off to switch it off. Inside a
+  # slot already (a gate check, a parent `forge slot run`) it does not wait.
+  # Empty when forge is absent or predates `forge slot` (the probe fails), so
+  # these tasks still run without it; `task test SLOT=` skips the slot for
+  # one run. `--class heavy` is spelled out on purpose: a forge without the
+  # verb rejects the flag loudly instead of printing its help and exiting 0
+  # without running the tests. `test:short` takes no slot: the scoped inner
+  # loop is not heavy and must not queue.
+  SLOT:
+    sh: forge slot status --class heavy >/dev/null 2>&1 && echo 'forge slot run --class heavy --' || true
 
 tasks:
   default:
@@ -32,7 +47,7 @@ tasks:
       # `-timeout 120s` surfaces hangs as fast test failures instead of
       # CI-stalling waits. Integration tests live behind the `integration`
       # build tag and ship their own task below.
-      - go test {{`{{.GOTESTRACE}}`}} -count=1 -timeout 120s {{`{{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}`}}
+      - '{{`{{.SLOT}}`}} go test {{`{{.GOTESTRACE}}`}} -count=1 -timeout 120s {{`{{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}`}}'
 
   test:short:
     # The inner loop: run this after each edit, scoped to the packages you
@@ -58,7 +73,7 @@ tasks:
       # dir, etc.) so they're gated behind the `integration` build tag and
       # excluded from `task test`. Run this in an environment that satisfies
       # the per-test setup contract; see the testing-integration skill.
-      - go test {{`{{.GOTESTRACE}}`}} -count=1 -timeout 600s -tags=integration {{`{{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}`}}
+      - '{{`{{.SLOT}}`}} go test {{`{{.GOTESTRACE}}`}} -count=1 -timeout 600s -tags=integration {{`{{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}`}}'
 
   test:all:
     # The pre-merge sweep. `task test` stays the lane the CI test job runs
@@ -91,6 +106,10 @@ tasks:
     #     PASS, and fails the gate unless named: CI_SKIP=vuln-go task ci
     #   - tools run at the versions CI pins, from forge's tool cache.
     # Add your own checks under `ci.gate.extra_checks` in forge.yaml.
+    #
+    # Not run under SLOT: the gate schedules host slots itself, one per
+    # heavy check, so one slot around the whole run would let every check
+    # inside it skip the queue (they would all be "inside a slot").
     desc: "The whole PR gate locally (what CI runs): ci:checks + test + test:integration, one summary"
     cmds:
       - cmd: |
