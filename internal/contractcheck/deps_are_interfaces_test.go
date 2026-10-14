@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -359,6 +360,9 @@ func TestLintDepsAreInterfaces_ResolvesOffModuleSelectors(t *testing.T) {
 // The same fixture as the off-module test, with a `go` on PATH that fails
 // the way a broken toolchain does. Not parallel: it sets PATH.
 func TestLintDepsAreInterfaces_FailedLookupIsAnErrorNotAFinding(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the failing `go` stub is a POSIX sh script; the lookup code it exercises is not OS-specific")
+	}
 	t.Setenv("GOWORK", "off")
 	bin := t.TempDir()
 	stub := "#!/bin/sh\necho 'go: simulated toolchain failure' >&2\nexit 2\n"
