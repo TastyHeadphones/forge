@@ -75,6 +75,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`forge db migration new` writes a short header; `--context` writes the
+  full one.** Every new migration used to open with the reconstructed schema,
+  the whole previous migration and every filename in the directory — 4,658
+  lines on reliant, most of them the baseline it had just squashed, above a
+  few lines of SQL that agents and reviewers then had to find. The header now
+  says how many migrations make up the schema, which is newest, and where to
+  read it (`forge project shapes --kind table`, `forge db introspect`).
+  `--context` (implied by `--dsn`) writes the old block.
+
 - **BEHAVIOR CHANGE: `forge.flux_chart()` is hardened and sized by default (F8).**
   The chart's own RBAC let both controllers read every Secret and ConfigMap
   cluster-wide and impersonate ANY ServiceAccount, and its defaults (4 workers,

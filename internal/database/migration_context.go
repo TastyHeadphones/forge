@@ -18,6 +18,11 @@ import (
 type MigrationOptions struct {
 	DSN string // If set, introspect the live DB for schema
 
+	// Context writes the full context block — the schema, the previous
+	// migration and the history — into the new file instead of a pointer to
+	// where they live. Set by --context, and implied by DSN.
+	Context bool
+
 	// The compatibility declaration written at the top of the file (see
 	// compatHeader). At most one of BackwardCompatible and BreaksRollback,
 	// each the reason; RequireCompatDeclaration writes the choices as
@@ -298,6 +303,38 @@ func GetMigrationHistory(dir string) ([]string, error) {
 }
 
 // --- Context comment generation ---
+
+// GeneratePointerComment is the header a new migration gets by default: what
+// it is and where the schema lives, not the schema itself.
+//
+// The full context block (GenerateContextComment) copies the reconstructed
+// schema, the whole previous migration and every filename into the file. On a
+// real project that is thousands of lines — 4,658 on reliant, most of it a
+// baseline it had just squashed — in a file whose SQL is three lines, and an
+// agent or reviewer reads all of it. The schema is one command away, kept
+// current, and not frozen into a migration that will outlive it.
+//
+// It names no path: the file is committed, and the directory it sits in is
+// the one it means.
+func GeneratePointerComment(name string, history []string, created time.Time) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "-- Migration: %s\n", name)
+	fmt.Fprintf(&sb, "-- Created: %s\n", created.Format(time.RFC3339))
+	sb.WriteString("--\n")
+	switch n := len(history); n {
+	case 0:
+		sb.WriteString("-- The first migration in this directory: the schema is what this file creates.\n")
+	default:
+		fmt.Fprintf(&sb, "-- The schema is the %d migration(s) in this directory, applied in order (newest: %s). To read it:\n",
+			n, history[n-1])
+		sb.WriteString("--   forge project shapes --kind table          every table, with the file:line declaring it\n")
+		sb.WriteString("--   forge db introspect --dsn \"$DATABASE_URL\"  the schema a database actually has\n")
+		sb.WriteString("--   forge db migration new <name> --context    a new file with the schema written into it\n")
+	}
+	sb.WriteString("--\n")
+	sb.WriteString("-- Write your migration SQL below:\n\n")
+	return sb.String()
+}
 
 // GenerateContextComment builds the full SQL comment block for a new migration.
 func GenerateContextComment(ctx *MigrationContext) string {
