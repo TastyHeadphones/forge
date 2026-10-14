@@ -1,3 +1,6 @@
+-- DeployFailed (deploy-failed) severity=critical for=5m interval=1m
+SELECT 1 AS value WHERE 0 /* reliant:platform deploy-failed env:{reliant_env_id:String} */
+
 -- FrontendJSErrorSpike (frontend-js-errors) severity=warning for=10m interval=1m
 SELECT ServiceName AS service,
        countIf(Timestamp >= now() - INTERVAL 10 MINUTE) AS value
@@ -12,6 +15,12 @@ GROUP BY ServiceName
 HAVING value >= 10
    AND value > 3 * countIf(Timestamp < now() - INTERVAL 10 MINUTE) * 10 / 60
 ORDER BY service
+
+-- ObservabilityQuotaOver100 (observability-quota) severity=warning for=0s interval=1m
+SELECT 1 AS value WHERE 0 /* reliant:platform observability-quota:over_100 env:{reliant_env_id:String} */
+
+-- ObservabilityQuotaOver150 (observability-quota) severity=critical for=0s interval=1m
+SELECT 1 AS value WHERE 0 /* reliant:platform observability-quota:over_150 env:{reliant_env_id:String} */
 
 -- ServiceErrorRateHigh (error-rate) severity=critical for=5m interval=1m
 WITH series AS (
@@ -98,4 +107,110 @@ GROUP BY service
 HAVING max(t) < now() - INTERVAL 10 MINUTE
    AND uniqExactIf(toStartOfHour(t), t < now() - INTERVAL 10 MINUTE) >= 18
 ORDER BY service
+
+-- WorkloadCrashLooping (crash-loop) severity=critical for=0s interval=1m
+WITH grown_restarts AS (
+    SELECT ResourceAttributes['k8s.workload.name'] AS workload,
+           max(Value) - min(Value) AS grown
+    FROM otel_metrics_gauge
+    WHERE MetricName = 'k8s.container.restarts'
+      AND TimeUnix >= now() - INTERVAL 10 MINUTE - INTERVAL 6 MINUTE
+      AND ResourceAttributes['reliant.env.id'] = {reliant_env_id:String}
+      AND ResourceAttributes['k8s.workload.name'] != ''
+    GROUP BY workload, ResourceAttributes['k8s.container.name'], ResourceAttributes['k8s.pod.uid'], ResourceAttributes['k8s.pod.name']
+), backoff_events AS (
+    SELECT ResourceAttributes['k8s.workload.name'] AS workload, count() AS n
+    FROM otel_logs
+    WHERE Timestamp >= now() - INTERVAL 10 MINUTE
+      AND ResourceAttributes['reliant.env.id'] = {reliant_env_id:String}
+      AND ResourceAttributes['k8s.workload.name'] != ''
+      AND (LogAttributes['k8s.event.reason'] = 'CrashLoopBackOff' OR (LogAttributes['k8s.event.reason'] = 'BackOff' AND positionCaseInsensitive(Body, 'restarting') > 0))
+    GROUP BY workload
+)
+SELECT workload, greatest(total_restarts, toFloat64(total_backoffs)) AS value
+FROM (
+    SELECT workload, sum(grown) AS total_restarts, sum(ev) AS total_backoffs
+    FROM (
+        SELECT workload, grown, 0 AS ev FROM grown_restarts
+        UNION ALL
+        SELECT workload, 0 AS grown, n AS ev FROM backoff_events
+    )
+    GROUP BY workload
+)
+WHERE total_restarts >= 3 OR total_backoffs >= 1
+ORDER BY workload
+
+-- WorkloadEvicted (evicted) severity=warning for=0s interval=1m
+SELECT workload, n AS value
+FROM (
+    SELECT ResourceAttributes['k8s.workload.name'] AS workload, count() AS n
+    FROM otel_logs
+    WHERE Timestamp >= now() - INTERVAL 15 MINUTE
+      AND ResourceAttributes['reliant.env.id'] = {reliant_env_id:String}
+      AND ResourceAttributes['k8s.workload.name'] != ''
+      AND (LogAttributes['k8s.event.reason'] = 'Evicted')
+    GROUP BY workload
+)
+WHERE n >= 1
+ORDER BY workload
+
+-- WorkloadImagePullFailed (image-pull-failed) severity=warning for=5m interval=1m
+SELECT workload, n AS value
+FROM (
+    SELECT ResourceAttributes['k8s.workload.name'] AS workload, count() AS n
+    FROM otel_logs
+    WHERE Timestamp >= now() - INTERVAL 15 MINUTE
+      AND ResourceAttributes['reliant.env.id'] = {reliant_env_id:String}
+      AND ResourceAttributes['k8s.workload.name'] != ''
+      AND (LogAttributes['k8s.event.reason'] IN ('ErrImagePull', 'ImagePullBackOff', 'ErrImageNeverPull', 'InspectFailed') OR (LogAttributes['k8s.event.reason'] IN ('Failed', 'BackOff') AND positionCaseInsensitive(Body, 'pull') > 0 AND positionCaseInsensitive(Body, 'image') > 0))
+    GROUP BY workload
+)
+WHERE n >= 1
+ORDER BY workload
+
+-- WorkloadMemoryNearLimit (memory-near-limit) severity=warning for=10m interval=1m
+SELECT workload, container, max(used) AS value
+FROM (
+    SELECT ResourceAttributes['k8s.workload.name'] AS workload,
+           ResourceAttributes['k8s.container.name'] AS container,
+           avg(Value) AS used
+    FROM otel_metrics_gauge
+    WHERE MetricName = 'k8s.container.memory_limit_utilization'
+      AND TimeUnix >= now() - INTERVAL 5 MINUTE
+      AND ResourceAttributes['reliant.env.id'] = {reliant_env_id:String}
+      AND ResourceAttributes['k8s.workload.name'] != ''
+    GROUP BY workload, container, ResourceAttributes['k8s.pod.uid'], ResourceAttributes['k8s.pod.name']
+)
+GROUP BY workload, container
+HAVING value > 0.9
+ORDER BY workload, container
+
+-- WorkloadOOMKilled (oom-killed) severity=critical for=0s interval=1m
+WITH grown_restarts AS (
+    SELECT ResourceAttributes['k8s.workload.name'] AS workload,
+           max(Value) - min(Value) AS grown,
+           argMax(if(mapContains(Attributes, 'k8s.container.last_terminated_reason'), Attributes['k8s.container.last_terminated_reason'], ResourceAttributes['k8s.container.last_terminated_reason']), TimeUnix) AS reason
+    FROM otel_metrics_gauge
+    WHERE MetricName = 'k8s.container.restarts'
+      AND TimeUnix >= now() - INTERVAL 10 MINUTE - INTERVAL 6 MINUTE
+      AND ResourceAttributes['reliant.env.id'] = {reliant_env_id:String}
+      AND ResourceAttributes['k8s.workload.name'] != ''
+    GROUP BY workload, ResourceAttributes['k8s.container.name'], ResourceAttributes['k8s.pod.uid'], ResourceAttributes['k8s.pod.name']
+), oom_events AS (
+    SELECT ResourceAttributes['k8s.workload.name'] AS workload, count() AS n
+    FROM otel_logs
+    WHERE Timestamp >= now() - INTERVAL 10 MINUTE
+      AND ResourceAttributes['reliant.env.id'] = {reliant_env_id:String}
+      AND ResourceAttributes['k8s.workload.name'] != ''
+      AND (LogAttributes['k8s.event.reason'] = 'OOMKilling' OR LogAttributes['k8s.container.last_terminated_reason'] = 'OOMKilled')
+    GROUP BY workload
+)
+SELECT workload, max(oom) AS value
+FROM (
+    SELECT workload, grown AS oom FROM grown_restarts WHERE grown > 0 AND reason = 'OOMKilled'
+    UNION ALL
+    SELECT workload, toFloat64(n) AS oom FROM oom_events
+)
+GROUP BY workload
+ORDER BY workload
 

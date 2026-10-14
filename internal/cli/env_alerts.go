@@ -86,7 +86,11 @@ func resolveShapeAlerts(projectDir, envName string, e *KCLEntities) ([]release.S
 	}
 	var defaults []obsdash.AlertRule
 	if have {
-		if defaults, err = obsdash.ResolveAlertDefaults(in, envName, tuning); err != nil {
+		var disabled []string
+		if e.Observability.Policy != nil {
+			disabled = e.Observability.Policy.Disabled
+		}
+		if defaults, _, err = obsdash.ResolveAlertDefaultsFor(in, envName, tuning, disabled); err != nil {
 			return nil, nil, err
 		}
 	}

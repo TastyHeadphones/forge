@@ -68,7 +68,7 @@ The _Workloads_ dashboard (CPU/memory against requests and limits, restarts and 
 
 ## Alerts
 
-Dashboards embed no alerts (HyperDX 2.40 validates an alert declared in a provisioned file and never evaluates it, hyperdx PR #3233). Alerting is declared in KCL instead: `forge.AlertRule`, with four generated defaults in `alert-defaults_gen.json`. Depth: `observability/alerts`.
+Dashboards embed no alerts (HyperDX 2.40 validates an alert declared in a provisioned file and never evaluates it, hyperdx PR #3233). Alerting is declared in KCL instead: `forge.AlertRule`, with generated defaults (telemetry, customer-metadata and platform) in `alert-defaults_gen.json`. Depth: `observability/alerts`.
 
 ## The seam: spec, then renderer
 
