@@ -116,39 +116,74 @@ func checkORMNameCollisions(dbDir string, entities []config.PlanEntity, outputs 
 		return nil
 	}
 	sort.Slice(collisions, func(i, j int) bool { return collisions[i].at < collisions[j].at })
-	return ormCollisionError(collisions)
+	return &ORMCollisionError{collisions: collisions}
 }
 
-func ormCollisionError(collisions []ormNameCollision) error {
+// ORMCollisionError is the refusal checkORMNameCollisions returns: the names
+// the project already declares, and how to resolve each entity.
+//
+// The per-entity advice names the rpcs to mark `// forge:custom`. Which rpcs
+// those are is a fact about the services, which this package does not read,
+// so the caller that does fills EntityRPCs (codegen.EntityRPCs). Without it the
+// advice names no rpc rather than guess: it used to list the CRUD quintet the
+// entity's name implies (CreateMessage, GetMessage, UpdateMessage,
+// DeleteMessage, ListMessages) when reliant declared one of them, on a
+// different service than the rest of the list suggested.
+type ORMCollisionError struct {
+	collisions []ormNameCollision
+	// EntityRPCs maps an entity to its declared, unmarked CRUD-named rpcs,
+	// each rendered "Service.Rpc (proto/…/x.proto:14)".
+	EntityRPCs map[string][]string
+}
+
+// Entities returns the entities whose names collide, sorted.
+func (e *ORMCollisionError) Entities() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, c := range e.collisions {
+		if c.entity != "" && !seen[c.entity] {
+			seen[c.entity] = true
+			out = append(out, c.entity)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (e *ORMCollisionError) Error() string {
 	var b strings.Builder
 	b.WriteString("forge's ORM would redeclare names your internal/db already declares (one Go package, so both cannot compile):\n")
-	entities := map[string]string{}
-	for _, c := range collisions {
+	tables := map[string]string{}
+	for _, c := range e.collisions {
 		if c.entity == "" {
 			fmt.Fprintf(&b, "  - %s, declared at %s — forge declares it in internal/db/%s for every entity\n", c.name, c.at, c.file)
 			continue
 		}
 		fmt.Fprintf(&b, "  - %s, declared at %s — forge declares it in internal/db/%s for entity %s (table %s)\n", c.name, c.at, c.file, c.entity, c.table)
-		entities[c.entity] = c.table
+		tables[c.entity] = c.table
 	}
 	b.WriteString("Resolve each entity one of three ways:\n")
-	if len(entities) > 0 {
-		names := make([]string, 0, len(entities))
-		for e := range entities {
-			names = append(names, e)
-		}
-		sort.Strings(names)
-		for _, e := range names {
-			fmt.Fprintf(&b, "  - keep %s off forge's ORM while your code owns it: put `// forge:custom` above each of its CRUD-named rpcs "+
-				"(Create%s, Get%s, Update%s, Delete%s, List%s) — with none of them CRUD, %s is plain schema and forge projects nothing for it;\n",
-				entities[e], e, e, e, e, naming.Pluralize(e), entities[e])
-		}
-	} else {
+	entities := e.Entities()
+	if len(entities) == 0 {
 		b.WriteString("  - keep the tables off forge's ORM while your code owns them: put `// forge:custom` above each of their CRUD-named rpcs;\n")
+	}
+	for _, ent := range entities {
+		table := tables[ent]
+		rpcs, known := e.EntityRPCs[ent]
+		switch {
+		case known && len(rpcs) > 0:
+			fmt.Fprintf(&b, "  - keep %s off forge's ORM while your code owns it: put `// forge:custom` above each declared rpc that makes it an entity — %s. "+
+				"With none of them CRUD, %s is plain schema and forge projects nothing for it;\n",
+				table, strings.Join(rpcs, ", "), table)
+		default:
+			fmt.Fprintf(&b, "  - keep %s off forge's ORM while your code owns it: put `// forge:custom` above each of its declared CRUD-named rpcs "+
+				"(`forge project shapes --kind rpc --grep %s` lists them) — with none of them CRUD, %s is plain schema and forge projects nothing for it;\n",
+				table, ent, table)
+		}
 	}
 	b.WriteString("  - hand the name to forge: delete or rename your declaration (sqlc output: a `rename:` in sqlc.yaml) and use the generated one;\n")
 	b.WriteString("  - or opt the whole data layer out with `//forge:no-orm: <why>` in internal/db's package doc.")
-	return fmt.Errorf("%s", b.String())
+	return b.String()
 }
 
 // ormOwnsFile reports whether an internal/db file is the ORM's own output
