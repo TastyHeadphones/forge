@@ -340,7 +340,7 @@ func assertSubsetMountServesOnly(t *testing.T, serverBin, projectDir, dsn, mount
 	}()
 
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
-	if !waitForServer(t, base+"/healthz", 30*time.Second) {
+	if !waitForServing(t, base, 30*time.Second) {
 		t.Fatalf("subset mount must boot with the completeness gate off; it never became ready\noutput:\n%s", out.String())
 	}
 
