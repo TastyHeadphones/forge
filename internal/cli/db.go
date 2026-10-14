@@ -453,8 +453,9 @@ func waitForPostgres(ctx context.Context, dsn string, timeout time.Duration) err
 // newDBMigrationCommand creates the migration subcommand.
 func newDBMigrationCommand() *cobra.Command {
 	var (
-		migDir string
-		dsn    string
+		migDir      string
+		dsn         string
+		withContext bool
 
 		backwardCompatible string
 		breaksRollback     string
@@ -477,14 +478,16 @@ Commands:
   new     allocate a fresh timestamp and scaffold the .up.sql file
   rebase  re-version an existing file whose version the schema has passed
 
-The .up.sql file includes rich schema context so LLMs can immediately write
-the migration SQL. Context includes:
+The .up.sql file opens with a short header saying where the schema lives —
+` + "`forge project shapes --kind table`" + `, ` + "`forge db introspect`" + ` — rather than a copy
+of it. --context writes the full context into the file instead:
   - Current schema (parsed from existing migrations, or from DB with --dsn)
   - Previous migration content
   - Migration history
 
 Examples:
   forge db migration new add_users_table
+  forge db migration new add_preferences --context
   forge db migration new add_preferences --dsn "$DATABASE_URL"
   forge db migration new "backfill account status" --dir db/migrations
   forge db migration rebase db/migrations/20260101120000_add_users.up.sql
@@ -512,8 +515,14 @@ A project with database.migration_safety.require_compat_declaration gets
 both choices as a comment to replace when neither flag is given, and
 ` + "`forge lint --migration-safety`" + ` fails the file until it says one.
 
+The file opens with a short header saying where the schema lives. --context
+writes the reconstructed schema, the previous migration and the history into
+it instead (on a large project, thousands of lines); --dsn does the same with
+the schema read from a live database.
+
 Examples:
   forge db migration new add_users_table
+  forge db migration new add_preferences --context
   forge db migration new add_preferences --dsn "$DATABASE_URL"
   forge db migration new add_retired_at --backward-compatible "additive column the previous release never reads"`,
 		Args: cobra.ExactArgs(1),
@@ -525,6 +534,7 @@ Examples:
 			}
 			opts := &database.MigrationOptions{
 				DSN:                dsn,
+				Context:            withContext,
 				BackwardCompatible: backwardCompatible,
 				BreaksRollback:     breaksRollback,
 			}
@@ -535,7 +545,9 @@ Examples:
 		},
 	}
 	newCmd.Flags().StringVar(&migDir, "dir", "", migrationsDirFlagUsage)
-	newCmd.Flags().StringVar(&dsn, "dsn", "", "Database connection string for live schema introspection")
+	newCmd.Flags().StringVar(&dsn, "dsn", "", "Database connection string for live schema introspection (implies --context)")
+	newCmd.Flags().BoolVar(&withContext, "context", false,
+		"write the schema, the previous migration and the history into the file's header instead of a pointer to them")
 	newCmd.Flags().StringVar(&backwardCompatible, "backward-compatible", "",
 		"declare that the previous release keeps working on this schema, and why (writes `-- forge:backward-compatible — <why>`)")
 	newCmd.Flags().StringVar(&breaksRollback, "breaks-rollback", "",

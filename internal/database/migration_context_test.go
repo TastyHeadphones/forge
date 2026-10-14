@@ -169,6 +169,7 @@ func TestGetMigrationHistory(t *testing.T) {
 	}
 }
 
+// TestCreateMigrationWithContext: --context writes the full context block.
 func TestCreateMigrationWithContext(t *testing.T) {
 	dir := t.TempDir()
 	migDir := filepath.Join(dir, "db/migrations")
@@ -180,7 +181,7 @@ func TestCreateMigrationWithContext(t *testing.T) {
 	os.WriteFile(filepath.Join(migDir, "001_create_users.down.sql"),
 		[]byte("DROP TABLE users;"), 0644)
 
-	if err := CreateMigration(context.Background(), "add_preferences", migDir, &MigrationOptions{}); err != nil {
+	if err := CreateMigration(context.Background(), "add_preferences", migDir, &MigrationOptions{Context: true}); err != nil {
 		t.Fatalf("CreateMigration() error = %v", err)
 	}
 
