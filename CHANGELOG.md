@@ -321,6 +321,22 @@ FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
 
 ### Fixed
 
+- **`forgeconv-deps-are-interfaces` accepts a map or slice of interfaces, and
+  says where the seam goes when a dep is only handed on.** Reliant's trigger
+  handler has two Deps fields, `map[string]IntegrationAccess` and
+  `map[string]SenderDirectory`, which key one interface per integration. Both
+  were flagged, so the lane had to invent a one-method lookup interface and an
+  adapter type per map. A slice, array or map whose elements are interfaces or
+  funcs is a table of collaborators. Each element is already a seam, and the
+  zero value is inert: a lookup in a nil map answers `ok=false`. Such a field
+  now passes, while a table of concrete values (`map[string]*store.Repo`)
+  still fails. When the rule fires on a concrete dep and the package never
+  calls a method on it, the finding now names the seam with `file:line`. That
+  covers two cases. The package only hands the dep to another call: reliant's
+  catalog passed `*tools.ToolsFactory` to `toolDef.Factory(…)` and, through a
+  local variable, to `def.Factory(…)`. Or it only calls a func-typed field of
+  the dep. In both cases the generic "name the methods you call" remedy had
+  nothing to name.
 - **`forge generate` reports what it wrote, and a failed step's dependents
   say they were skipped.** On reliant main a run printed "⚠️ Warning: ORM
   generation failed", then "✅ Generated internal/db/ (2 entity ORM files)",
