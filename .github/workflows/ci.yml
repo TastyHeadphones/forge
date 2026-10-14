@@ -83,7 +83,9 @@ jobs:
           # TestGolangciLintVersionIsPinnedEverywhere. `latest` let v2.14.0
           # add seven findings on untouched lines with no commit in between.
           version: v2.14.0
-          args: --timeout=5m
+          # No --timeout: it would override .golangci.yml's `timeout: 20m`,
+          # which is deliberate — a cold cache on a busy runner crosses 5m and
+          # exits 4 ("Timeout exceeded") with 0 issues, a red PR over clean code.
           # Whole-repo, not only-new-issues. The job analyses the whole repo
           # anyway (type-checking needs it); only-new-issues only HIDES what it
           # found outside the diff. That is how main stayed green while

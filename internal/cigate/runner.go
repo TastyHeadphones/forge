@@ -16,18 +16,38 @@
 //     are N/A, which is not a skip and does not fail the gate.
 //  3. Tools run at the versions CI pins (tools.go), not whatever is on PATH.
 //  4. Under GitHub Actions the table is appended to $GITHUB_STEP_SUMMARY.
+//
+// Checks run CONCURRENTLY (scheduler below), because a gate whose ~25 steps
+// run one after another takes the sum of them — measured at a p50 of 35 min
+// and up to 3 h on a shared machine. Three things bound the concurrency:
+//
+//   - `after` dependencies: a check starts once the checks it names have
+//     finished (whatever their verdict — rule 1 still holds);
+//   - tree mutation: a check that writes tracked files (verify-generated's
+//     regenerate, a formatter) runs alone, before every check that only reads
+//     the tree;
+//   - host slots: a heavy check (a whole-module build, test run or render)
+//     holds one of the machine's heavy slots (pkg/hostslot) while it runs, so
+//     the gate never adds more heavy jobs than the host has room for, and a
+//     per-gate job cap bounds the rest.
+//
+// Each check's output goes to its own log file; the console gets one start and
+// one finish line per check, a failing check's last lines, and the table.
 package cigate
 
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -60,10 +80,27 @@ const (
 // SkipEnv names the checks a caller has decided not to run, comma-separated.
 const SkipEnv = "CI_SKIP"
 
+// OnlyEnv names the checks (or groups) a caller wants to run, comma-separated;
+// everything else is left out of the run and the table.
+const OnlyEnv = "CI_ONLY"
+
 // Check is one row of the gate.
 type Check struct {
 	Name string
 	Lane Lane
+	// Group is the label CI_ONLY can select by, besides the name.
+	Group string
+	// After names checks that must finish (with any verdict) before this one
+	// starts. Selecting this check with CI_ONLY selects them too.
+	After []string
+	// Heavy makes the check hold a host-wide heavy slot while it runs.
+	Heavy bool
+	// MutatesTree marks a check that writes tracked files: it runs alone,
+	// ahead of every check that only reads the tree.
+	MutatesTree bool
+	// NoCache keeps the verdict cache from ever answering for this check:
+	// its verdict depends on state outside the tree.
+	NoCache bool
 
 	// NotApplicable, when set, reports the row as N/A with this reason and
 	// runs nothing.
@@ -74,6 +111,13 @@ type Check struct {
 	// Prereq returns a non-empty reason when the check cannot run here. The
 	// row is then SKIPPED, which fails the gate.
 	Prereq func() string
+	// Requires lists binaries that must resolve on the check's own PATH
+	// (pinned tool dirs and ci.gate.path included); a missing one SKIPs it.
+	Requires []string
+	// Probe is a command that must succeed before the check runs; when it
+	// fails the row is SKIPPED with ProbeReason.
+	Probe       []string
+	ProbeReason string
 	// Tools are pinned tools the command needs. Each is resolved to its
 	// pinned version before the command runs, and its directory is put first
 	// on the command's PATH.
@@ -83,6 +127,13 @@ type Check struct {
 	// Dir is project-relative; empty is the project root.
 	Dir string
 	Env []string
+	// SkipExitCode, when non-zero, is the exit status by which the command
+	// says it could not run here: the row is SKIPPED with its last output
+	// line as the reason.
+	SkipExitCode int
+	// Note annotates the row when the command runs: how it was narrowed
+	// (affected-package mode) or anything else the reader needs.
+	Note string
 
 	// OnFail runs after the command failed, to undo what it left behind.
 	OnFail func(out io.Writer)
@@ -98,6 +149,11 @@ type Result struct {
 	// Allowed marks a SKIPPED row the caller asked for (CI_SKIP), which does
 	// not fail the gate.
 	Allowed bool
+	// Cached is the short commit a reused PASS was recorded at; "" when the
+	// check ran.
+	Cached string
+	// Log is the check's output file, project-relative when under the root.
+	Log string
 	// Tail is the end of a failed command's output, for the job summary.
 	Tail string
 }
@@ -106,6 +162,12 @@ type Result struct {
 type Report struct {
 	Lane    string
 	Results []Result
+	// Head is the commit the gate judged ("" outside git); Dirty says the
+	// working tree had uncommitted changes on top of it.
+	Head  string
+	Dirty bool
+	// Wall is the gate's elapsed time.
+	Wall time.Duration
 }
 
 // Failed reports whether the gate is red: any FAIL, or any SKIPPED the caller
@@ -121,7 +183,7 @@ func (r Report) Failed() bool {
 
 // Tally is the rows of a report counted by outcome. Skipped counts only the
 // SKIPPED rows that fail the gate; Allowed counts the ones CI_SKIP named.
-type Tally struct{ Passed, Failed, Skipped, Allowed, NA int }
+type Tally struct{ Passed, Cached, Failed, Skipped, Allowed, NA int }
 
 // Counts tallies the rows by outcome.
 func (r Report) Counts() Tally {
@@ -130,6 +192,9 @@ func (r Report) Counts() Tally {
 		switch {
 		case res.Status == Pass:
 			t.Passed++
+			if res.Cached != "" {
+				t.Cached++
+			}
 		case res.Status == Fail:
 			t.Failed++
 		case res.Status == Skip && res.Allowed:
@@ -145,7 +210,11 @@ func (r Report) Counts() Tally {
 
 func (r Report) verdict() string {
 	t := r.Counts()
-	parts := []string{fmt.Sprintf("%d passed", t.Passed)}
+	passed := fmt.Sprintf("%d passed", t.Passed)
+	if t.Cached > 0 {
+		passed += fmt.Sprintf(" (%d cached)", t.Cached)
+	}
+	parts := []string{passed}
 	if t.Failed > 0 {
 		parts = append(parts, fmt.Sprintf("%d FAILED", t.Failed))
 	}
@@ -158,27 +227,42 @@ func (r Report) verdict() string {
 	if t.NA > 0 {
 		parts = append(parts, fmt.Sprintf("%d n/a", t.NA))
 	}
+	if r.Wall > 0 {
+		parts = append(parts, "in "+r.Wall.Round(time.Second).String())
+	}
 	return strings.Join(parts, ", ")
+}
+
+func (r Report) headLine() string {
+	if r.Head == "" {
+		return ""
+	}
+	if r.Dirty {
+		return "head: " + r.Head + " (+ uncommitted changes)"
+	}
+	return "head: " + r.Head
 }
 
 // RenderText writes the summary table.
 func (r Report) RenderText(w io.Writer) {
-	width := len("CHECK")
+	width, rw := len("CHECK"), len("RESULT")
 	for _, res := range r.Results {
-		if len(res.Name) > width {
-			width = len(res.Name)
-		}
+		width = max(width, len(res.Name))
+		rw = max(rw, len(res.resultCell()))
 	}
 	fmt.Fprintf(w, "\nCI gate summary (%s)\n", r.Lane)
-	fmt.Fprintf(w, "  %-*s  %-8s  %8s  %s\n", width, "CHECK", "RESULT", "TIME", "NOTE")
+	fmt.Fprintf(w, "  %-*s  %-*s  %8s  %s\n", width, "CHECK", rw, "RESULT", "TIME", "NOTE")
 	for _, res := range r.Results {
-		fmt.Fprintf(w, "  %-*s  %-8s  %8s  %s\n", width, res.Name, res.Status, formatDuration(res), res.note())
+		fmt.Fprintf(w, "  %-*s  %-*s  %8s  %s\n", width, res.Name, rw, res.resultCell(), formatDuration(res), res.note())
 	}
 	verdict := "PASS"
 	if r.Failed() {
 		verdict = "FAIL"
 	}
 	fmt.Fprintf(w, "\n%s — %s\n", verdict, r.verdict())
+	if h := r.headLine(); h != "" {
+		fmt.Fprintln(w, h)
+	}
 }
 
 // RenderMarkdown is the same table for $GITHUB_STEP_SUMMARY.
@@ -187,13 +271,16 @@ func (r Report) RenderMarkdown(w io.Writer) {
 	fmt.Fprintf(w, "### CI gate — %s\n\n| Check | Result | Time | Note |\n|---|---|---|---|\n", r.Lane)
 	for _, res := range r.Results {
 		fmt.Fprintf(w, "| `%s` | %s %s | %s | %s |\n",
-			res.Name, icon[res.Status], res.Status, formatDuration(res), strings.ReplaceAll(res.note(), "|", "\\|"))
+			res.Name, icon[res.Status], res.resultCell(), formatDuration(res), strings.ReplaceAll(res.note(), "|", "\\|"))
 	}
 	verdict := "✅ **PASS**"
 	if r.Failed() {
 		verdict = "❌ **FAIL**"
 	}
 	fmt.Fprintf(w, "\n%s — %s\n", verdict, r.verdict())
+	if h := r.headLine(); h != "" {
+		fmt.Fprintf(w, "\n%s\n", h)
+	}
 	for _, res := range r.Results {
 		if res.Status == Fail && res.Tail != "" {
 			fmt.Fprintf(w, "\n<details><summary><code>%s</code> output (tail)</summary>\n\n```\n%s\n```\n\n</details>\n", res.Name, res.Tail)
@@ -202,11 +289,25 @@ func (r Report) RenderMarkdown(w io.Writer) {
 	fmt.Fprintln(w)
 }
 
-func (res Result) note() string {
-	if res.Status == Skip && res.Allowed {
-		return res.Note + " (allowed by " + SkipEnv + ")"
+func (res Result) resultCell() string {
+	if res.Cached != "" {
+		return string(res.Status) + " (cached " + res.Cached + ")"
 	}
-	return res.Note
+	return string(res.Status)
+}
+
+func (res Result) note() string {
+	note := res.Note
+	if res.Status == Skip && res.Allowed {
+		note += " (allowed by " + SkipEnv + ")"
+	}
+	if res.Status == Fail && res.Log != "" {
+		if note != "" {
+			note += "; "
+		}
+		note += "log: " + res.Log
+	}
+	return note
 }
 
 func formatDuration(res Result) string {
@@ -216,7 +317,7 @@ func formatDuration(res Result) string {
 	return res.Duration.Round(100 * time.Millisecond).String()
 }
 
-// ParseSkips splits a CI_SKIP value into check names.
+// ParseSkips splits a CI_SKIP (or CI_ONLY) value into names.
 func ParseSkips(v string) []string {
 	var out []string
 	for _, n := range strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' || r == '\n' }) {
@@ -245,10 +346,70 @@ func UnknownSkips(skips []string, all []Check) []string {
 	return bad
 }
 
+// UnknownOnly returns the CI_ONLY names that are neither a check nor a group.
+func UnknownOnly(only []string, all []Check) []string {
+	known := map[string]bool{}
+	for _, c := range all {
+		known[c.Name] = true
+		if c.Group != "" {
+			known[c.Group] = true
+		}
+	}
+	var bad []string
+	for _, s := range only {
+		if !known[s] {
+			bad = append(bad, s)
+		}
+	}
+	sort.Strings(bad)
+	return bad
+}
+
+// Only keeps the checks CI_ONLY names — by name or by group — plus every
+// check they depend on (`after`), transitively, in plan order. An empty only
+// keeps everything.
+func Only(checks []Check, only []string) []Check {
+	if len(only) == 0 {
+		return checks
+	}
+	want := map[string]bool{}
+	for _, o := range only {
+		want[o] = true
+	}
+	byName := map[string]Check{}
+	for _, c := range checks {
+		byName[c.Name] = c
+	}
+	keep := map[string]bool{}
+	var pull func(name string)
+	pull = func(name string) {
+		c, ok := byName[name]
+		if !ok || keep[name] {
+			return
+		}
+		keep[name] = true
+		for _, a := range c.After {
+			pull(a)
+		}
+	}
+	for _, c := range checks {
+		if want[c.Name] || (c.Group != "" && want[c.Group]) {
+			pull(c.Name)
+		}
+	}
+	var out []Check
+	for _, c := range checks {
+		if keep[c.Name] {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // Options configure a Run.
 type Options struct {
-	// Out receives the checks' own output and the summary. Defaults to
-	// os.Stdout.
+	// Out receives the progress lines and the checks' failure tails. Defaults
+	// to os.Stdout.
 	Out io.Writer
 	// Skip names the checks the caller chose not to run.
 	Skip []string
@@ -258,117 +419,650 @@ type Options struct {
 	Exec ExecFunc
 	// Root is the project root.
 	Root string
-	// Groups wraps each check's output in GitHub Actions ::group:: lines.
+	// Groups wraps each check's output in GitHub Actions ::group:: lines,
+	// printed whole when the check finishes so concurrent checks never
+	// interleave.
 	Groups bool
 	// Env is the base environment; nil is os.Environ().
 	Env []string
+	// Path is put first on every check's PATH, ahead of the pinned tools'
+	// directories: the project's own declared tool directories
+	// (ci.gate.path), which it chose over forge's pins on purpose.
+	Path []string
+	// Jobs caps how many checks run at once. Zero is DefaultJobs().
+	Jobs int
+	// Slot takes a host heavy slot for a Heavy check. Nil runs heavy checks
+	// without one.
+	Slot SlotFunc
+	// Verdicts answers for checks whose PASS on this exact tree is already
+	// recorded, and records new ones. Nil disables the cache.
+	Verdicts Verdicts
+	// LogDir receives one <check>.log per check that runs. Empty keeps the
+	// output in memory only (tests).
+	LogDir string
+	// Clock stamps durations; nil is time.Now (tests substitute).
+	Clock func() time.Time
 }
 
 // ExecFunc runs argv in dir with env, writing combined output to out.
 type ExecFunc func(ctx context.Context, dir string, env []string, argv []string, out io.Writer) error
 
-// Run executes checks in order and returns the report. It never stops early:
-// a failing check is a row, not an abort.
+// SlotFunc takes one host-wide heavy slot, waiting while every slot is held.
+// An error means the gate was interrupted while waiting.
+type SlotFunc func(ctx context.Context) (HeldSlot, error)
+
+// HeldSlot is one host slot as the scheduler uses it (*hostslot.Slot is one).
+type HeldSlot interface {
+	// Env is what the check's command inherits, so the heavy commands it
+	// runs in turn (`task test`'s `forge slot run`, verify-generated's
+	// `forge generate`) run inside this slot instead of queueing for another.
+	Env() []string
+	// SetLabel names the check holding the slot, for waiters to see.
+	SetLabel(label string)
+	Release() error
+}
+
+// Verdicts is the verdict cache as the scheduler sees it.
+type Verdicts interface {
+	// Lookup reports a recorded PASS for c on the tree being judged, and the
+	// short commit it was recorded at.
+	Lookup(c Check) (commit string, ok bool)
+	// Record remembers a PASS c earned in this run.
+	Record(c Check)
+}
+
+// DefaultJobs is the per-gate cap on concurrently running light checks: half
+// the CPUs, between 2 and 8. Heavy checks are bounded by host slots instead.
+func DefaultJobs() int {
+	return min(max(runtime.NumCPU()/2, 2), 8)
+}
+
+// Run executes checks and returns the report, rows in the order given. It
+// never stops early: a failing check is a row, not an abort.
 func Run(ctx context.Context, lane string, checks []Check, opt Options) Report {
+	s := newScheduler(ctx, checks, opt)
+	start := s.now()
+	s.run()
+	rep := Report{Lane: lane, Results: s.results}
+	rep.Wall = s.now().Sub(start)
+	return rep
+}
+
+// ---- scheduler ----------------------------------------------------------------
+
+type scheduler struct {
+	ctx    context.Context
+	checks []Check
+	opt    Options
+	out    *lockedWriter
+	exec   ExecFunc
+
+	results []Result
+	deps    [][]int // indices of each check's selected `after` dependencies
+	pos     []int   // position in the execution order
+	jobs    chan struct{}
+
+	mu       sync.Mutex
+	cond     *sync.Cond
+	done     []bool
+	active   int  // started (past the start conditions) and not finished
+	mutating bool // a MutatesTree check is active
+
+	heavy *heavyQueue
+}
+
+func newScheduler(ctx context.Context, checks []Check, opt Options) *scheduler {
 	out := opt.Out
 	if out == nil {
 		out = os.Stdout
 	}
-	execFn := opt.Exec
-	if execFn == nil {
-		execFn = osExec
+	jobs := opt.Jobs
+	if jobs <= 0 {
+		jobs = DefaultJobs()
 	}
+	s := &scheduler{
+		ctx:     ctx,
+		checks:  checks,
+		opt:     opt,
+		out:     &lockedWriter{w: out},
+		exec:    opt.Exec,
+		results: make([]Result, len(checks)),
+		done:    make([]bool, len(checks)),
+		jobs:    make(chan struct{}, jobs),
+	}
+	if s.exec == nil {
+		s.exec = osExec
+	}
+	s.cond = sync.NewCond(&s.mu)
+	s.deps, s.pos = executionOrder(checks)
+	return s
+}
+
+func (s *scheduler) now() time.Time {
+	if s.opt.Clock != nil {
+		return s.opt.Clock()
+	}
+	return time.Now()
+}
+
+// executionOrder resolves `after` names to indices and fixes a total order the
+// start conditions are expressed in: a topological order of the dependencies
+// in which every tree-mutating check, and everything it depends on, comes
+// before every check that only reads the tree. Ties keep plan order. Every
+// wait the scheduler performs is on a check EARLIER in this order, so no set
+// of waits can form a cycle.
+func executionOrder(checks []Check) (deps [][]int, pos []int) {
+	idx := map[string]int{}
+	for i, c := range checks {
+		if _, dup := idx[c.Name]; !dup {
+			idx[c.Name] = i
+		}
+	}
+	deps = make([][]int, len(checks))
+	for i, c := range checks {
+		for _, a := range c.After {
+			if j, ok := idx[a]; ok && j != i {
+				deps[i] = append(deps[i], j)
+			}
+		}
+	}
+	// Phase 0: mutating checks and their transitive dependencies.
+	phase0 := make([]bool, len(checks))
+	var mark func(i int)
+	mark = func(i int) {
+		if phase0[i] {
+			return
+		}
+		phase0[i] = true
+		for _, j := range deps[i] {
+			mark(j)
+		}
+	}
+	for i, c := range checks {
+		if c.MutatesTree {
+			mark(i)
+		}
+	}
+	// Kahn's algorithm, picking the lowest (phase, plan index) available.
+	indeg := make([]int, len(checks))
+	users := make([][]int, len(checks))
+	for i := range checks {
+		for _, j := range deps[i] {
+			indeg[i]++
+			users[j] = append(users[j], i)
+		}
+	}
+	key := func(i int) int {
+		if phase0[i] {
+			return i
+		}
+		return len(checks) + i
+	}
+	pos = make([]int, len(checks))
+	placed := make([]bool, len(checks))
+	for n := 0; n < len(checks); n++ {
+		best := -1
+		for i := range checks {
+			if !placed[i] && indeg[i] == 0 && (best < 0 || key(i) < key(best)) {
+				best = i
+			}
+		}
+		if best < 0 {
+			// A cycle (the planner rejects these): place the rest in plan
+			// order and drop their dependencies, rather than hang.
+			for i := range checks {
+				if !placed[i] {
+					placed[i], pos[i], deps[i] = true, n, nil
+					n++
+				}
+			}
+			break
+		}
+		placed[best], pos[best] = true, n
+		for _, u := range users[best] {
+			indeg[u]--
+		}
+	}
+	return deps, pos
+}
+
+func (s *scheduler) run() {
 	skip := map[string]bool{}
-	for _, s := range opt.Skip {
-		skip[s] = true
+	for _, n := range s.opt.Skip {
+		skip[n] = true
 	}
-	rep := Report{Lane: lane}
-	for _, c := range checks {
+	var pending []int
+	for i, c := range s.checks {
 		res := Result{Name: c.Name, Lane: c.Lane}
 		switch {
 		case c.NotApplicable != "":
 			res.Status, res.Note = NA, c.NotApplicable
 		case skip[c.Name]:
 			res.Status, res.Note, res.Allowed = Skip, "not run", true
-		case ctx.Err() != nil:
-			res.Status, res.Note = Skip, "gate interrupted"
 		default:
-			res = runOne(ctx, c, opt, execFn, out)
+			if commit, ok := s.cached(c); ok {
+				res.Status, res.Cached, res.Note = Pass, commit, "this tree passed before"
+				s.out.printf("✓ %s  PASS (cached %s)\n", c.Name, commit)
+			} else {
+				pending = append(pending, i)
+				continue
+			}
 		}
-		rep.Results = append(rep.Results, res)
+		s.results[i] = res
+		s.done[i] = true
 	}
-	return rep
+	if len(pending) == 0 {
+		return
+	}
+	s.heavy = newHeavyQueue(s.ctx, s.opt.Slot)
+	defer s.heavy.close()
+	// Wake every waiter when the gate is interrupted, so each can record
+	// itself as such instead of waiting for a dependency that never starts.
+	stop := context.AfterFunc(s.ctx, func() {
+		s.mu.Lock()
+		s.cond.Broadcast()
+		s.mu.Unlock()
+	})
+	defer stop()
+
+	var wg sync.WaitGroup
+	for _, i := range pending {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			res, started := s.runCheck(i)
+			s.results[i] = res
+			s.mu.Lock()
+			s.done[i] = true
+			if started {
+				s.active--
+				if s.checks[i].MutatesTree {
+					s.mutating = false
+				}
+			}
+			s.cond.Broadcast()
+			s.mu.Unlock()
+		}()
+	}
+	wg.Wait()
 }
 
-func runOne(ctx context.Context, c Check, opt Options, execFn ExecFunc, out io.Writer) Result {
-	res := Result{Name: c.Name, Lane: c.Lane}
+func (s *scheduler) cached(c Check) (string, bool) {
+	if s.opt.Verdicts == nil || c.NoCache {
+		return "", false
+	}
+	return s.opt.Verdicts.Lookup(c)
+}
+
+// startable is the start condition, evaluated under s.mu.
+func (s *scheduler) startable(i int) bool {
+	for _, j := range s.deps[i] {
+		if !s.done[j] {
+			return false
+		}
+	}
+	if s.mutating {
+		return false
+	}
+	if s.checks[i].MutatesTree {
+		if s.active > 0 {
+			return false
+		}
+		for j := range s.checks {
+			if s.pos[j] < s.pos[i] && !s.done[j] {
+				return false
+			}
+		}
+		return true
+	}
+	for j, c := range s.checks {
+		if c.MutatesTree && s.pos[j] < s.pos[i] && !s.done[j] {
+			return false
+		}
+	}
+	return true
+}
+
+// runCheck waits until check i may start, runs it, and reports whether it
+// got past the start conditions (and so counts as active until it returns).
+func (s *scheduler) runCheck(i int) (Result, bool) {
+	c := s.checks[i]
+	interrupted := Result{Name: c.Name, Lane: c.Lane, Status: Skip, Note: "gate interrupted"}
+
+	s.mu.Lock()
+	for !s.startable(i) && s.ctx.Err() == nil {
+		s.cond.Wait()
+	}
+	if s.ctx.Err() != nil {
+		s.mu.Unlock()
+		return interrupted, false
+	}
+	s.active++
+	if c.MutatesTree {
+		s.mutating = true
+	}
+	s.mu.Unlock()
+
+	// A heavy check is bounded by a host slot, a light one by the gate's job
+	// cap — never both. Holding a job token while waiting for a slot could
+	// deadlock: a light check's own child (`forge generate` run by an extra)
+	// waits for a slot, while the slot's holder waits for that token.
+	var slotEnv []string
+	if c.Heavy && s.heavy.enabled() {
+		slot, err := s.heavy.take(s.pos[i], "ci gate: "+c.Name)
+		if err != nil {
+			return interrupted, true
+		}
+		defer func() { _ = slot.Release() }()
+		slotEnv = slot.Env()
+	} else {
+		select {
+		case s.jobs <- struct{}{}:
+		case <-s.ctx.Done():
+			return interrupted, true
+		}
+		defer func() { <-s.jobs }()
+	}
+
+	res, ran := s.execute(c, slotEnv)
+	// Only a PASS the command itself earned is worth remembering: a Done
+	// short-circuit says nothing about this tree.
+	if ran && res.Status == Pass && s.opt.Verdicts != nil && !c.NoCache {
+		s.opt.Verdicts.Record(c)
+	}
+	return res, true
+}
+
+// execute runs one check that is cleared to start. ran reports whether its
+// command ran (as opposed to a Done short-circuit or a skip).
+func (s *scheduler) execute(c Check, slotEnv []string) (res Result, ran bool) {
+	res = Result{Name: c.Name, Lane: c.Lane}
 	if c.Done != nil {
 		if note := c.Done(); note != "" {
 			res.Status, res.Note = Pass, note
-			return res
+			s.out.printf("✓ %s  PASS (%s)\n", c.Name, note)
+			return res, false
 		}
+	}
+	skip := func(reason string) (Result, bool) {
+		res.Status, res.Note = Skip, reason
+		s.out.printf("⏭ %s  SKIPPED: %s\n", c.Name, reason)
+		return res, false
 	}
 	if c.Prereq != nil {
 		if reason := c.Prereq(); reason != "" {
-			res.Status, res.Note = Skip, reason
-			fmt.Fprintf(out, "SKIP %s: %s\n", c.Name, reason)
-			return res
+			return skip(reason)
 		}
 	}
 
-	env := opt.Env
+	env := s.opt.Env
 	if env == nil {
 		env = os.Environ()
 	}
 	var dirs []string
 	for _, t := range c.Tools {
-		if opt.Resolver == nil {
-			res.Status, res.Note = Skip, t.Binary+" is not available: no tool resolver"
-			return res
+		if s.opt.Resolver == nil {
+			return skip(t.Binary + " is not available: no tool resolver")
 		}
-		dir, err := opt.Resolver.Ensure(ctx, t)
+		dir, err := s.opt.Resolver.Ensure(s.ctx, t)
 		if err != nil {
-			res.Status, res.Note = Skip, fmt.Sprintf("cannot provide %s %s: %v", t.Binary, t.Version, err)
-			fmt.Fprintf(out, "SKIP %s: %s\n", c.Name, res.Note)
-			return res
+			return skip(fmt.Sprintf("cannot provide %s %s: %v", t.Binary, t.Version, err))
 		}
 		if dir != "" {
 			dirs = append(dirs, dir)
 		}
 	}
-	env = withPathPrefix(env, dirs)
-	env = append(append([]string(nil), env...), c.Env...)
+	env = withPathPrefix(env, append(append([]string(nil), s.opt.Path...), dirs...))
+	env = append(append(append([]string(nil), env...), c.Env...), slotEnv...)
+	for _, bin := range c.Requires {
+		if _, err := lookPathIn(env, bin); err != nil {
+			return skip(bin + " is not on PATH")
+		}
+	}
 
-	dir := opt.Root
+	dir := s.opt.Root
 	if c.Dir != "" {
-		dir = joinDir(opt.Root, c.Dir)
+		dir = joinDir(s.opt.Root, c.Dir)
+	}
+	if len(c.Probe) > 0 {
+		if err := s.exec(s.ctx, dir, env, c.Probe, io.Discard); err != nil {
+			reason := c.ProbeReason
+			if reason == "" {
+				reason = "`" + strings.Join(c.Probe, " ") + "` failed"
+			}
+			return skip(reason)
+		}
 	}
 
-	if opt.Groups {
-		fmt.Fprintf(out, "::group::%s\n", c.Name)
-	} else {
-		fmt.Fprintf(out, "\n── %s ── %s\n", c.Name, strings.Join(c.Argv, " "))
-	}
+	log, closeLog := s.openLog(c.Name)
+	defer closeLog()
+	res.Log = s.relLog(c.Name)
 	tail := &tailBuffer{max: 6000}
-	start := time.Now()
-	err := execFn(ctx, dir, env, c.Argv, io.MultiWriter(out, tail))
-	res.Duration = time.Since(start)
-	if opt.Groups {
-		fmt.Fprintln(out, "::endgroup::")
+	var w io.Writer = tail
+	if log != nil {
+		w = io.MultiWriter(log, tail)
 	}
-	if err != nil {
+	var full *bytes.Buffer
+	if s.opt.Groups && log == nil {
+		full = &bytes.Buffer{}
+		w = io.MultiWriter(w, full)
+	}
+
+	s.out.printf("▶ %s  %s\n", c.Name, strings.Join(c.Argv, " "))
+	start := s.now()
+	err := s.exec(s.ctx, dir, env, c.Argv, w)
+	res.Duration = s.now().Sub(start)
+
+	switch {
+	case err == nil:
+		res.Status, res.Note = Pass, c.Note
+	case s.ctx.Err() != nil:
+		res.Status, res.Note = Skip, "gate interrupted"
+	case c.SkipExitCode != 0 && exitCode(err) == c.SkipExitCode:
+		res.Status, res.Note = Skip, lastLine(tail)
+		if res.Note == "" {
+			res.Note = fmt.Sprintf("exit status %d: could not run here", c.SkipExitCode)
+		}
+	default:
 		res.Status, res.Note, res.Tail = Fail, failNote(err), tail.lastLines(25)
-		if opt.Groups {
-			fmt.Fprintf(out, "::error title=ci gate: %s::%s\n", c.Name, res.Note)
+		if c.Note != "" {
+			res.Note += "; " + c.Note
 		}
-		if c.OnFail != nil {
-			c.OnFail(out)
-		}
-		return res
 	}
-	res.Status = Pass
-	return res
+	if res.Status == Fail && c.OnFail != nil {
+		c.OnFail(s.out)
+	}
+	s.report(c, res, log, full)
+	return res, true
 }
+
+// report prints a finished check: one line, then — so a reader sees what broke
+// without opening the log — a failure's last lines, or under GitHub Actions
+// the whole output in a collapsible group. Printed under the writer's lock as
+// one block, so concurrent checks never interleave.
+func (s *scheduler) report(c Check, res Result, log *os.File, full *bytes.Buffer) {
+	var b strings.Builder
+	mark := map[Status]string{Pass: "✓", Fail: "✗", Skip: "⏭", NA: "-"}[res.Status]
+	fmt.Fprintf(&b, "%s %s  %s %s", mark, c.Name, res.Status, res.Duration.Round(100*time.Millisecond))
+	if res.Note != "" {
+		fmt.Fprintf(&b, " — %s", res.Note)
+	}
+	if res.Log != "" && res.Status != Pass {
+		fmt.Fprintf(&b, " (log: %s)", res.Log)
+	}
+	b.WriteString("\n")
+	switch {
+	case s.opt.Groups:
+		fmt.Fprintf(&b, "::group::%s (%s)\n", c.Name, res.Status)
+		if log != nil {
+			if data, err := os.ReadFile(log.Name()); err == nil {
+				b.Write(data)
+			}
+		} else if full != nil {
+			b.Write(full.Bytes())
+		}
+		b.WriteString("\n::endgroup::\n")
+		if res.Status == Fail {
+			fmt.Fprintf(&b, "::error title=ci gate: %s::%s\n", c.Name, res.Note)
+		}
+	case res.Status == Fail && res.Tail != "":
+		for _, line := range strings.Split(res.Tail, "\n") {
+			fmt.Fprintf(&b, "    | %s\n", line)
+		}
+	}
+	s.out.write(b.String())
+}
+
+func (s *scheduler) openLog(name string) (*os.File, func()) {
+	if s.opt.LogDir == "" {
+		return nil, func() {}
+	}
+	if err := os.MkdirAll(s.opt.LogDir, 0o755); err != nil {
+		return nil, func() {}
+	}
+	f, err := os.Create(filepath.Join(s.opt.LogDir, name+".log"))
+	if err != nil {
+		return nil, func() {}
+	}
+	return f, func() { _ = f.Close() }
+}
+
+func (s *scheduler) relLog(name string) string {
+	if s.opt.LogDir == "" {
+		return ""
+	}
+	p := filepath.Join(s.opt.LogDir, name+".log")
+	if s.opt.Root != "" {
+		if rel, err := filepath.Rel(s.opt.Root, p); err == nil && !strings.HasPrefix(rel, "..") {
+			return filepath.ToSlash(rel)
+		}
+	}
+	return p
+}
+
+// heavyQueue hands out host heavy slots to the gate's heavy checks, one
+// request at a time and lowest execution position first.
+//
+// One outstanding request per gate is deliberate: a gate that filed a ticket
+// per ready check would put all of them ahead of another agent's single
+// `forge generate`, which then waits for a whole round of this gate's checks.
+// Taking a slot and only then choosing which check gets it also means the
+// check that runs is the most urgent one at the moment a slot frees.
+type heavyQueue struct {
+	ctx  context.Context
+	slot SlotFunc
+
+	mu      sync.Mutex
+	waiting []heavyReq
+	failed  error // set once no slot is coming (the gate was interrupted)
+	wake    chan struct{}
+	closed  chan struct{}
+	once    sync.Once
+}
+
+type heavyReq struct {
+	pos   int
+	label string
+	grant chan heavyGrant
+}
+
+type heavyGrant struct {
+	slot HeldSlot
+	err  error
+}
+
+func newHeavyQueue(ctx context.Context, slot SlotFunc) *heavyQueue {
+	q := &heavyQueue{ctx: ctx, slot: slot, wake: make(chan struct{}, 1), closed: make(chan struct{})}
+	if slot != nil {
+		go q.serve()
+	}
+	return q
+}
+
+func (q *heavyQueue) enabled() bool { return q != nil && q.slot != nil }
+
+func (q *heavyQueue) take(pos int, label string) (HeldSlot, error) {
+	req := heavyReq{pos: pos, label: label, grant: make(chan heavyGrant, 1)}
+	q.mu.Lock()
+	if q.failed != nil {
+		q.mu.Unlock()
+		return nil, q.failed
+	}
+	q.waiting = append(q.waiting, req)
+	q.mu.Unlock()
+	select {
+	case q.wake <- struct{}{}:
+	default:
+	}
+	g := <-req.grant
+	return g.slot, g.err
+}
+
+func (q *heavyQueue) serve() {
+	for {
+		q.mu.Lock()
+		n := len(q.waiting)
+		q.mu.Unlock()
+		if n == 0 {
+			select {
+			case <-q.wake:
+				continue
+			case <-q.closed:
+				return
+			case <-q.ctx.Done():
+				q.failAll(q.ctx.Err())
+				return
+			}
+		}
+		slot, err := q.slot(q.ctx)
+		if err != nil {
+			q.failAll(err)
+			return
+		}
+		q.mu.Lock()
+		best := 0
+		for k := range q.waiting {
+			if q.waiting[k].pos < q.waiting[best].pos {
+				best = k
+			}
+		}
+		req := q.waiting[best]
+		q.waiting = append(q.waiting[:best], q.waiting[best+1:]...)
+		q.mu.Unlock()
+		slot.SetLabel(req.label)
+		req.grant <- heavyGrant{slot: slot}
+	}
+}
+
+// failAll answers every waiter with err, and every later request too: once
+// the gate is interrupted no slot is coming.
+func (q *heavyQueue) failAll(err error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for _, r := range q.waiting {
+		r.grant <- heavyGrant{err: err}
+	}
+	q.waiting = nil
+	q.failed = err
+}
+
+func (q *heavyQueue) close() { q.once.Do(func() { close(q.closed) }) }
+
+// lockedWriter serializes the scheduler's console output.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
+}
+
+func (l *lockedWriter) write(s string) { _, _ = l.Write([]byte(s)) }
+
+func (l *lockedWriter) printf(format string, a ...any) { l.write(fmt.Sprintf(format, a...)) }
 
 func failNote(err error) string {
 	var ee *exec.ExitError
@@ -376,6 +1070,28 @@ func failNote(err error) string {
 		return fmt.Sprintf("exit status %d", ee.ExitCode())
 	}
 	return err.Error()
+}
+
+func exitCode(err error) int {
+	var ee *exec.ExitError
+	if asExit(err, &ee) {
+		return ee.ExitCode()
+	}
+	var coded interface{ ExitCode() int }
+	if errors.As(err, &coded) {
+		return coded.ExitCode()
+	}
+	return -1
+}
+
+func lastLine(t *tailBuffer) string {
+	lines := strings.Split(strings.TrimRight(t.buf.String(), "\n"), "\n")
+	for k := len(lines) - 1; k >= 0; k-- {
+		if l := strings.TrimSpace(lines[k]); l != "" {
+			return l
+		}
+	}
+	return ""
 }
 
 func osExec(ctx context.Context, dir string, env []string, argv []string, out io.Writer) error {
@@ -394,16 +1110,22 @@ func osExec(ctx context.Context, dir string, env []string, argv []string, out io
 	cmd.Env = env
 	cmd.Stdout = out
 	cmd.Stderr = out
+	// A killed check must not leave its children holding the pipe open.
+	cmd.WaitDelay = 10 * time.Second
 	return cmd.Run()
 }
 
-// tailBuffer keeps the last max bytes written to it.
+// tailBuffer keeps the last max bytes written to it. Safe for the concurrent
+// writes of a command's stdout and stderr.
 type tailBuffer struct {
+	mu  sync.Mutex
 	max int
 	buf bytes.Buffer
 }
 
 func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.buf.Write(p)
 	if over := t.buf.Len() - t.max; over > 0 {
 		t.buf.Next(over)
@@ -412,6 +1134,8 @@ func (t *tailBuffer) Write(p []byte) (int, error) {
 }
 
 func (t *tailBuffer) lastLines(n int) string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	lines := strings.Split(strings.TrimRight(t.buf.String(), "\n"), "\n")
 	if len(lines) > n {
 		lines = lines[len(lines)-n:]
@@ -422,7 +1146,7 @@ func (t *tailBuffer) lastLines(n int) string {
 // lookPathIn finds file on the PATH carried by env. A name with a path
 // separator is used as is.
 func lookPathIn(env []string, file string) (string, error) {
-	if strings.ContainsRune(file, filepath.Separator) {
+	if strings.ContainsRune(file, filepath.Separator) || strings.ContainsRune(file, '/') {
 		return file, nil
 	}
 	path := ""

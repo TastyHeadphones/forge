@@ -290,6 +290,43 @@ func (s *Slot) Env() []string {
 	return []string{EnvHeld + "=" + strings.Join(entries, ",")}
 }
 
+// SetLabel replaces the command recorded for this holder, which waiters and
+// `forge slot status` show. A scheduler that takes a slot and only then
+// decides which job gets it names the job here.
+func (s *Slot) SetLabel(label string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.file == nil || s.released {
+		return
+	}
+	rec, ok := readRecord(s.file.Name())
+	if !ok {
+		return
+	}
+	rec.cmd = oneLine(label)
+	if err := s.file.Truncate(0); err == nil {
+		_, _ = s.file.WriteAt(rec.encode(), 0)
+	}
+}
+
+// Inside reports whether this process already runs inside a slot of class
+// (see the package doc), and why. Acquire would return at once, taking
+// nothing; a scheduler that means to bound its own jobs by slots learns
+// here that it cannot.
+func Inside(class string, opt Options) (string, bool) {
+	if err := validClass(class); err != nil {
+		return "", false
+	}
+	dir := filepath.Join(opt.BaseDir(), class)
+	if _, err := os.Stat(dir); err != nil {
+		return "", false
+	}
+	return reentrant(dir, class, lookupEnv(opt.Env, EnvHeld))
+}
+
 // Class is the slot's class.
 func (s *Slot) Class() string { return s.class }
 

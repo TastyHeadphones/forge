@@ -9,28 +9,43 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 )
 
-// fakeExec scripts command outcomes by the first argv word and records order.
+// fakeExec scripts command outcomes by the first argv word and records what
+// ran. Checks run concurrently, so it is safe for concurrent use.
 type fakeExec struct {
 	fail map[string]bool
+	mu   sync.Mutex
 	ran  []string
 	env  map[string][]string
 }
 
 func (f *fakeExec) run(_ context.Context, _ string, env []string, argv []string, out io.Writer) error {
+	f.mu.Lock()
 	f.ran = append(f.ran, argv[0])
 	if f.env == nil {
 		f.env = map[string][]string{}
 	}
 	f.env[argv[0]] = env
+	f.mu.Unlock()
 	fmt.Fprintf(out, "output of %s\n", argv[0])
 	if f.fail[argv[0]] {
 		return errors.New("boom")
 	}
 	return nil
+}
+
+// ranSorted is what ran, in a stable order: concurrent checks start in any.
+func (f *fakeExec) ranSorted() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := append([]string(nil), f.ran...)
+	sort.Strings(out)
+	return strings.Join(out, ",")
 }
 
 func check(name string, argv ...string) Check {
@@ -53,8 +68,11 @@ func TestRun_ReportsEveryFailureThenFails(t *testing.T) {
 		[]Check{check("lint", "lint"), check("build", "build"), check("scan", "scan")},
 		Options{Out: io.Discard, Exec: fx.run})
 
-	if got := strings.Join(fx.ran, ","); got != "lint,build,scan" {
-		t.Fatalf("ran %q; a failing check must not stop the ones after it", got)
+	if got := fx.ranSorted(); got != "build,lint,scan" {
+		t.Fatalf("ran %q; a failing check must not stop the others", got)
+	}
+	if names := strings.Join([]string{rep.Results[0].Name, rep.Results[1].Name, rep.Results[2].Name}, ","); names != "lint,build,scan" {
+		t.Errorf("rows %s: the table keeps plan order whatever order checks finish in", names)
 	}
 	want := map[string]Status{"lint": Fail, "build": Pass, "scan": Fail}
 	for name, st := range statuses(rep) {

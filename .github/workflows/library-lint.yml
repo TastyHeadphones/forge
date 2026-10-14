@@ -63,7 +63,7 @@ jobs:
           # working directory. Running from the repo root would pick the
           # root config, which excludes pkg/ entirely, and lint none of it.
           working-directory: pkg
-          args: --timeout=5m
+          # No --timeout: pkg/.golangci.yml sets its own (20m); see ci.yml.
           # NOT only-new-issues: the guardrail this library is held to is
           # whole-file, and a rule that only sees changed lines lets a
           # violation ride in on an untouched line of an edited file.

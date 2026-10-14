@@ -70,14 +70,28 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			},
 		},
 		{
+			// env / path: every check's environment, read by
+			// cigate.GateEnv / GatePath. affected_ignore: read by
+			// cigate.ComputeAffected.
 			name: "CIGateConfig",
 			typ:  reflect.TypeFor[CIGateConfig](),
-			want: []string{"extra_checks"},
+			want: []string{"affected_ignore", "env", "extra_checks", "path"},
 		},
 		{
+			// Every key is read by cigate's planner (internal/cigate/
+			// plan.go extras) into a Check the scheduler honors.
 			name: "CIGateCheck",
 			typ:  reflect.TypeFor[CIGateCheck](),
-			want: []string{"command", "dir", "name", "requires"},
+			want: []string{
+				"after", "cache", "command", "dir", "env", "group", "heavy",
+				"lane", "mutates_tree", "name", "probe", "replaces", "requires",
+				"skip_exit_code",
+			},
+		},
+		{
+			name: "CIGateProbe",
+			typ:  reflect.TypeFor[CIGateProbe](),
+			want: []string{"command", "reason"},
 		},
 		{
 			// Only migration_safety is authored. The driver and migrations

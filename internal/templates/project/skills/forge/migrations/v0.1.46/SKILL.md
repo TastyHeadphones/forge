@@ -1,6 +1,6 @@
 ---
 name: v0.1.46
-description: Upgrade a project to forge v0.1.46. One section per change — (1) host-wide heavy slots: `forge slot run` / `forge slot status` (pkg/hostslot) queue heavy work machine-wide, `forge generate` and `forge lint` take a slot on their own, and the scaffolded Taskfile runs `test` and `test:integration` under a `SLOT` prefix. Use when Taskfile.yml has a `test` task but no `SLOT:` var, or when several agents or worktrees share one machine and builds and test runs slow each other down.
+description: Upgrade a project to forge v0.1.46. One section per change — (1) host-wide heavy slots: `forge slot run` / `forge slot status` (pkg/hostslot) queue heavy work machine-wide, `forge generate` and `forge lint` take a slot on their own, and the scaffolded Taskfile runs `test` and `test:integration` under a `SLOT` prefix; (2) `forge ci gate` runs checks concurrently (after / mutates_tree / heavy), caches PASS verdicts by tree hash, and unit-tests only the affected packages on a branch — with a wider ci.gate.extra_checks schema (lane, group, after, heavy, mutates_tree, cache, probe, skip_exit_code, env, replaces) for moving a hand-written gate script onto it. Use when Taskfile.yml has a `test` task but no `SLOT:` var, or when several agents or worktrees share one machine and builds and test runs slow each other down.
 version: v0.1.46
 detection: test -f Taskfile.yml && grep -qs '^  test:' Taskfile.yml && ! grep -qs 'forge slot run' Taskfile.yml
 ---
@@ -77,3 +77,63 @@ them:
 `heavy slots: 4 (min(16 CPUs / 4, 32 GiB / 8))`). `task test` while
 `forge slot status` runs in another terminal lists `go test ...` as a holder.
 `task --list` still works on a machine without forge.
+
+## 2. A concurrent, cached, affected-aware `forge ci gate`
+
+Use when a project runs `task ci` / `forge ci gate`, or keeps a gate script of
+its own (`scripts/ci-gate.sh`) that `forge ci gate` could now replace.
+
+### What changed
+
+Nothing to migrate for the gate to work: the change is in forge. What a project
+sees:
+
+- **Checks run concurrently.** `verify-generated` (it rewrites the tree) runs
+  alone before the checks that read the tree; frontend rows wait for
+  `deps-<fe>`; heavy checks hold host slots (section 1); the rest run under
+  `--jobs`. The table keeps plan order and adds the wall time and a `head:` line.
+- **Per-check logs** in `tmp/ci/<lane>/<check>.log` (`.forge/ci/<lane>/` when
+  git does not ignore `tmp/`; `CI_LOG_DIR` moves them). The console shows start
+  and finish lines and a failure's tail instead of every check's full output.
+- **Verdict cache.** On a committed tree a check that already passed on that
+  tree reads `PASS (cached <sha>)`, in any worktree of the repository.
+  `CI_NO_CACHE=1` runs everything; a dirty tree turns it off.
+- **Affected unit tests.** On a branch, `unit-tests` runs `task test -- <pkgs>`
+  for the packages the change reaches; anything but Go source changed, the
+  default branch, or `CI_FULL=1` runs the whole suite. The line before the
+  table says which.
+- **`CI_ONLY`** (checks or groups, plus their `after` dependencies) and
+  **`CI_REPORT`** (write the Markdown table to a file).
+- `ci.gate` gained `env`, `path` and `affected_ignore`; each extra check gained
+  `lane`, `group`, `after`, `heavy`, `mutates_tree`, `cache`, `probe`,
+  `skip_exit_code`, `env` and `replaces` (`ci/gate` has the schema).
+
+### Steps
+
+1. **`.gitignore`**: keep `tmp/` ignored (the scaffold does), so the logs never
+   dirty the tree the gate judges.
+2. **`task test`** must accept Go package patterns after `--` (the scaffolded
+   task does: `{{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}`). A task that
+   ignores them still passes, but runs the whole suite every time.
+3. **Mark your extras.** For each `ci.gate.extra_checks` entry: `heavy: true`
+   for a whole-module build, test run or render; `mutates_tree: true` if it
+   rewrites tracked files (a formatter, pre-commit); `cache: false` if it reads
+   the network or a sibling checkout; `after:` if it needs another check's
+   output; `group:` if CI should select it with `CI_ONLY`.
+4. **Retiring a gate script.** Each step becomes an extra: put the step's
+   body in a script (`scripts/ci-step.sh <step>` is a fine shape), have it exit
+   77 with a one-line reason when it cannot run (`skip_exit_code: 77`), move
+   `PATH` / `GOPRIVATE` exports to `ci.gate.path` / `ci.gate.env`, a step that
+   overrides one of forge's to `replaces: <the forge-owned check name>`, and image or cluster
+   lanes to `lane: docker` / `lane: k3d`. Then point `task ci` and
+   `task ci:checks` at `forge ci gate all` / `forge ci gate checks`.
+5. **`ci.gate.affected_ignore`**: list files no Go test reads (`*.md`,
+   `docs/**`) so a docs edit does not force the whole suite.
+
+### Verify
+
+`forge ci gate --list` shows each check's lane, group and scheduling. Run
+`task ci:checks` twice on a committed tree: the second run's rows read
+`PASS (cached <sha>)` (except `vuln-*` and `cache: false` extras). On a branch
+that changes one package, `forge ci gate test` prints `unit tests: affected
+mode — N of M test packages …`.
