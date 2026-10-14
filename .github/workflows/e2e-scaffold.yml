@@ -116,7 +116,10 @@ jobs:
       #
       # Waiting is the honest fix: the job's own dependency genuinely is not
       # resolvable yet. On every non-release commit the version is long since
-      # ingested, so this costs exactly one HTTP probe and no sleep.
+      # ingested, so this costs exactly one HTTP probe and no sleep. On a
+      # release commit it can take up to ~30 minutes: release-forge.sh asks the
+      # proxy for the version before tagging it, and the proxy caches that 404
+      # (scripts/wait-for-go-proxy.sh sizes its window for it).
       #
       # The version is read from the GENERATED go.mod rather than from VERSION,
       # so this tracks whatever the scaffold actually pinned instead of

@@ -106,6 +106,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A release commit's E2E Scaffold waits out the proxy's negative cache.**
+  `release-forge.sh` checks that the version was never published by asking
+  proxy.golang.org for it moments before tagging, and the proxy caches that
+  404 for up to 30 minutes. `wait-for-go-proxy.sh` gave up after 10, so both
+  the release's own wait and E2E Scaffold on the release commit timed out
+  (v0.1.45: gate 02:06Z, push 02:07:45Z, served 02:37Z). The default window
+  is now 35 minutes. Non-release commits are unaffected: the pinned version
+  is already served and the probe returns at once.
+
 - **A rotated `OTEL_EXPORTER_OTLP_HEADERS_FILE` is noticed by its content.**
   The headers file was re-read only when its identity, size or mtime moved. On
   Windows `os.SameFile` resolves a stat'ed path when it is called, so it

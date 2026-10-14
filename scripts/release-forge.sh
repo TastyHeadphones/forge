@@ -346,6 +346,10 @@ echo "✅ committed and pushed $VERSION at $RELEASE_SHA"
 # release is a lane nobody believes, which is how a genuinely broken tag
 # ships unnoticed.
 #
+# Step 5 makes the window longer than ingestion alone: it asked the proxy for
+# this very version before the tag existed, and proxy.golang.org caches that
+# 404 for up to 30 minutes. wait-for-go-proxy.sh's default window covers it.
+#
 # So the release does not report DONE until the version is actually
 # resolvable. Everything downstream — the consumer bump in docs/releasing.md
 # steps 2-3, and any CI triggered by the pushed commit — depends on it.
