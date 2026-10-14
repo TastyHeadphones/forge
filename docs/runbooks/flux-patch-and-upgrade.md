@@ -8,11 +8,11 @@ consumer picks it up by bumping its forge pin.
 
 ## Cadence
 
-| Trigger | Deadline |
-|---|---|
-| Flux **security** release (any controller forge installs: source-controller, kustomize-controller) | forge release within **7 days**, consumers deployed dev → prod right after |
-| Flux **minor** release | forge release within **30 days** |
-| Advisory against a controller forge does **not** install (helm, notification, image-*) | note it here; no release needed, but re-read "Two controllers, not six" in `kcl/lib/flux.k` before enabling one |
+| Trigger                                                                                            | Deadline                                                                                                        |
+| -------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Flux **security** release (any controller forge installs: source-controller, kustomize-controller) | forge release within **7 days**, consumers deployed dev → prod right after                                      |
+| Flux **minor** release                                                                             | forge release within **30 days**                                                                                |
+| Advisory against a controller forge does **not** install (helm, notification, image-\*)            | note it here; no release needed, but re-read "Two controllers, not six" in `kcl/lib/flux.k` before enabling one |
 
 ## CVE watch
 
@@ -27,12 +27,12 @@ forge does not run a feed; whoever owns the pin does.
   controller version.
 - Advisory classes and where this chart's defaults stand:
 
-| Class | Mitigation in the defaults |
-|---|---|
-| Secret/kubeconfig injection (CVE-2021-41254, CVE-2022-24817) | no `--insecure-kubeconfig-exec`; the controller reads Secrets only in namespaces bound to `flux-tenant-*` |
-| Kustomize / YAML path traversal (GHSA-j77r-2fxf-5jrw) | `--no-remote-bases`, plugins off by construction; validate the artifact at ingest (`release.ValidateManifestsLayer`) |
-| Source-controller non-OCI paths (CVE-2026-47680) | OCIRepository only; do not declare Bucket/GitRepository sources |
-| notification-controller network exposure (GHSA-mwcp-qpcg-fr7c) | controller not installed; `allow-webhooks` NetworkPolicy not rendered |
+| Class                                                          | Mitigation in the defaults                                                                                           |
+| -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Secret/kubeconfig injection (CVE-2021-41254, CVE-2022-24817)   | no `--insecure-kubeconfig-exec`; the controller reads Secrets only in namespaces bound to `flux-tenant-*`            |
+| Kustomize / YAML path traversal (GHSA-j77r-2fxf-5jrw)          | `--no-remote-bases`, plugins off by construction; validate the artifact at ingest (`release.ValidateManifestsLayer`) |
+| Source-controller non-OCI paths (CVE-2026-47680)               | OCIRepository only; do not declare Bucket/GitRepository sources                                                      |
+| notification-controller network exposure (GHSA-mwcp-qpcg-fr7c) | controller not installed; `allow-webhooks` NetworkPolicy not rendered                                                |
 
 ## Procedure
 
@@ -46,6 +46,7 @@ forge does not run a feed; whoever owns the pin does.
    Pick the chart whose `appVersion` is the Flux release you need, then confirm
    the images: `helm template x oci://ghcr.io/fluxcd-community/charts/flux2 --version <candidate> | grep 'image:'`
    must show source-controller and kustomize-controller at the expected tags.
+
 2. **Diff the render against the current pin.** Defaults change in a chart bump
    without notice; this is the check that the posture still means what it says:
 
@@ -60,19 +61,20 @@ forge does not run a feed; whoever owns the pin does.
    naming the candidates — that is the intended loud failure), a changed
    container arg or feature-gate name, a new controller enabled by default, a
    new cluster-wide RBAC rule, a NetworkPolicy that gained a peer.
+
 3. **Read the controller release notes** for source-controller and
    kustomize-controller between the two versions: removed or renamed flags,
    changed feature-gate defaults, API version changes. The gates the defaults
    set (`CancelHealthCheckOnNewRevision`, `DisableConfigWatchers`) are checked by
    the controller at start-up: an unknown gate is a hard failure (`feature-gate
-   'X' not supported`), so confirm both still exist in
+'X' not supported`), so confirm both still exist in
    `internal/features/features.go` at the new kustomize-controller tag.
 4. **Run the gates:** `task test` for `internal/templates` (the KCL corpus,
    including `positive_flux_chart_*`) and `internal/cli` (`TestFluxChart_*`
    render the real chart through helm and assert the objects).
 5. **Roll it dev first.** Flux upgrades CRDs in place (forge applies them first,
    Established-gated). Watch `kubectl -n flux-system rollout status
-   deploy/kustomize-controller deploy/source-controller`, then confirm a
+deploy/kustomize-controller deploy/source-controller`, then confirm a
    Kustomization reconciles to a new revision.
 6. **Release forge**, then bump the pin in each consumer.
 
