@@ -16,13 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migrator treats it as it treats a migration that declares nothing; what it
   adds is that the break is a reviewed decision. With
   `database.migration_safety.require_compat_declaration: true`, `forge lint
-  --migration-safety` fails every migration after the baseline (the newest
+--migration-safety` fails every migration after the baseline (the newest
   `-- forge:adopts` migration, or the first) that declares neither
   (`migration-compat-undeclared`) or gives no reason, or only a `<why>`
   placeholder (`migration-compat-reason`). A migration declaring both is
   refused whether or not the requirement is on (`migration-compat-conflict`),
   and the migrator reads it as not compatible. `forge db migration new
-  --backward-compatible "<why>"` / `--breaks-rollback "<why>"` writes the line;
+--backward-compatible "<why>"` / `--breaks-rollback "<why>"` writes the line;
   in a project that requires one and got neither, it writes both choices as a
   comment to replace. Either directive may now separate its reason with a
   colon (`-- forge:backward-compatible: additive`), which before read as no
@@ -157,7 +157,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`flux_chart(placement = flux_placement_delivery_v1())`** places the
   controllers on a dedicated tainted node pool, with `runtime_class_name =
-  FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
+FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
 - **`HelmChart.patches`** merge-patches the objects a chart renders, keyed
   `Kind/name` (the `Bundle.overrides` engine), for fields the chart's values do not
   template, such as a pod's `runtimeClassName`. A key that matches nothing fails
@@ -286,11 +286,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that picks the code for one `NewError` after it) are now caught as well.
 - **Replicas waiting for the migration run lock no longer deadlock a
   `CREATE INDEX CONCURRENTLY`.** migratekit's waiters blocked inside `SELECT
-  pg_advisory_lock(…)`, a statement that holds a snapshot until the lock is
+pg_advisory_lock(…)`, a statement that holds a snapshot until the lock is
   free. A concurrent index build waits for every older snapshot to end, so the
   build waited on the waiters while they waited on the run lock its session
   held, and postgres killed one side: a waiter (`take the migration run lock:
-  … deadlock detected (40P01)`, failing every replica's boot but one), or the
+… deadlock detected (40P01)`, failing every replica's boot but one), or the
   build, leaving the schema dirty and the index INVALID. Reliant measured it
   with four replicas booting together, every trial. Every session-level lock
   migratekit takes (the run lock, and the record locks held across a
@@ -310,7 +310,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `inbox.Repository` embeds `worktreesweep.StorageStore` (which embeds
   `worktreesweep.Store`), and `forge generate` failed its validate with
   `*StubRepo does not implement Repository (missing method
-  AdoptWorktreeDaemon)`; a contract `Service` embedding `io.Closer` produced a
+AdoptWorktreeDaemon)`; a contract `Service` embedding `io.Closer` produced a
   mock failing its own `var _ Service` check. A cross-package embed is now
   read from the type-checked package, so its embeds at any depth come with it;
   the predeclared `error` contributes `Error() string`, and a method reached

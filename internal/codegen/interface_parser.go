@@ -126,62 +126,7 @@ func ParseLocalInterfaces(dir string) (map[string]LocalInterface, error) {
 	fset := token.NewFileSet()
 	// Two-pass: first collect interface AST entries (so embeds can
 	// resolve in either declaration order), then flatten methods.
-	type entry struct {
-		name    string
-		ifaceAt *ast.InterfaceType
-		// fileImports is the declaring file's alias -> path map, used to
-		// resolve the package qualifiers appearing in this interface's
-		// method signatures. Import scope is per-FILE in Go, so this must
-		// be tracked per declaration, not per directory: two files in the
-		// same package can bind the same alias to different paths.
-		fileImports map[string]string
-	}
-	var entries2 []entry
-	// ownPkg is the package clause: an import alias equal to it is taken
-	// for the package's own import and dropped from the stub's file (see
-	// extraImportsExcluding), so a cross-package embed must not choose it.
-	var ownPkg string
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
-			continue
-		}
-		if strings.HasSuffix(e.Name(), "_test.go") {
-			continue
-		}
-		// Skip generated files — they re-declare nothing useful and
-		// can transiently fail to parse. Same convention as ParseContract.
-		if strings.HasSuffix(e.Name(), "_gen.go") {
-			continue
-		}
-		path := filepath.Join(dir, e.Name())
-		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
-		if err != nil {
-			continue
-		}
-		if ownPkg == "" && file.Name != nil {
-			ownPkg = file.Name.Name
-		}
-		fileImports := fileImportMap(file)
-		for _, decl := range file.Decls {
-			gd, ok := decl.(*ast.GenDecl)
-			if !ok || gd.Tok != token.TYPE {
-				continue
-			}
-			for _, spec := range gd.Specs {
-				ts, ok := spec.(*ast.TypeSpec)
-				if !ok {
-					continue
-				}
-				it, ok := ts.Type.(*ast.InterfaceType)
-				if !ok {
-					continue
-				}
-				entries2 = append(entries2, entry{
-					name: ts.Name.Name, ifaceAt: it, fileImports: fileImports,
-				})
-			}
-		}
-	}
+	entries2, ownPkg := collectInterfaceDecls(fset, dir, entries)
 
 	// Every interface type name declared in this package, known before
 	// any method is rendered. A method result naming one of these must
@@ -311,6 +256,66 @@ func ParseLocalInterfaces(dir string) (map[string]LocalInterface, error) {
 		}
 	}
 	return out, nil
+}
+
+// ifaceDecl is one interface type declaration ParseLocalInterfaces found.
+type ifaceDecl struct {
+	name    string
+	ifaceAt *ast.InterfaceType
+	// fileImports is the declaring file's alias -> path map, used to
+	// resolve the package qualifiers appearing in this interface's
+	// method signatures. Import scope is per-FILE in Go, so this must
+	// be tracked per declaration, not per directory: two files in the
+	// same package can bind the same alias to different paths.
+	fileImports map[string]string
+}
+
+// collectInterfaceDecls is ParseLocalInterfaces' first pass: every interface
+// type declared in dir's non-test, non-generated .go files, plus the package
+// clause. ownPkg is the package clause: an import alias equal to it is taken
+// for the package's own import and dropped from the stub's file (see
+// extraImportsExcluding), so a cross-package embed must not choose it.
+func collectInterfaceDecls(fset *token.FileSet, dir string, entries []os.DirEntry) (decls []ifaceDecl, ownPkg string) {
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+			continue
+		}
+		if strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		// Skip generated files — they re-declare nothing useful and
+		// can transiently fail to parse. Same convention as ParseContract.
+		if strings.HasSuffix(e.Name(), "_gen.go") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+		if err != nil {
+			continue
+		}
+		if ownPkg == "" && file.Name != nil {
+			ownPkg = file.Name.Name
+		}
+		fileImports := fileImportMap(file)
+		for _, decl := range file.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				ts, ok := spec.(*ast.TypeSpec)
+				if !ok {
+					continue
+				}
+				it, ok := ts.Type.(*ast.InterfaceType)
+				if !ok {
+					continue
+				}
+				decls = append(decls, ifaceDecl{name: ts.Name.Name, ifaceAt: it, fileImports: fileImports})
+			}
+		}
+	}
+	return decls, ownPkg
 }
 
 // foreignEmbed is an interface embedded from another package, as the
