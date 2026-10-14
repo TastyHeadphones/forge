@@ -59,7 +59,7 @@ func (s *Service) ListWidgets(ctx context.Context) error { return nil }
 		"message:Widget",
 		"enum:WidgetKind",
 		"table:widgets",
-		"handler:ListWidgets",
+		"handler:ShopService.ListWidgets",
 		"hook:useListWidgets",
 	} {
 		s, ok := index[want]
@@ -72,7 +72,7 @@ func (s *Service) ListWidgets(ctx context.Context) error { return nil }
 		}
 	}
 
-	if d := index["handler:ListWidgets"].Detail; !strings.Contains(d, "unwired-stub") {
+	if d := index["handler:ShopService.ListWidgets"].Detail; !strings.Contains(d, "unwired-stub") {
 		t.Errorf("an unimplemented handler must be flagged so 'declared vs implemented' is answerable here; got %q", d)
 	}
 	if d := index["rpc:ShopService.ListWidgets"].Detail; !strings.Contains(d, "ListWidgetsRequest") {
