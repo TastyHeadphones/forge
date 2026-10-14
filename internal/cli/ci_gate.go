@@ -66,7 +66,8 @@ func newCIGateCmd() *cobra.Command {
 			"mode), and falls back to the whole suite when anything but Go source changed, on the\n" +
 			"default branch, or with CI_FULL=1 / --full. The mode and why are printed.\n\n" +
 			"Environment: CI_SKIP, CI_ONLY (checks or groups to run, with what they depend on),\n" +
-			"CI_FULL, CI_NO_CACHE, CI_REPORT (also write the Markdown table to a file), CI_LOG_DIR.",
+			"CI_FULL, CI_BASE, CI_NO_CACHE, CI_REPORT (also write the Markdown table to a file),\n" +
+			"CI_LOG_DIR, FORGE_CI_CACHE_DIR.",
 		Example: "  forge ci gate                       # the whole gate\n" +
 			"  forge ci gate checks                # static + build lane only\n" +
 			"  forge ci gate --list                # every check, its lane, group and scheduling\n" +
@@ -88,6 +89,7 @@ func newCIGateCmd() *cobra.Command {
 	f.BoolVar(&flags.noCache, "no-cache", false, "Run every check even when this tree already passed it (also CI_NO_CACHE=1)")
 	f.BoolVar(&flags.full, "full", false, "Run the whole unit suite on a branch instead of the affected packages (also CI_FULL=1)")
 	f.StringVar(&flags.report, "report", "", "Also write the Markdown summary to this file (also CI_REPORT)")
+	f.StringVar(&flags.base, "base", "", "Ref a branch's changes are measured from for affected unit tests (default origin/<default branch>; a stacked branch names its parent; also CI_BASE)")
 	return cmd
 }
 
@@ -95,7 +97,7 @@ type gateFlags struct {
 	list, groups, noCache, full bool
 	skip, only                  []string
 	jobs                        int
-	report                      string
+	report, base                string
 }
 
 func runCIGate(cmd *cobra.Command, args []string, flags gateFlags) error {
@@ -164,7 +166,7 @@ func runCIGate(cmd *cobra.Command, args []string, flags gateFlags) error {
 	default:
 		var why string
 		cache, why = cigate.OpenVerdictCache(ctx, cigate.CacheInput{
-			Root: root, Forge: gateJudgeIdentity(), Frontends: frontendDirs(ciData), Env: env,
+			Root: root, Dir: os.Getenv(cigate.CacheDirEnv), Forge: gateJudgeIdentity(), Frontends: frontendDirs(ciData), Env: env,
 		})
 		if cache != nil {
 			verdicts = cache
@@ -174,8 +176,12 @@ func runCIGate(cmd *cobra.Command, args []string, flags gateFlags) error {
 		}
 	}
 
+	base := flags.base
+	if base == "" {
+		base = os.Getenv(cigate.BaseEnv)
+	}
 	selected = applyAffectedMode(ctx, out, selected, affectedArgs{
-		root: root, ignore: cfg.CI.Gate.AffectedIgnore, env: env, skips: skips, cache: cache, full: flags.full,
+		root: root, base: base, ignore: cfg.CI.Gate.AffectedIgnore, env: env, skips: skips, cache: cache, full: flags.full,
 	})
 
 	opt := cigate.Options{
@@ -228,7 +234,7 @@ func runCIGate(cmd *cobra.Command, args []string, flags gateFlags) error {
 // whole suite cached for this tree answers for any narrower run, so then the
 // row stays whole and the cache answers it.
 type affectedArgs struct {
-	root               string
+	root, base         string
 	ignore, env, skips []string
 	cache              *cigate.VerdictCache
 	full               bool
@@ -262,7 +268,7 @@ func applyAffectedMode(ctx context.Context, out io.Writer, checks []cigate.Check
 	case truthy(os.Getenv(cigate.FullEnv)):
 		force = cigate.FullEnv + "=1"
 	}
-	a := cigate.ComputeAffected(ctx, cigate.AffectedInput{Root: in.root, Env: in.env, Force: force, Ignore: in.ignore})
+	a := cigate.ComputeAffected(ctx, cigate.AffectedInput{Root: in.root, BaseRef: in.base, Env: in.env, Force: force, Ignore: in.ignore})
 	fmt.Fprintln(out, a.Line())
 	return cigate.ApplyAffected(checks, a)
 }

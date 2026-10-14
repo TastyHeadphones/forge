@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // Affected-package mode: on a branch, the gate's unit lane tests only the Go
@@ -39,6 +41,10 @@ import (
 
 // FullEnv forces the full unit suite on a branch.
 const FullEnv = "CI_FULL"
+
+// BaseEnv names the ref a branch's changes are measured from, for a branch
+// stacked on another (default: origin/<default branch>).
+const BaseEnv = "CI_BASE"
 
 // Affected is the unit lane's mode for one gate run.
 type Affected struct {
@@ -77,7 +83,8 @@ type AffectedInput struct {
 	// Force, when non-empty, is the reason to run the full suite regardless
 	// (CI_FULL=1, --full).
 	Force string
-	// BaseRef overrides origin/<default> (tests; a stacked branch).
+	// BaseRef overrides origin/<default>: the ref a stacked branch diffs
+	// against (CI_BASE / --base).
 	BaseRef string
 	// Ignore are ci.gate.affected_ignore's globs: files no Go test reads.
 	Ignore []string
@@ -220,16 +227,18 @@ type packageGraph struct {
 	testDeps map[string][]string
 }
 
+// listedPackage is the part of a `go list -json` package affected mode reads;
+// encoding/json fills it.
 type listedPackage struct {
-	ImportPath      string
-	Name            string
-	Dir             string
-	ForTest         string
-	Standard        bool
-	Deps            []string
-	EmbedFiles      []string
-	TestEmbedFiles  []string
-	XTestEmbedFiles []string
+	ImportPath      string   `json:"ImportPath"`
+	Name            string   `json:"Name"`
+	Dir             string   `json:"Dir"`
+	ForTest         string   `json:"ForTest"`
+	Standard        bool     `json:"Standard"`
+	Deps            []string `json:"Deps"`
+	EmbedFiles      []string `json:"EmbedFiles"`
+	TestEmbedFiles  []string `json:"TestEmbedFiles"`
+	XTestEmbedFiles []string `json:"XTestEmbedFiles"`
 }
 
 func readPackageGraph(r io.Reader, root string) (*packageGraph, error) {
@@ -393,6 +402,11 @@ func runGoList(ctx context.Context, dir string, env []string) (io.Reader, error)
 		"-json=ImportPath,Name,Dir,ForTest,Standard,Deps,EmbedFiles,TestEmbedFiles,XTestEmbedFiles",
 		"./...")
 	cmd.Dir = dir
+	if env == nil {
+		env = goexec.Env()
+	}
+	// The caller's env is already scrubbed (goexec.Env); a go list that
+	// inherited GOFLAGS=-mod=mod would rewrite go.mod while choosing tests.
 	cmd.Env = env
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

@@ -61,7 +61,7 @@ const verdictTTL = 30 * 24 * time.Hour
 type CacheInput struct {
 	// Root is the project root (a git work tree).
 	Root string
-	// Dir is the cache root; empty is $FORGE_CI_CACHE_DIR, else
+	// Dir is the cache root ($FORGE_CI_CACHE_DIR); empty is
 	// <user cache dir>/forge/ci-verdicts.
 	Dir string
 	// Forge identifies the judging forge binary.
@@ -150,9 +150,6 @@ func OpenVerdictCache(ctx context.Context, in CacheInput) (*VerdictCache, string
 	}
 
 	dir := in.Dir
-	if dir == "" {
-		dir = os.Getenv(CacheDirEnv)
-	}
 	if dir == "" {
 		base, err := os.UserCacheDir()
 		if err != nil {

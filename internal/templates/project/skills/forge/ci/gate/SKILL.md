@@ -114,7 +114,8 @@ It **falls back to the whole suite** when any other file changed (`go.mod`,
 `go.sum`, a `testdata/` outside a package, KCL, proto, migrations, the
 Taskfile, scripts — nothing proves which tests read them), on the default
 branch, when nothing changed, without `origin/<default>`, and with `CI_FULL=1`
-or `--full`. List files no Go test reads in `ci.gate.affected_ignore`
+or `--full`. A branch stacked on another names its parent with `CI_BASE=<ref>`
+or `--base`. List files no Go test reads in `ci.gate.affected_ignore`
 (`["*.md", "docs/**"]`) so they do not force it. A direct `task test` always
 runs the whole suite: affected mode is the gate's, for a branch.
 
@@ -160,8 +161,8 @@ ci:
         command: [go, run, ./cmd/gen-llm-gateway, -check]  # argv, no shell; exit 0 = PASS
         after: [verify-generated]    # start once these finished (any verdict)
         heavy: true                  # hold a host heavy slot while it runs
-      - name: kcl-cnpg-tenant
-        command: [./scripts/test-cnpg-tenant.sh]
+      - name: kcl-prepull
+        command: [./scripts/test-kata-prepull.sh]
         group: kcl                   # CI_ONLY=kcl selects it (default group: extras)
         requires: [yq, jq]           # missing => SKIPPED, not PASS
         heavy: true
