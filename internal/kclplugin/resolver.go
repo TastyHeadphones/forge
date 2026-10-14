@@ -259,7 +259,35 @@ func freePort() (int, error) {
 
 // defaultResolver backs the kcl_plugin.forge.resolve_port method. Process-
 // global so ports stay stable across the renders one forge command runs.
-var defaultResolver = NewPortResolver()
+//
+// Why this is a synchronised global and not per-render state: resolve_port is
+// invoked by the KCL runtime through the purego plugin bridge, which carries
+// only the method name and its arguments — there is no context, options or
+// resolver instance to thread through it. And the evaluation lock
+// (Serialized) cannot own it either: arming happens BEFORE a render, from
+// several goroutines (`forge env status` and topology render every env
+// concurrently), while an evaluation is in flight on another. So the one
+// slot is guarded by resolverMu; every read goes through currentResolver and
+// every swap through armResolver / UsePortStoreReadOnly, never a bare
+// assignment.
+var (
+	resolverMu      sync.Mutex
+	defaultResolver = NewPortResolver()
+)
+
+// currentResolver returns the resolver resolve_port should use right now.
+func currentResolver() *PortResolver {
+	resolverMu.Lock()
+	defer resolverMu.Unlock()
+	return defaultResolver
+}
+
+// armResolver installs r as the process's resolver.
+func armResolver(r *PortResolver) {
+	resolverMu.Lock()
+	defaultResolver = r
+	resolverMu.Unlock()
+}
 
 // blockAllocator backs the kcl_plugin.forge.allocate_port method: given
 // (base, key) it returns the deterministic, memoized port base+block*100.
@@ -344,33 +372,12 @@ func devStacks() ([]string, error) {
 	return fn()
 }
 
-// ResetDefaultResolverForTest restores the package-level resolver to its
-// default, so a test that swapped it cannot leak that swap into the next one.
-//
-// UsePortStore swaps the global resolver for one that persists assignments
-// to path (cross-run port stability), making that file the SINGLE SOURCE
-// OF TRUTH for resolve_port: once allocated (availability-checked), a
-// (role) -> port mapping is read back identically on every subsequent
-// render. Both `forge env up` AND `forge env deploy` call this with the same
-// instance-scoped path, so the two commands resolve identical ports — the
-// fix for the up-vs-deploy port drift.
-//
-// Call once before rendering, only on the dev-launch / deploy path — not
-// for read-only renders like `forge ci`, which shouldn't write a ports
-// file. Safe to call repeatedly.
-//
-// It returns a restore func that reverts the store file to its bytes at
-// call time (or removes it if it didn't exist). A render shifts + persists
-// a port when the preferred one is busy; a caller whose render is then
-// REJECTED (e.g. up's already-running guard) calls restore so the rejected
-// attempt can't drift the stable assignments. Callers that commit the
-// render ignore it.
 // ResetDefaultResolverForTest returns the process-global resolver to its
 // unbound, in-memory default. Tests only: the resolver is process-global so
 // ports stay stable across the several renders one command performs, which
 // means one test's arming would otherwise leak into the next.
 func ResetDefaultResolverForTest() {
-	defaultResolver = NewPortResolver()
+	armResolver(NewPortResolver())
 }
 
 // UsePortStoreReadOnly points the resolver at path for READING only, unless a
@@ -395,20 +402,39 @@ func ResetDefaultResolverForTest() {
 // Reading is always safe and always correct: the stored value IS the answer a
 // previous resolution already committed to.
 func UsePortStoreReadOnly(path string) {
+	// Check and swap under one lock: two concurrent renders must not both see
+	// an unbound resolver and then overwrite each other's (or a launch path's
+	// writable) store.
+	resolverMu.Lock()
+	defer resolverMu.Unlock()
 	if defaultResolver.Bound() {
 		return
 	}
 	defaultResolver = NewReadOnlyPortResolver(path)
 }
 
-// UsePortStore swaps the global resolver for one backed by a file at path,
-// and returns a restore func that puts the previous resolver back. See the
-// note above ResetDefaultResolverForTest for why the file is the single
-// source of truth for resolve_port.
+// UsePortStore swaps the global resolver for one that persists assignments
+// to path (cross-run port stability), making that file the SINGLE SOURCE
+// OF TRUTH for resolve_port: once allocated (availability-checked), a
+// (role) -> port mapping is read back identically on every subsequent
+// render. Both `forge env up` AND `forge env deploy` call this with the same
+// instance-scoped path, so the two commands resolve identical ports — the
+// fix for the up-vs-deploy port drift.
+//
+// Call once before rendering, only on the dev-launch / deploy path — not
+// for read-only renders like `forge ci`, which shouldn't write a ports
+// file. Safe to call repeatedly.
+//
+// It returns a restore func that reverts the store file to its bytes at
+// call time (or removes it if it didn't exist). A render shifts + persists
+// a port when the preferred one is busy; a caller whose render is then
+// REJECTED (e.g. up's already-running guard) calls restore so the rejected
+// attempt can't drift the stable assignments. Callers that commit the
+// render ignore it.
 func UsePortStore(path string) (restore func()) {
 	snapshot, readErr := os.ReadFile(path)
 	existed := readErr == nil
-	defaultResolver = NewPersistentPortResolver(path)
+	armResolver(NewPersistentPortResolver(path))
 	return func() {
 		if existed {
 			_ = os.WriteFile(path, snapshot, 0o644)

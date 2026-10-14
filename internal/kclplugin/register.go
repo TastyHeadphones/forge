@@ -44,7 +44,7 @@ func init() {
 			Body: func(args *methodArgs) (any, error) {
 				name := args.strArg(0)
 				preferred := int(args.intArg(1))
-				p, err := defaultResolver.Resolve(name, preferred)
+				p, err := currentResolver().Resolve(name, preferred)
 				if err != nil {
 					return nil, err
 				}
