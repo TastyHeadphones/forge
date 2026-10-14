@@ -351,6 +351,64 @@ func TestCheckDeploySecrets(t *testing.T) {
 			container: envEntry(`{"name":"LOG_LEVEL","value":"info"}`),
 			want:      StatusPass,
 		},
+		// Shapes a credential never takes, each a false positive on a real
+		// project (control-plane: 86 of its 87 findings).
+		{
+			name:      "a duration is a lifetime, not a key",
+			container: envEntry(`{"name":"REGISTRY_TOKEN_TTL","value":"15m"},{"name":"TELEMETRY_TOKEN_RENEW_BEFORE","value":"720h"}`),
+			want:      StatusPass,
+		},
+		{
+			name:      "a DSN whose password comes from elsewhere is an address",
+			container: envEntry(`{"name":"DATABASE_URL","value":"postgres://control_plane@pgbouncer.ns.svc:6432/cp?sslmode=require"}`),
+			want:      StatusPass,
+		},
+		{
+			name:      "a token issuer URL is not the token",
+			container: envEntry(`{"name":"TELEMETRY_TOKEN_ISSUER","value":"https://admin.example.com/telemetry"}`),
+			want:      StatusPass,
+		},
+		{
+			name:      "issuer, audience and source suffixes name metadata, not the credential",
+			container: envEntry(`{"name":"REGISTRY_TOKEN_ISSUER","value":"reliant-control-plane"},{"name":"API_TOKEN_AUDIENCE","value":"registry"},{"name":"DEPLOY_PIPELINE_CREDENTIAL_SOURCE","value":"google"}`),
+			want:      StatusPass,
+		},
+		{
+			name:      "the namespace a Secret lives in is half its address",
+			container: envEntry(`{"name":"ALERTING_SECRET_NAMESPACE","value":"observability-data"}`),
+			want:      StatusPass,
+		},
+		// ...and the shapes that still are one.
+		{
+			name:      "a DSN with a password in its userinfo still fails",
+			container: envEntry(`{"name":"DATABASE_URL","value":"postgres://cp:hunter2@db:5432/cp"}`),
+			want:      StatusFail,
+			evidence:  "DATABASE_URL",
+		},
+		{
+			name:      "a DSN with a password query parameter still fails",
+			container: envEntry(`{"name":"DATABASE_URL","value":"postgres://db:5432/cp?user=cp&password=hunter2"}`),
+			want:      StatusFail,
+			evidence:  "DATABASE_URL",
+		},
+		{
+			name:      "a token in an https userinfo still fails",
+			container: envEntry(`{"name":"GIT_TOKEN_URL","value":"https://ghp_abc123@github.com/acme/app.git"}`),
+			want:      StatusFail,
+			evidence:  "GIT_TOKEN_URL",
+		},
+		{
+			name:      "a signed URL still fails",
+			container: envEntry(`{"name":"UPLOAD_TOKEN_URL","value":"https://bucket.example.com/o?X-Amz-Signature=abc"}`),
+			want:      StatusFail,
+			evidence:  "UPLOAD_TOKEN_URL",
+		},
+		{
+			name:      "a plain secret value still fails",
+			container: envEntry(`{"name":"API_TOKEN","value":"tok_live_9f8e7d"}`),
+			want:      StatusFail,
+			evidence:  "API_TOKEN",
+		},
 	}
 
 	for _, tt := range tests {
