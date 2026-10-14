@@ -29,6 +29,7 @@ import (
 // a file they can no longer open.
 func TestMain(m *testing.M) {
 	code := m.Run()
+	stopKCLWorkers()
 	if code == 0 && os.Getenv("FORGE_KEEP_TEST_TREES") == "" {
 		if err := removeSharedTempDirs(); err != nil {
 			fmt.Fprintf(os.Stderr, "templates: remove shared fixtures: %v\n", err)

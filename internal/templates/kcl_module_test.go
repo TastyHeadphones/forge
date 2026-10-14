@@ -14,7 +14,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/kclplugin"
-	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/internal/kclvendor"
 )
 
@@ -136,12 +135,13 @@ func requireKCLRender(t *testing.T) {
 	kclTestModuleCache(t)
 }
 
-// runKCL renders one .k file through forge's own KCL seam with the given
-// `-D` bindings, from the file's directory. The returned document is the
-// render's JSON.
+// runKCL renders one .k file through forge's own KCL seam (kclrender.Run) with
+// the given `-D` bindings, from the file's directory. The returned document is
+// the render's JSON. The render runs in a pooled worker process, because one
+// process can only evaluate KCL one render at a time: see kcl_render_workers_test.go.
 func runKCL(t *testing.T, entry string, dArgs ...string) ([]byte, error) {
 	t.Helper()
-	return kclrender.Run(filepath.Dir(entry), entry, dArgs)
+	return runKCLInWorker(t, filepath.Dir(entry), entry, dArgs)
 }
 
 // ansiRE strips the colour escapes kcl writes into its diagnostics.
