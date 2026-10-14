@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A Flux-safe bundle.** Flux re-applies a bundle on every interval and prunes
+  what it stops carrying, so some objects that are harmless under `kubectl apply`
+  are wrong under it. The bundle build now refuses, and `forge lint` (`flux-safe`)
+  reports, a Job with `ttlSecondsAfterFinished` (the TTL controller deletes the
+  finished Job and the next reconcile re-runs it: control-plane's temporal-schema,
+  temporal-namespace and openbao-bootstrap), a Job whose name carries no hash of
+  its spec (its immutable spec wedges every reconcile after the first change), and
+  the force annotation on a kind that holds data. These are errors for an env a
+  reconciler may apply and warnings for one forge applies itself, so an env that
+  builds today keeps building.
+- **The build states what the cluster would have defaulted.** A Deployment's
+  `strategy` (`RollingUpdate`, 25%/25%) and `progressDeadlineSeconds` (600) are
+  now rendered explicitly, by forge's renderer and for a Deployment written by
+  hand in `forge.Manifests`, and a `StorageClass`, `RuntimeClass`,
+  `PriorityClass` or RoleBinding carries the Flux force annotation
+  (`kustomize.toolkit.fluxcd.io/force: enabled`), so a reconciler can recreate
+  it on an immutable-field change as direct apply already does. Values you wrote are never overridden. These change
+  every Deployment's rendered bytes (and so its object hash) once.
+- **Each tree records `budget_seconds`**, the whole-rollout allowance the control
+  plane enforces in place of Flux's short per-attempt wait: the largest
+  `progressDeadlineSeconds` (rollout) or `activeDeadlineSeconds` (Jobs) among the
+  objects the tree is judged on, plus 120 s.
+
+### Added
+
 - **Bundle layout v2: one tree per cluster × delivery unit × phase.** A bundle
   used to publish one flat tree per cluster, so a Flux Kustomization per cluster
   applied the whole env in a single batch and could not express what direct apply

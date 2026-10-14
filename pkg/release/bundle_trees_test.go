@@ -93,7 +93,7 @@ func controlPlaneProd() ([]TreeObject, []DeliveryUnit) {
 		// control-plane: migrate before, idp-provision after
 		treeObj(hub, "control-plane", PhasePre, "Job", "control-plane-migrate-b2e57763c4"),
 		treeObj(hub, "control-plane", PhaseRollout, "Deployment", "admin-server"),
-		treeObj(hub, "control-plane", PhasePost, "Job", "control-plane-idp-provision-aa11"),
+		treeObj(hub, "control-plane", PhasePost, "Job", "control-plane-idp-provision-aa11bb22cc"),
 	}
 	units := prodUnitsT
 	return objs, units
@@ -294,7 +294,7 @@ func TestBundleTreePathMatchesTheLayerGrammar(t *testing.T) {
 }
 
 func TestValidateTreesRefusesALyingDocument(t *testing.T) {
-	good := BundleTree{Cluster: "hub", Unit: "a", Phase: PhaseRollout, Path: BundleTreePath("hub", "a", PhaseRollout), Documents: 2, TimeoutSeconds: 90, RetryIntervalSeconds: 15}
+	good := BundleTree{Cluster: "hub", Unit: "a", Phase: PhaseRollout, Path: BundleTreePath("hub", "a", PhaseRollout), Documents: 2, TimeoutSeconds: 90, RetryIntervalSeconds: 15, BudgetSeconds: 720}
 	clusters := []BundleClusterTree{{Cluster: "hub", Path: BundleClusterPath("hub"), Documents: 2}}
 	if err := validateTrees(clusters, []BundleTree{good}); err != nil {
 		t.Fatalf("a consistent document is refused: %v", err)
@@ -303,6 +303,7 @@ func TestValidateTreesRefusesALyingDocument(t *testing.T) {
 		"wrong path":     func(t *BundleTree) { t.Path = "manifests/hub/a/pre" },
 		"empty tree":     func(t *BundleTree) { t.Documents = 0 },
 		"no timeout":     func(t *BundleTree) { t.TimeoutSeconds = 0 },
+		"tiny budget":    func(t *BundleTree) { t.BudgetSeconds = 30 },
 		"unknown phase":  func(t *BundleTree) { t.Phase = "late" },
 		"dangling dep":   func(t *BundleTree) { t.DependsOn = []string{"manifests/hub/zzz/pre"} },
 		"self dependent": func(t *BundleTree) { t.DependsOn = []string{t.Path} },
