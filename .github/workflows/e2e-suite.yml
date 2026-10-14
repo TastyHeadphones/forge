@@ -165,10 +165,11 @@ jobs:
       # job on that host — when it is exhausted the script gets an empty tag
       # and dies with "The KCL version is not found", failing CI for a reason
       # that has nothing to do with the commit. This suite fans out to four
-      # shards, so it burns that budget faster than any other lane.
+      # shards, so it burns that budget faster than any other lane. The pin
+      # is templates.KCLVersion (TestKCLVersionIsPinnedEverywhere).
       - name: Install KCL
         env:
-          KCL_VERSION: v0.11.2
+          KCL_VERSION: v0.13.1
         run: |
           curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
           command -v kcl

@@ -5,6 +5,10 @@
 # Intended for devcontainer postCreateCommand and new-contributor setup.
 set -euo pipefail
 
+# The KCL CLI release to install. Kept equal to CI's pin and to the
+# kcl-lang.io modules in go.mod by TestKCLVersionIsPinnedEverywhere.
+KCL_VERSION=v0.13.1
+
 log() { printf '\n\033[1;34m==>\033[0m %s\n' "$*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -51,11 +55,13 @@ install_kcl() {
     log "kcl already installed — skipping"
     return
   fi
-  log "installing KCL (https://kcl-lang.io)"
+  log "installing KCL ${KCL_VERSION} (https://kcl-lang.io)"
   # KCL ships its own installer; fall back to a printed instruction on
-  # platforms where curl isn't available.
+  # platforms where curl isn't available. Pinned, like CI: unpinned, the
+  # installer resolves "latest" through an unauthenticated, rate-limited
+  # api.github.com call.
   if have curl; then
-    curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
+    curl -fsSL https://kcl-lang.io/script/install-cli.sh | KCL_VERSION="${KCL_VERSION}" bash
   else
     echo "curl missing — install KCL manually: https://kcl-lang.io/docs/user_docs/getting-started/install" >&2
   fi

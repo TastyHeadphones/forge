@@ -34,6 +34,7 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/doctor"
 	"github.com/reliant-labs/forge/internal/hostlaunch"
+	"github.com/reliant-labs/forge/internal/templates"
 )
 
 // toolCheck declares a host binary forge depends on plus the metadata
@@ -286,7 +287,7 @@ func allToolChecks() []toolCheck {
 			VersionArgs: []string{"version"},
 			InstallHints: map[string]string{
 				"darwin":  "brew install kcl-lang/tap/kcl",
-				"linux":   "curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash",
+				"linux":   "curl -fsSL https://kcl-lang.io/script/install-cli.sh | KCL_VERSION=" + templates.KCLVersion + " bash",
 				"windows": "scoop install kcl   (or see https://kcl-lang.io/docs/user_docs/getting-started/install)",
 			},
 			UpstreamURL: "https://kcl-lang.io/docs/user_docs/getting-started/install",
