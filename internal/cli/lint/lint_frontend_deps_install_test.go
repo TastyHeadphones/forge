@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/hostslot"
 )
 
 // TestMain keeps the pre-existing "deps missing" tests hermetic: the lanes now
@@ -16,6 +18,9 @@ import (
 // classification, not a real `npm ci`. Tests of the install itself clear it.
 func TestMain(m *testing.M) {
 	os.Setenv("FORGE_SKIP_NPM_INSTALL", "1")
+	// Nor does an in-process `forge lint` take or wait for one of the host's
+	// heavy slots (pkg/hostslot).
+	os.Setenv(hostslot.SlotsEnv(hostslot.Heavy), "off")
 	os.Exit(m.Run())
 }
 

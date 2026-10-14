@@ -89,8 +89,11 @@ func taskfileShellSnippets(t *testing.T, rendered []byte) []string {
 func externalCommands(t *testing.T, snippet string) []string {
 	t.Helper()
 	// Task template expressions ({{.CLI_ARGS}}, {{exeExt}}) are resolved by Task
-	// before the shell sees the text; neutralise them for parsing.
-	text := taskTemplateExpr.ReplaceAllString(snippet, "x")
+	// before the shell sees the text; neutralise them for parsing. {{.SLOT}}
+	// is a command PREFIX (`forge slot run --`, or nothing), so the command
+	// after it is the one to check: it neutralises to nothing.
+	text := strings.ReplaceAll(snippet, "{{.SLOT}}", "")
+	text = taskTemplateExpr.ReplaceAllString(text, "x")
 	// Task parses with mvdan's bash dialect.
 	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(text), "")
 	if err != nil {

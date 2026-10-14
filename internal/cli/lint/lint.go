@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
@@ -220,9 +221,18 @@ func runLintCommand(cmd *cobra.Command, flags lintFlags, args []string) error {
 	if err := validateLintModeFlags(flags, len(args) > 0); err != nil {
 		return err
 	}
-	switch {
-	case flags.showSuppressed:
+	if flags.showSuppressed {
 		return runShowSuppressed(cmd.OutOrStdout(), flags.jsonOut, flags.scope)
+	}
+	// A full lint (golangci-lint, every frontend's eslint and tsc) is heavy:
+	// take a host heavy slot (pkg/hostslot) so it queues behind the other
+	// heavy jobs on this machine instead of slowing all of them down.
+	release, err := cmdutil.HoldHeavySlot(cmd.Context(), cmd.ErrOrStderr())
+	if err != nil {
+		return err
+	}
+	defer release()
+	switch {
 	case flags.jsonOut:
 		return runLintJSON(cmd.Context(), flags, paths)
 	case flags.quiet || len(flags.scope) > 0:

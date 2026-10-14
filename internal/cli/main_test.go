@@ -14,6 +14,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/ledgerfile"
 	"github.com/reliant-labs/forge/pkg/cloudcred"
+	"github.com/reliant-labs/forge/pkg/hostslot"
 )
 
 // defaultTestOrg is the organization every test credential acts for unless the
@@ -95,6 +96,12 @@ func TestMain(m *testing.M) {
 	// through it: a test that expects "no credential" would mint a real
 	// token instead. Tests that want a helper set one with t.Setenv.
 	_ = os.Unsetenv(cloudcred.HelperEnv)
+	// Nor does any test take, or wait for, one of the host's heavy slots
+	// (pkg/hostslot): in-process `generate` and `lint` runs would otherwise
+	// queue behind whatever else this machine is building and fail their
+	// test timeout for it. The slot tests (slot_test.go) set their own.
+	_ = os.Setenv(hostslot.SlotsEnv(hostslot.Heavy), "off")
+	_ = os.Unsetenv(hostslot.EnvHeld)
 	if token, ok := fakeCredentialHelperInvocation(os.Args[1:]); ok {
 		// The test binary re-executed as a credential helper (see
 		// useFakeCredentialHelper): answer the real protocol and exit.

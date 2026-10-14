@@ -220,6 +220,8 @@ authored protos, in one call.`,
 	rootCmd.AddCommand(newBuildCmd())
 	rootCmd.AddCommand(newRegistryCmd())
 	rootCmd.AddCommand(newStorageCmd())
+	// `forge slot`: the host-wide heavy-job semaphore (pkg/hostslot).
+	rootCmd.AddCommand(newSlotCmd())
 	// `forge test` was REMOVED. The suite a project runs is defined in its own
 	// Taskfile.yml (`task test`, `task test:integration`, `task test:e2e`), and
 	// that is what the generated CI workflow and the reliant one-shot gate now
