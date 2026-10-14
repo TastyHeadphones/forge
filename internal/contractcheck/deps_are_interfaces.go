@@ -28,7 +28,8 @@
 //      *T            (pointer to anything other than `interface{...}`) → fire
 //      pkg.T         (selector type) → resolve it; interface → ok, else fire
 //      stdlib.T      (any type from the standard library)              → ok
-//      []T, map[K]T  → primitive element/key → ok, else fire
+//      []T, map[K]T  → primitive element/key → ok; an interface or func
+//                      element (a table of collaborators) → ok; else fire
 //      func(...) ...  (any signature)                                   → ok
 //      interface{}, named interfaces                                    → ok
 //      Logger / Config singletons by field name                         → ok
@@ -232,6 +233,9 @@ func (l *depsLinter) lintPkg(pkgDir string) ([]forgeconv.Finding, error) {
 		// user wants to learn about separately.
 		fileForDeps *ast.File
 		depsPath    string
+		// files is every parsed non-test file, for seamAdvice to read how
+		// the package uses a field the rule fires on.
+		files []*ast.File
 	)
 
 	for _, e := range entries {
@@ -248,6 +252,7 @@ func (l *depsLinter) lintPkg(pkgDir string) ([]forgeconv.Finding, error) {
 		if parseErr != nil {
 			continue
 		}
+		files = append(files, file)
 		if fileForDeps == nil {
 			if findDepsStruct(file) != nil {
 				fileForDeps = file
@@ -303,6 +308,11 @@ func (l *depsLinter) lintPkg(pkgDir string) ([]forgeconv.Finding, error) {
 		// A FUNCTION-typed field is already a substitution seam, so there
 		// is nothing for this rule to demand. See isFuncSeam.
 		if isFuncSeam(field.Type) {
+			continue
+		}
+		// A slice or map of interfaces (or funcs) is a table of
+		// collaborators, each already a seam. See collectionOfSeams.
+		if l.collectionOfSeams(field.Type, pkgDir, fileImports) {
 			continue
 		}
 		// A selector type (`pkg.T`) is resolved for real, in this module or
@@ -376,6 +386,12 @@ func (l *depsLinter) lintPkg(pkgDir string) ([]forgeconv.Finding, error) {
 		remediation := depsRemediation
 		if l.isValueStruct(field.Type, fileImports) {
 			remediation = valueStructRemediation + remediation
+		}
+		for _, n := range field.Names {
+			if advice := l.seamAdvice(fset, files, n.Name, field.Type, fileImports); advice != "" {
+				remediation = advice + remediation
+				break
+			}
 		}
 		// Report each concrete field separately so users see every
 		// site that needs an interface lift.
@@ -574,6 +590,284 @@ func isLikelyInterfaceType(expr ast.Expr) bool {
 func isFuncSeam(expr ast.Expr) bool {
 	_, ok := expr.(*ast.FuncType)
 	return ok
+}
+
+// collectionOfSeams reports whether expr is a slice, array or map whose
+// element type — through any nesting of those — is itself a seam: an
+// interface (declared in this package, in any other, or written inline) or
+// a func.
+//
+// Such a field is a TABLE of collaborators: reliant's trigger handler keys
+// `map[string]IntegrationAccess` by integration name, each value an
+// interface. Every element is substitutable on its own, so a test builds the
+// table from fakes (`map[string]IntegrationAccess{"github": fake}`) with
+// nothing to mock about the map itself, and the zero value is inert: a
+// lookup in a nil map answers the zero value with ok=false and a range over
+// it runs no iterations, exactly as an unset interface field is nil. Firing
+// made the lane invent a one-method lookup interface plus an adapter type
+// per map — an interface whose only implementation is a map index.
+//
+// A pointer or concrete element (`map[string]*store.Repo`) is still a table
+// of concrete collaborators and still fires.
+func (l *depsLinter) collectionOfSeams(expr ast.Expr, pkgDir string, imports map[string]string) bool {
+	elem, wrapped := collectionElem(expr)
+	if !wrapped {
+		return false
+	}
+	if generic := genericBase(elem); generic != nil {
+		elem = generic
+	}
+	switch t := elem.(type) {
+	case *ast.InterfaceType, *ast.FuncType:
+		return true
+	case *ast.Ident:
+		return t.Name == "any" || l.packageInterfaces(pkgDir)[t.Name]
+	case *ast.SelectorExpr:
+		return l.selectorResolvesToInterface(t, imports)
+	}
+	return false
+}
+
+// collectionElem peels slice, array and map-value wrappers off expr and
+// returns the element type, with wrapped reporting whether there was one.
+func collectionElem(expr ast.Expr) (elem ast.Expr, wrapped bool) {
+	for {
+		switch t := expr.(type) {
+		case *ast.ArrayType:
+			expr, wrapped = t.Elt, true
+		case *ast.MapType:
+			expr, wrapped = t.Value, true
+		default:
+			return expr, wrapped
+		}
+	}
+}
+
+// seamAdvice reads how the package USES Deps.<field> — every `deps.<field>`
+// / `<x>.deps.<field>` in its non-test functions, and every local variable
+// one is assigned to — and, when no use calls a method on it, names where
+// the substitution point actually is. It returns "" when any use calls a
+// method, reads a field other than a func, or is anything it cannot classify
+// (the generic remediation then stands alone).
+//
+// Two shapes earn advice, because the generic remedy ("type the field with
+// an interface naming the methods you call") has no methods to name:
+//
+//   - the package only HANDS the value on: reliant's catalog handler passed
+//     *tools.ToolsFactory to a registry entry's func field —
+//     `toolDef.Factory(s.deps.Tools)`, and `def.Factory(factory)` after
+//     `factory := s.deps.Tools` — and the lane added a ToolFor method to the
+//     factory just to have something to put in an interface. The seam is
+//     that call;
+//   - the package only calls a func-typed FIELD of it:
+//     `s.deps.Hooks.OnSave(id)` reads a func off the struct. The seam is that
+//     func, which is already the shape this rule accepts.
+//
+// A nil comparison (`deps.X == nil`) is not a use, and neither is a write.
+func (l *depsLinter) seamAdvice(fset *token.FileSet, files []*ast.File, field string, typ ast.Expr, imports map[string]string) string {
+	u := &seamUses{l: l, fset: fset, funcFields: l.structFuncFields(typ, imports)}
+	isField := func(n ast.Node) bool {
+		sel, ok := n.(*ast.SelectorExpr)
+		return ok && sel.Sel.Name == field && isDepsReceiver(sel.X)
+	}
+	for _, f := range files {
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			// One level of local aliasing, within the function: the alias's
+			// own uses are judged the same way, and an alias of the alias
+			// is not chased (it reads as an unclassified use).
+			for _, alias := range u.walk(fn.Body, isField, true) {
+				u.walk(fn.Body, func(n ast.Node) bool {
+					id, ok := n.(*ast.Ident)
+					return ok && id.Name == alias
+				}, false)
+			}
+		}
+	}
+	if u.generic || len(u.passed)+len(u.funcCalls) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	if len(u.passed) > 0 {
+		fmt.Fprintf(&b, "this package never calls a method on Deps.%s: it only hands it to %s. "+
+			"That call is the seam — take a func field that makes it (a func-typed Deps field, which this rule accepts) "+
+			"or a one-method interface naming it, and let the composition root close over the concrete value. ",
+			field, strings.Join(u.passed, ", "))
+	}
+	if len(u.funcCalls) > 0 {
+		fmt.Fprintf(&b, "this package only calls func-typed field(s) of Deps.%s — %s — never a method. "+
+			"Those funcs are the seam: take each as a Deps field of its own func type, which this rule accepts. ",
+			field, strings.Join(u.funcCalls, ", "))
+	}
+	b.WriteString("Otherwise, ")
+	return b.String()
+}
+
+// seamUses accumulates what seamAdvice finds.
+type seamUses struct {
+	l          *depsLinter
+	fset       *token.FileSet
+	funcFields map[string]bool
+	// passed is each call the value is handed to, funcCalls each func field
+	// called on it, both as "<what> (<file:line>)".
+	passed, funcCalls []string
+	// generic is set by any use that is neither: a method call, a field
+	// read, a return, a composite literal, anything unclassified.
+	generic bool
+}
+
+// walk classifies every node in body that match selects. With wantAliases,
+// a use assigned to a local identifier is returned as an alias to follow
+// rather than counted; without it, such an assignment is unclassified.
+func (u *seamUses) walk(body ast.Node, match func(ast.Node) bool, wantAliases bool) (aliases []string) {
+	var stack []ast.Node
+	ast.Inspect(body, func(n ast.Node) bool {
+		if n == nil {
+			stack = stack[:len(stack)-1]
+			return false
+		}
+		defer func() { stack = append(stack, n) }()
+		if !match(n) || len(stack) == 0 {
+			return true
+		}
+		if alias := u.classify(stack, n.(ast.Expr)); alias != "" {
+			if wantAliases {
+				aliases = append(aliases, alias)
+			} else {
+				u.generic = true
+			}
+		}
+		return true
+	})
+	return aliases
+}
+
+// classify records one use of the value, given the stack of its ancestors.
+// It returns the local name the use is assigned to, if that is what it is.
+func (u *seamUses) classify(stack []ast.Node, use ast.Expr) (alias string) {
+	at := u.l.relPos(u.fset, use.Pos())
+	switch parent := stack[len(stack)-1].(type) {
+	case *ast.BinaryExpr:
+		if !isNilIdent(parent.X) && !isNilIdent(parent.Y) {
+			u.generic = true
+		}
+	case *ast.CallExpr:
+		if parent.Fun == use {
+			u.generic = true
+			break
+		}
+		u.passed = append(u.passed, exprString(parent.Fun)+" ("+at+")")
+	case *ast.SelectorExpr:
+		if parent.X != use {
+			return "" // the name of a field or method, not the value
+		}
+		call, isCall := grandparent(stack).(*ast.CallExpr)
+		if isCall && call.Fun == parent && u.funcFields[parent.Sel.Name] {
+			u.funcCalls = append(u.funcCalls, parent.Sel.Name+" ("+at+")")
+			break
+		}
+		u.generic = true
+	case *ast.AssignStmt:
+		for i, lhs := range parent.Lhs {
+			if lhs == use {
+				return "" // a write, not a use
+			}
+			if i < len(parent.Rhs) && parent.Rhs[i] == use && len(parent.Lhs) == len(parent.Rhs) {
+				if id, ok := lhs.(*ast.Ident); ok && id.Name != "_" {
+					return id.Name
+				}
+			}
+		}
+		u.generic = true
+	case *ast.ValueSpec:
+		for i, v := range parent.Values {
+			if v == use && i < len(parent.Names) && len(parent.Names) == len(parent.Values) {
+				return parent.Names[i].Name
+			}
+		}
+		for _, name := range parent.Names {
+			if name == use {
+				return "" // the declaration itself
+			}
+		}
+		u.generic = true
+	default:
+		u.generic = true
+	}
+	return ""
+}
+
+// structFuncFields returns the func-typed fields of the struct expr names
+// (through an optional pointer), or nil when it is not a resolvable struct.
+func (l *depsLinter) structFuncFields(expr ast.Expr, imports map[string]string) map[string]bool {
+	if star, ok := expr.(*ast.StarExpr); ok {
+		expr = star.X
+	}
+	sel, ok := expr.(*ast.SelectorExpr)
+	if !ok {
+		return nil
+	}
+	pkgIdent, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return nil
+	}
+	dir := l.dirForQualifier(pkgIdent.Name, imports)
+	if dir == "" {
+		return nil
+	}
+	st, ok := l.packageTypeDecls(dir).structs[sel.Sel.Name]
+	if !ok || st.Fields == nil {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, f := range st.Fields.List {
+		if _, isFunc := f.Type.(*ast.FuncType); !isFunc {
+			continue
+		}
+		for _, n := range f.Names {
+			out[n.Name] = true
+		}
+	}
+	return out
+}
+
+// isDepsReceiver reports whether expr is how a forge component reaches its
+// Deps: the `deps` parameter, or a `deps` field (`s.deps`).
+func isDepsReceiver(expr ast.Expr) bool {
+	switch t := expr.(type) {
+	case *ast.Ident:
+		return t.Name == "deps"
+	case *ast.SelectorExpr:
+		return t.Sel.Name == "deps"
+	}
+	return false
+}
+
+func isNilIdent(expr ast.Expr) bool {
+	id, ok := expr.(*ast.Ident)
+	return ok && id.Name == "nil"
+}
+
+// grandparent returns the node two above the top of an ast.Inspect stack,
+// or nil.
+func grandparent(stack []ast.Node) ast.Node {
+	if len(stack) < 2 {
+		return nil
+	}
+	return stack[len(stack)-2]
+}
+
+// relPos renders pos as a rootDir-relative file:line.
+func (l *depsLinter) relPos(fset *token.FileSet, pos token.Pos) string {
+	p := fset.Position(pos)
+	rel, err := filepath.Rel(l.rootDir, p.Filename)
+	if err != nil {
+		rel = p.Filename
+	}
+	return fmt.Sprintf("%s:%d", filepath.ToSlash(rel), p.Line)
 }
 
 // isStdlibType reports whether expr names a type from the Go standard

@@ -784,3 +784,201 @@ func New(d Deps) Service { return &service{deps: d} }
 		}
 	}
 }
+
+// TestLintDepsAreInterfaces_CollectionsOfInterfacesAreSeams: a slice or map
+// whose elements are interfaces (or funcs) is a table of collaborators, each
+// already a seam, and its zero value is inert — a lookup in a nil map
+// answers ok=false, a range runs nothing. reliant's trigger handler keys
+// `map[string]IntegrationAccess` and `map[string]SenderDirectory` by
+// integration name; firing on them made the lane write a one-method lookup
+// interface plus an adapter type per map. A table of CONCRETE values still
+// fires.
+func TestLintDepsAreInterfaces_CollectionsOfInterfacesAreSeams(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	must(t, writeFile(filepath.Join(tmp, "go.mod"), "module example.com/app\n\ngo 1.24\n"))
+	for dir, src := range map[string]string{
+		"sender": `package sender
+
+import "context"
+
+// Directory looks people up in one integration.
+type Directory interface {
+	Resolve(ctx context.Context, id string) (string, error)
+}
+`,
+		"store": `package store
+
+import "context"
+
+type Repo struct{ dsn string }
+
+func (r *Repo) Save(ctx context.Context, id string) error { return nil }
+`,
+		"trigger": `package trigger
+
+import (
+	"context"
+
+	"example.com/app/internal/sender"
+	"example.com/app/internal/store"
+)
+
+// IntegrationAccess gates one integration's events.
+type IntegrationAccess interface {
+	Refresh(ctx context.Context, owner string) error
+}
+
+type local struct{ repo *store.Repo }
+
+type Deps struct {
+	Access  map[string]IntegrationAccess   // interfaces by name — silent
+	Senders map[string]sender.Directory    // another package's interface — silent
+	Nested  map[string][]IntegrationAccess // nested tables — silent
+	Hooks   []func(context.Context) error  // funcs — silent
+	Any     []any                          // silent
+	Repos   map[string]*store.Repo         // concrete pointers — fires
+	Locals  []local                        // concrete values — fires
+}
+`,
+	} {
+		must(t, mkdirAll(filepath.Join(tmp, "internal", dir)))
+		must(t, writeFile(filepath.Join(tmp, "internal", dir, dir+".go"), src))
+	}
+
+	fs, err := Inspect(context.Background(), tmp, Options{Rules: []Rule{RuleDepsAreInterfaces}})
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	got := findingsForRule(fs, string(RuleDepsAreInterfaces))
+	var fired []string
+	for _, f := range got {
+		fired = append(fired, f.Message)
+	}
+	if len(got) != 2 || !strings.Contains(fired[0]+fired[1], `"Repos"`) || !strings.Contains(fired[0]+fired[1], `"Locals"`) {
+		t.Fatalf("want exactly Repos and Locals to fire, got %d:\n%s", len(got), AsResult(fs).FormatText())
+	}
+}
+
+// TestLintDepsAreInterfaces_AdviceNamesTheSeam: when the package never calls
+// a method on a concrete dep, "type the field with an interface naming the
+// methods you call" has nothing to name. reliant's catalog handler passed
+// *tools.ToolsFactory to a registry entry's func field (`def.Factory(f)`),
+// and the lane added a ToolFor method to the factory just to have something
+// to put in an interface. The finding now names the call that is the seam —
+// or the func-typed field that is — with file:line, and a field the package
+// calls a method on keeps the plain remedy.
+func TestLintDepsAreInterfaces_AdviceNamesTheSeam(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	must(t, writeFile(filepath.Join(tmp, "go.mod"), "module example.com/app\n\ngo 1.24\n"))
+	for dir, src := range map[string]string{
+		"tools": `package tools
+
+import "os"
+
+type Tool interface{ Name() string }
+
+// Definition is one registry entry; Factory builds its tool.
+type Definition struct {
+	Name    string
+	Factory func(f *Factory) Tool
+}
+
+// Factory builds tools against the filesystem.
+type Factory struct{ root string }
+
+func (f *Factory) Open(name string) (*os.File, error) { return os.Open(f.root + name) }
+`,
+		"hooks": `package hooks
+
+// Set holds the callbacks a save runs.
+type Set struct {
+	OnSave func(id string) error
+	OnDrop func(id string) error
+}
+`,
+		"store": `package store
+
+type Repo struct{ dsn string }
+
+func (r *Repo) Save(id string) error { return nil }
+`,
+		"catalog": `package catalog
+
+import (
+	"example.com/app/internal/hooks"
+	"example.com/app/internal/store"
+	"example.com/app/internal/tools"
+)
+
+type Deps struct {
+	Tools *tools.Factory
+	Hooks *hooks.Set
+	Repo  *store.Repo
+}
+
+type service struct{ deps Deps }
+
+func New(deps Deps) *service {
+	if deps.Tools == nil {
+		panic("catalog: Tools is required")
+	}
+	return &service{deps: deps}
+}
+
+func (s *service) Describe(d tools.Definition) string {
+	return d.Factory(s.deps.Tools).Name()
+}
+
+func (s *service) Names(defs []tools.Definition) []string {
+	factory := s.deps.Tools
+	if factory == nil {
+		factory = &tools.Factory{}
+	}
+	var out []string
+	for _, def := range defs {
+		out = append(out, def.Factory(factory).Name())
+	}
+	return out
+}
+
+func (s *service) Save(id string) error {
+	if err := s.deps.Repo.Save(id); err != nil {
+		return err
+	}
+	return s.deps.Hooks.OnSave(id)
+}
+`,
+	} {
+		must(t, mkdirAll(filepath.Join(tmp, "internal", dir)))
+		must(t, writeFile(filepath.Join(tmp, "internal", dir, dir+".go"), src))
+	}
+
+	fs, err := Inspect(context.Background(), tmp, Options{Rules: []Rule{RuleDepsAreInterfaces}})
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	byField := map[string]forgeconv.Finding{}
+	for _, f := range findingsForRule(fs, string(RuleDepsAreInterfaces)) {
+		for _, name := range []string{"Tools", "Hooks", "Repo"} {
+			if strings.Contains(f.Message, `"`+name+`"`) {
+				byField[name] = f
+			}
+		}
+	}
+	if len(byField) != 3 {
+		t.Fatalf("want Tools, Hooks and Repo to fire, got:\n%s", AsResult(fs).FormatText())
+	}
+	// Both hand-offs, the direct one and the one through a local alias.
+	if r := byField["Tools"].Remediation; !strings.Contains(r,
+		"only hands it to d.Factory (internal/catalog/catalog.go:25), def.Factory (internal/catalog/catalog.go:35)") {
+		t.Errorf("Tools remediation must name each hand-off call with file:line; got: %s", r)
+	}
+	if r := byField["Hooks"].Remediation; !strings.Contains(r, "func-typed field(s) of Deps.Hooks — OnSave (internal/catalog/catalog.go:44)") {
+		t.Errorf("Hooks remediation must name the func field it calls; got: %s", r)
+	}
+	if r := byField["Repo"].Remediation; strings.Contains(r, "never calls a method") || strings.Contains(r, "func-typed field(s)") {
+		t.Errorf("Repo's Save is a method call, so it keeps the plain remedy; got: %s", r)
+	}
+}
