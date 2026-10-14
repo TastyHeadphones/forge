@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`forge generate --steps harness` regenerates only the test harness, in
+  seconds.** After a `Deps` edit the next thing you need is each
+  `helpers_gen_test.go` (`NewTest<Svc>`, `With<Svc>Deps`, the `Stub<Field>`
+  doubles), and the only way to get it was a full run, which takes about 2
+  minutes on reliant. The new preset runs the harness step and the steps it
+  reads from: config, checksums, and the service list read from the descriptor
+  the last full run left. It skips the Tier-1 stomp guard, as `--steps mocks`
+  does. A proto or migration change still needs the full run. The harness step
+  itself is faster too, in every run: it used to type-check each cross-package
+  `Deps` interface's package from source, one load per field. On reliant that
+  was 72 of the preset's 74 seconds. It now reads export data for every
+  service's interfaces in a single load. The preset takes 10 seconds on
+  reliant, and its output is byte-identical to the full run's.
 - **A migration can declare that it breaks rollback, and a project can require
   every migration to declare either way.** `-- forge:breaks-rollback <why>` is
   the counterpart of `-- forge:backward-compatible`: the previous release
@@ -337,21 +350,19 @@ FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
   pinned forge records its driver command under
   `forge-merge-driver.<identity>.command`), and otherwise merges as git does
   with no driver — a plain three-way merge, a normal conflict where the sides
-  overlap — and says why. Any command run by the pinned forge (`forge
-  generate` after a pin bump) points the driver at itself; a forge that is not
-  the pin never replaces a working driver.
-- **The ORM name-collision refusal names the rpcs you declared.** Advising how
-  to keep a table off forge's ORM, it listed the CRUD quintet the entity's
-  name implies — `CreateMessage, GetMessage, UpdateMessage, DeleteMessage,
-  ListMessages` on reliant — whatever the project declared. It now lists the
-  declared, unmarked rpcs that make the table an entity, each with its
-  `file:line` (`MessageService.GetMessage (proto/reliant/v1/message.proto:14),
-  ChatService.ListMessages (proto/reliant/v1/chat.proto:221)`), by the same
-  rule that decides what is an entity. The refusal is now a typed
-  `*generator.ORMCollisionError`.
   overlap — and says why. Any command run by the pinned forge
   (`forge generate` after a pin bump) points the driver at itself; a forge that
   is not the pin never replaces a working driver.
+- **The ORM name-collision refusal names the rpcs you declared.** Advising how
+  to keep a table off forge's ORM, it listed the CRUD quintet the entity's
+  name implies —
+  `CreateMessage, GetMessage, UpdateMessage, DeleteMessage, ListMessages` on
+  reliant — whatever the project declared. It now lists the declared, unmarked
+  rpcs that make the table an entity, each with its `file:line`
+  (`MessageService.GetMessage (proto/reliant/v1/message.proto:14)`,
+  `ChatService.ListMessages (proto/reliant/v1/chat.proto:221)`), by the same
+  rule that decides what is an entity. The refusal is now a typed
+  `*generator.ORMCollisionError`.
 
 - **`forgeconv-no-handler-error-mapping` fires only on sentinels mapped to
   connect errors.** The body-shape signal counted every `errors.Is` /

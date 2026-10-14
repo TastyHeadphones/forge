@@ -93,6 +93,12 @@ type CrossPkgInterfaceResult struct {
 //     custom Qualifier that records every package the signature
 //     references AND returns the right alias for the rendered text.
 func ResolveCrossPkgInterface(handlerDir, pkgAlias, typeName string) (CrossPkgInterfaceResult, bool) {
+	return resolveCrossPkgInterface(handlerDir, pkgAlias, typeName, newTypesResolver(handlerDir, nil))
+}
+
+// resolveCrossPkgInterface is ResolveCrossPkgInterface reading packages
+// through resolver, so a run that resolves many fields loads them together.
+func resolveCrossPkgInterface(handlerDir, pkgAlias, typeName string, resolver *typesResolver) (CrossPkgInterfaceResult, bool) {
 	imports, err := collectImports(handlerDir)
 	if err != nil || len(imports) == 0 {
 		return CrossPkgInterfaceResult{}, false
@@ -101,36 +107,15 @@ func ResolveCrossPkgInterface(handlerDir, pkgAlias, typeName string) (CrossPkgIn
 	if !ok {
 		return CrossPkgInterfaceResult{}, false
 	}
-
-	cfg := &packages.Config{
-		Mode: packages.NeedName | packages.NeedTypes | packages.NeedTypesInfo |
-			packages.NeedDeps | packages.NeedImports | packages.NeedSyntax,
-		Dir: handlerDir,
-		Env: goexec.Env(),
-	}
-	pkgs, err := packages.Load(cfg, importPath)
-	if err != nil || len(pkgs) == 0 {
+	// A package that did not type-check is absent: the method-set walk
+	// below would return a partial answer (zero or wrong-arity methods).
+	// Better to skip and let the user hand-roll a stub than emit a struct
+	// that doesn't satisfy the interface at all.
+	pkg := resolver.pkg(importPath)
+	if pkg == nil {
 		return CrossPkgInterfaceResult{}, false
 	}
-	loaded := pkgs[0]
-	// Refuse to swallow type errors silently: if the package didn't
-	// type-check, the method-set walk below would return a partial
-	// answer (zero or wrong-arity methods). Better to skip and let
-	// the user hand-roll a stub than emit a struct that doesn't
-	// satisfy the interface at all.
-	if len(loaded.Errors) > 0 || loaded.Types == nil {
-		return CrossPkgInterfaceResult{}, false
-	}
-
-	obj := loaded.Types.Scope().Lookup(typeName)
-	if obj == nil {
-		return CrossPkgInterfaceResult{}, false
-	}
-	tn, ok := obj.(*types.TypeName)
-	if !ok {
-		return CrossPkgInterfaceResult{}, false
-	}
-	iface, ok := tn.Type().Underlying().(*types.Interface)
+	iface, ok := resolver.lookup(importPath, typeName)
 	if !ok {
 		return CrossPkgInterfaceResult{}, false
 	}
@@ -140,7 +125,7 @@ func ResolveCrossPkgInterface(handlerDir, pkgAlias, typeName string) (CrossPkgIn
 	// declared name as the alias — same convention we already use for
 	// imported handler packages.
 	needed := map[string]string{
-		importPath: loaded.Types.Name(),
+		importPath: pkg.Name(),
 	}
 
 	methods, ok := typedInterfaceMethods(iface, makeQualifier(needed))
@@ -150,10 +135,38 @@ func ResolveCrossPkgInterface(handlerDir, pkgAlias, typeName string) (CrossPkgIn
 
 	return CrossPkgInterfaceResult{
 		PackagePath:   importPath,
-		PackageName:   loaded.Types.Name(),
+		PackageName:   pkg.Name(),
 		Methods:       methods,
 		NeededImports: needed,
 	}, true
+}
+
+// depsSelectorImports returns the import path of every `<pkg>.<Type>` a
+// Deps struct in dirs names, deduplicated and sorted: what
+// newTypesResolver should load up front for those directories' stubs.
+func depsSelectorImports(dirs []string) []string {
+	set := map[string]bool{}
+	for _, dir := range dirs {
+		fields, err := ParseServiceDeps(dir)
+		if err != nil || len(fields) == 0 {
+			continue
+		}
+		imports, err := collectImports(dir)
+		if err != nil {
+			continue
+		}
+		for _, f := range fields {
+			t := strings.TrimSpace(f.Type)
+			dot := strings.IndexByte(t, '.')
+			if dot <= 0 || strings.ContainsAny(t, "*[]<>(){}") {
+				continue
+			}
+			if importPath, ok := imports[t[:dot]]; ok {
+				set[importPath] = true
+			}
+		}
+	}
+	return sortedPathSet(set)
 }
 
 // typedInterfaceMethods renders the COMPLETE method set of a type-checked
@@ -306,49 +319,86 @@ func signatureSpellable(sig *types.Signature) bool {
 	return ok
 }
 
-// embedResolver type-checks the packages a directory's cross-package
-// interface embeds come from, in ONE go/packages load, and answers each
-// `<importPath>.<TypeName>` with the type-checked interface.
+// typesResolver answers `<importPath>.<TypeName>` with the type-checked
+// interface, for packages loaded from one module.
 //
-// The load reads export data (NeedTypes without syntax), which is what makes
-// it cheap: the embedded package and its dependencies are compiled once into
-// the build cache, never re-parsed here. A package that loads with errors is
-// treated as absent — its partial types could hand back a method set with a
-// hole in it, and a stub missing a method does not compile.
-type embedResolver struct {
-	dir  string
+// It loads from export data (NeedTypes without syntax), which is what
+// makes it cheap: each package and its dependencies are compiled once
+// into the build cache, never re-parsed here, and go/types still
+// flattens embedded interfaces from every package. It loads in batches:
+// newTypesResolver takes the import paths a caller already knows it will
+// ask about and reads them in ONE go/packages call, and a later miss
+// loads just that path. The harness step used to type-check each
+// cross-package Deps field's package from source, one load per field — on
+// reliant, 72s of a 74s `generate --steps harness`.
+//
+// A package that loads with errors is treated as absent — its partial
+// types could hand back a method set with a hole in it, and a stub
+// missing a method does not compile.
+type typesResolver struct {
+	dir string
+	// pkgs holds every import path a load was attempted for; a nil value
+	// is one that did not load cleanly.
 	pkgs map[string]*types.Package
+	// loads counts go/packages calls, so a test can hold the batching to
+	// one call per run.
+	loads int
 }
 
-// newEmbedResolver loads importPaths from dir's module. An empty list loads
-// nothing, so a directory with no cross-package embeds never invokes the
-// toolchain.
-func newEmbedResolver(dir string, importPaths []string) *embedResolver {
-	r := &embedResolver{dir: dir, pkgs: map[string]*types.Package{}}
-	if len(importPaths) == 0 {
-		return r
+// newTypesResolver loads importPaths from dir's module. An empty list
+// loads nothing, so a caller that never asks about a foreign package
+// never invokes the toolchain.
+func newTypesResolver(dir string, importPaths []string) *typesResolver {
+	r := &typesResolver{dir: dir, pkgs: map[string]*types.Package{}}
+	r.load(importPaths)
+	return r
+}
+
+// load reads the importPaths not attempted yet, in one go/packages call.
+func (r *typesResolver) load(importPaths []string) {
+	var todo []string
+	for _, p := range importPaths {
+		if _, tried := r.pkgs[p]; tried {
+			continue
+		}
+		r.pkgs[p] = nil
+		todo = append(todo, p)
+	}
+	if len(todo) == 0 {
+		return
 	}
 	cfg := &packages.Config{
 		Mode: packages.NeedName | packages.NeedTypes,
-		Dir:  dir,
+		Dir:  r.dir,
 		Env:  goexec.Env(),
 	}
-	pkgs, err := packages.Load(cfg, importPaths...)
+	r.loads++
+	pkgs, err := packages.Load(cfg, todo...)
 	if err != nil {
-		return r
+		return
 	}
 	for _, p := range pkgs {
 		if p.Types == nil || p.PkgPath == "" || len(p.Errors) > 0 {
 			continue
 		}
-		r.pkgs[p.PkgPath] = p.Types
+		if _, asked := r.pkgs[p.PkgPath]; asked {
+			r.pkgs[p.PkgPath] = p.Types
+		}
 	}
-	return r
+}
+
+// pkg returns the type-checked package at importPath, loading it if no
+// load has tried it yet, or nil when it did not load cleanly.
+func (r *typesResolver) pkg(importPath string) *types.Package {
+	if _, tried := r.pkgs[importPath]; !tried {
+		r.load([]string{importPath})
+	}
+	return r.pkgs[importPath]
 }
 
 // lookup returns the interface importPath declares as typeName.
-func (r *embedResolver) lookup(importPath, typeName string) (*types.Interface, bool) {
-	pkg := r.pkgs[importPath]
+func (r *typesResolver) lookup(importPath, typeName string) (*types.Interface, bool) {
+	pkg := r.pkg(importPath)
 	if pkg == nil {
 		return nil, false
 	}
