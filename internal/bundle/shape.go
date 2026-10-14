@@ -66,6 +66,8 @@ type ShapeInput struct {
 	// ObservabilityPolicy is the env's observability opt-out, or nil when it
 	// opts out of nothing.
 	ObservabilityPolicy *release.ShapeObservabilityPolicy
+	// DeliveryPolicy is the env's delivery policy, or nil for the defaults.
+	DeliveryPolicy *release.ShapeDeliveryPolicy
 
 	// Applier is the env's declared applier (release.ApplierForge), or "".
 	Applier string
@@ -103,6 +105,7 @@ func ProjectShape(in ShapeInput) (release.Shape, error) {
 		Alerts:              in.Alerts,
 		AlertRoutes:         in.AlertRoutes,
 		ObservabilityPolicy: in.ObservabilityPolicy,
+		DeliveryPolicy:      in.DeliveryPolicy,
 		Applier:             in.Applier,
 	}.Canonical()
 	if err := shape.Validate(); err != nil {

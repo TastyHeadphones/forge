@@ -354,6 +354,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		Alerts:              alerts,
 		AlertRoutes:         alertRoutes,
 		ObservabilityPolicy: shapeObservabilityPolicyOf(entities),
+		DeliveryPolicy:      shapeDeliveryPolicyOf(entities),
 		Applier:             shapeApplierOf(entities),
 	})
 	if err != nil {
@@ -556,6 +557,16 @@ func shapeObservabilityPolicyOf(e *KCLEntities) *release.ShapeObservabilityPolic
 		return nil
 	}
 	return &release.ShapeObservabilityPolicy{Enabled: p.Enabled, Disabled: p.Disabled, OptIn: p.OptIn}
+}
+
+// shapeDeliveryPolicyOf projects the env's delivery policy. Nil when the env
+// declares none or declares only defaults: the shape then encodes as it did
+// before the field, and absence means "every control at its default".
+func shapeDeliveryPolicyOf(e *KCLEntities) *release.ShapeDeliveryPolicy {
+	if e == nil || e.DeliveryPolicy == nil || e.DeliveryPolicy.IsDefault() {
+		return nil
+	}
+	return e.DeliveryPolicy
 }
 
 // shapeApplierOf projects the env's declared applier. Only a DECLARATION is

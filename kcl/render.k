@@ -1162,6 +1162,37 @@ _obs_agent_records = lambda b: Bundle, part_of: str -> [any] {
     } for _, t in _targets]
 }
 
+# DeliveryPolicy, every control resolved. The key set is the release shape's
+# `delivery_policy`; lists are sorted so the shape does not depend on the order
+# the author typed them in.
+_render_delivery_policy = lambda p: DeliveryPolicy -> any {
+    _ex = {e.id: {"id": e.id, "reason": e.reason, "expires": e.expires} for e in p.vuln_gate.exemptions}
+    {
+        "trusted_builder": {"mode": p.trusted_builder.mode, "builders": sorted(p.trusted_builder.builders)}
+        "signing": {
+            "mode": p.signing.mode
+            "key": p.signing.key
+            "key_ref": p.signing.key_ref if p.signing.key_ref else None
+            "oidc_issuer": p.signing.oidc_issuer if p.signing.oidc_issuer else None
+            "oidc_subject": p.signing.oidc_subject if p.signing.oidc_subject else None
+        }
+        "provenance_sbom": {"mode": p.provenance_sbom.mode}
+        "flux_verify": {"mode": p.flux_verify.mode}
+        "admission_verify": {"mode": p.admission_verify.mode}
+        "signed_promotions": {"mode": p.signed_promotions.mode}
+        "vuln_gate": {
+            "mode": p.vuln_gate.mode
+            "block_severity": p.vuln_gate.block_severity
+            "warn_severity": p.vuln_gate.warn_severity
+            "block_kev": p.vuln_gate.block_kev
+            "fixable_only": p.vuln_gate.fixable_only
+            "exemptions": [_ex[i] for i in sorted(_ex)]
+        }
+        "bundle_kinds": {"mode": p.bundle_kinds.mode, "allow": sorted(p.bundle_kinds.allow), "deny": sorted(p.bundle_kinds.deny)}
+        "approvals": {"mode": p.approvals.mode, "required": p.approvals.required, "approvers": sorted(p.approvals.approvers)}
+    }
+}
+
 # The declaration, as the Go side (forge env up, the local forwarder) reads it.
 _render_observability = lambda b: Bundle -> any {
     _o = b.observability
@@ -1360,6 +1391,11 @@ render = lambda bundle: Bundle -> any {
         "workloads": _entities
         if bundle.observability:
             "observability": _render_observability(bundle)
+        # The resolved delivery policy, every control spelled out, only when the
+        # env declares one. Go records it in the release shape unless it is all
+        # defaults.
+        if bundle.delivery_policy:
+            "delivery_policy": _render_delivery_policy(bundle.delivery_policy)
         "infra": [_render_host_infra(i) for i in bundle.infra]
         "frontends": [_render_frontend(f, bundle) for f in bundle.frontends]
         "databases": [_render_database(db, bundle) for db in bundle.databases]
