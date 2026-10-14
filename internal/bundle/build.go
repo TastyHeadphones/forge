@@ -312,6 +312,7 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 		Alerts:              in.Shape.Alerts,
 		AlertRoutes:         in.Shape.AlertRoutes,
 		ObservabilityPolicy: in.Shape.ObservabilityPolicy,
+		DeliveryPolicy:      in.Shape.DeliveryPolicy,
 		Applier:             in.Shape.Applier,
 	}.Canonical()
 	if err := shape.Validate(); err != nil {

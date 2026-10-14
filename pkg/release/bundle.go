@@ -416,6 +416,13 @@ type Shape struct {
 	// env declares no observability or opts out of nothing, so every shape
 	// recorded before the field encodes and hashes exactly as it did.
 	ObservabilityPolicy *ShapeObservabilityPolicy `json:"observability_policy,omitempty"`
+	// DeliveryPolicy is what the env's releases must prove before they ship
+	// (forge.DeliveryPolicy): one control per hardening control, each with a
+	// mode and its parameters. It is how the control plane learns what to
+	// enforce. Omitted when every value is the default, so every shape
+	// recorded before the field encodes and hashes exactly as it did; a
+	// reader treats absence as [DefaultDeliveryPolicy], never as "off".
+	DeliveryPolicy *ShapeDeliveryPolicy `json:"delivery_policy,omitempty"`
 	// Applier is who applies this env when it DECLARES one: "forge" for a real
 	// environment forge applies on purpose (the platform's own env, which its
 	// own hub must not apply). Empty means undeclared, and omitted, so every
@@ -746,6 +753,11 @@ func (s Shape) Validate() error {
 			return fmt.Errorf("%w: shape observability_policy is disabled as a whole and must list every category", ErrInvalid)
 		}
 	}
+	if s.DeliveryPolicy != nil {
+		if err := s.DeliveryPolicy.canonical().validate(); err != nil {
+			return err
+		}
+	}
 	delivered := map[string]bool{}
 	for _, c := range s.ControlPlaneSecrets {
 		if strings.TrimSpace(c.Name) == "" || strings.TrimSpace(c.Namespace) == "" || strings.TrimSpace(c.Cluster) == "" {
@@ -855,6 +867,15 @@ func (s Shape) Canonical() Shape {
 		pol.Disabled = sortedStrings(pol.Disabled)
 		pol.OptIn = sortedStrings(pol.OptIn)
 		out.ObservabilityPolicy = &pol
+	}
+	// The default policy is the absence of one: a producer that spells every
+	// default out must hash the same as one that declares nothing.
+	if s.DeliveryPolicy != nil {
+		if pol := s.DeliveryPolicy.canonical(); !s.DeliveryPolicy.IsDefault() {
+			out.DeliveryPolicy = &pol
+		} else {
+			out.DeliveryPolicy = nil
+		}
 	}
 	// Alerts sort by name. Routes do NOT sort: first match wins, so their order
 	// is part of their meaning.

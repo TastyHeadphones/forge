@@ -3586,6 +3586,247 @@ schema ControlPlaneSecret:
             "ControlPlaneSecret '${name}': namespace '${namespace}' must be an RFC-1123 label"
 
 # ---------------------------------------------------------------------------
+# DeliveryPolicy — what an env's releases must prove before they ship.
+# ---------------------------------------------------------------------------
+
+type ControlMode = "off" | "audit" | "enforce"
+
+# Severity as a rank. "none" for block_severity means nothing blocks by
+# severity, so it ranks above critical.
+_VULN_RANK = {low = 1, medium = 2, high = 3, critical = 4, none = 5}
+_DELIVERY_ID_RE = r"^[A-Za-z][A-Za-z0-9]*-[A-Za-z0-9-]+$"
+_DELIVERY_DATE_RE = r"^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$"
+_DELIVERY_BUILDER_RE = r"^[a-z][a-z0-9-]*:[^\s:][^\s]*$"
+_DELIVERY_KEY_REF_RE = r"^[a-z0-9+.-]+://[^\s]+$"
+_DELIVERY_KIND_RE = r"^([a-z0-9][a-z0-9.-]*/)?[A-Z][A-Za-z0-9]*$"
+
+schema Control:
+    """One delivery control with no parameters beyond its mode.
+
+        provenance_sbom = forge.Control {mode = "enforce"}
+
+    `off` does nothing. `audit` records and alerts, and never blocks.
+    `enforce` blocks. `mode` has no default here: a bare `forge.Control {}`
+    would hide which of the three the author meant. `forge.DeliveryPolicy`
+    holds the default for each control it names.
+    """
+    mode: ControlMode
+
+schema TrustedBuilder:
+    """Only artifacts built by a named builder identity are eligible.
+
+        trusted_builder = forge.TrustedBuilder {
+            mode = "enforce"
+            builders = ["cloudbuild:reliant-labs-475814/delivery"]
+        }
+
+    `builders` names identities IN ADDITION to the platform's own builder for
+    the org; empty means that builder only. Each is `<kind>:<id>`. Default
+    mode `audit`: enforcing it refuses an artifact built anywhere else (a
+    laptop, an unlisted CI), so it can block a deploy.
+    """
+    mode: ControlMode = "audit"
+    builders: [str] = []
+
+    check:
+        len([b for b in builders if not regex.match(b, _DELIVERY_BUILDER_RE)]) == 0, \
+            "TrustedBuilder.builders ${[b for b in builders if not regex.match(b, _DELIVERY_BUILDER_RE)]} are not builder identities: write `<kind>:<id>`, e.g. 'cloudbuild:my-project/delivery' or 'github:acme/api'"
+        len(builders) == len({b: 1 for b in builders}), \
+            "TrustedBuilder.builders names an identity twice: ${[b for b in builders if len([x for x in builders if x == b]) > 1]}"
+
+schema Signing:
+    """Images and the bundle are signed, and the signature recorded.
+
+        signing = forge.Signing {}                                    # the org's KMS key (default)
+        signing = forge.Signing {key = "customer", key_ref = "gcpkms://projects/p/locations/l/keyRings/r/cryptoKeys/k"}
+        signing = forge.Signing {key = "keyless", oidc_issuer = "https://token.actions.githubusercontent.com", oidc_subject = "https://github.com/acme/api/.*"}
+
+    `key` is the key model. `org_kms` (default): a per-org KMS key the control
+    plane holds, usable only by builder identities. `customer`: a key you hold;
+    `key_ref` is its PUBLIC reference (a KMS URI), never key material, and we
+    verify only. `keyless`: public Sigstore. Rekor is PUBLIC, so it records
+    image digests, repo names and signer identities; `oidc_issuer` and
+    `oidc_subject` (a regexp) say which identity is trusted.
+
+    Default mode `enforce`: forge and the platform builder do the signing on
+    your behalf, so there is nothing for you to set up.
+    """
+    mode: ControlMode = "enforce"
+    key: "org_kms" | "customer" | "keyless" = "org_kms"
+    key_ref?: str
+    oidc_issuer?: str
+    oidc_subject?: str
+
+    check:
+        key != "customer" or key_ref, \
+            "Signing.key = \"customer\" needs key_ref: the public reference of the key you hold, e.g. 'gcpkms://projects/p/locations/l/keyRings/r/cryptoKeys/k'"
+        key == "customer" or not key_ref, \
+            "Signing.key_ref is set, but key = \"${key}\" does not use it: set key = \"customer\" or drop key_ref"
+        not key_ref or regex.match(key_ref, _DELIVERY_KEY_REF_RE), \
+            "Signing.key_ref must be a key REFERENCE of the form <scheme>://<path>, never key material"
+        key != "keyless" or (oidc_issuer and oidc_subject), \
+            "Signing.key = \"keyless\" needs oidc_issuer and oidc_subject: which identity's signatures are trusted"
+        key == "keyless" or not (oidc_issuer or oidc_subject), \
+            "Signing.oidc_issuer / oidc_subject are set, but key = \"${key}\" does not use them: set key = \"keyless\" or drop them"
+        not oidc_issuer or oidc_issuer.startswith("https://"), \
+            "Signing.oidc_issuer must be an https:// URL"
+
+schema VulnExemption:
+    """One accepted advisory. Every exemption carries its reason and an
+    expiry, the same vocabulary as forge's own govulncheck exemptions
+    (`ci.vuln.exemptions`): an exemption past `expires` stops applying.
+
+        forge.VulnExemption {id = "CVE-2026-0001", reason = "unreachable: we never call the parser", expires = "2026-12-31"}
+    """
+    id: str
+    reason: str
+    expires: str
+
+    check:
+        regex.match(id, _DELIVERY_ID_RE), \
+            "VulnExemption.id '${id}' is not an advisory ID (CVE-2026-0001, GHSA-xxxx-xxxx-xxxx, GO-2026-0001)"
+        reason.strip() != "", "VulnExemption '${id}' needs a reason: the claim a reviewer can check"
+        regex.match(expires, _DELIVERY_DATE_RE), \
+            "VulnExemption '${id}'.expires '${expires}' must be a YYYY-MM-DD date: an exemption is time-boxed, it cannot be open-ended"
+
+schema VulnPolicy:
+    """The vulnerability gate, checked against the release's SBOM at record
+    and again at promote.
+
+        vuln_gate = forge.VulnPolicy {mode = "enforce"}               # KEV + fixable criticals
+        vuln_gate = forge.VulnPolicy {mode = "enforce", block_severity = "high"}
+
+    A finding blocks when it is KEV-listed (`block_kev`), or when its severity
+    is at or above `block_severity` and, with `fixable_only`, a fixed version
+    exists. Findings at or above `warn_severity` that do not block are warned.
+    `none` for either severity switches that band off. Default mode `audit`:
+    enforcing it can refuse a promotion.
+    """
+    mode: ControlMode = "audit"
+    block_severity: "none" | "low" | "medium" | "high" | "critical" = "critical"
+    warn_severity: "none" | "low" | "medium" | "high" | "critical" = "high"
+    block_kev: bool = True
+    fixable_only: bool = True
+    exemptions: [VulnExemption] = []
+
+    check:
+        warn_severity == "none" or _VULN_RANK[warn_severity] <= _VULN_RANK[block_severity], \
+            "VulnPolicy.warn_severity \"${warn_severity}\" is stricter than block_severity \"${block_severity}\": a finding is warned about only below the blocking line, so lower warn_severity or raise block_severity"
+        mode == "off" or block_kev or block_severity != "none", \
+            "VulnPolicy mode = \"${mode}\" with block_kev = False and block_severity = \"none\" blocks nothing: re-enable one, or set mode = \"off\""
+        len(exemptions) == len({e.id: 1 for e in exemptions}), \
+            "VulnPolicy.exemptions names an advisory twice: ${[e.id for e in exemptions if len([x for x in exemptions if x.id == e.id]) > 1]}"
+
+schema BundleKinds:
+    """Narrow what a bundle may contain, beyond the baseline.
+
+        bundle_kinds = forge.BundleKinds {mode = "enforce", allow = ["Deployment", "Service", "ConfigMap"]}
+
+    The baseline is mandatory and not here: every bundle is validated at
+    ingest (layout, file types, size, strict YAML, and the kinds the env's
+    scope admits). This narrows it for ONE env, and can never widen it.
+    `allow` non-empty means ONLY those kinds; `deny` refuses these kinds. Each
+    is `Kind` or `group/Kind` (`apps/Deployment`). Default mode `audit`;
+    with both lists empty it narrows nothing.
+    """
+    mode: ControlMode = "audit"
+    allow: [str] = []
+    deny: [str] = []
+
+    check:
+        len([k for k in allow + deny if not regex.match(k, _DELIVERY_KIND_RE)]) == 0, \
+            "BundleKinds ${[k for k in allow + deny if not regex.match(k, _DELIVERY_KIND_RE)]} are not kinds: write `Kind` or `group/Kind`, e.g. 'Deployment' or 'rbac.authorization.k8s.io/ClusterRole'"
+        len([k for k in allow if k in deny]) == 0, \
+            "BundleKinds ${[k for k in allow if k in deny]} are in both allow and deny"
+        len(allow) == len({k: 1 for k in allow}) and len(deny) == len({k: 1 for k in deny}), \
+            "BundleKinds names a kind twice in allow or deny"
+
+schema Approvals:
+    """How many people must approve a promotion.
+
+        approvals = forge.Approvals {mode = "enforce"}                         # one person: you
+        approvals = forge.Approvals {mode = "enforce", required = 2, approvers = ["ana@acme.test", "bo@acme.test"]}
+
+    `required` counts DISTINCT people, the requester included. 1 is
+    one-person approval: the requester's own authorization is the approval,
+    which is what a single-owner org wants. 2 is the two-person rule: a second
+    person approves, and `--yes` cannot bypass it. `approvers` are the org
+    members (by email) who may approve; the control plane resolves them.
+    A rule needing more than one person must name at least that many.
+    Default mode `audit`, required 1.
+    """
+    mode: ControlMode = "audit"
+    required: int = 1
+    approvers: [str] = []
+
+    check:
+        required >= 1 and required <= 5, \
+            "Approvals.required ${required} is out of range: 1 (one person) to 5"
+        required == 1 or len(approvers) > 0, \
+            "Approvals.required = ${required} but no approvers are declared: name the org members who may approve, at least ${required}"
+        required == 1 or len(approvers) >= required, \
+            "Approvals.required = ${required} but only ${len(approvers)} approver(s) are declared: name at least ${required}"
+        required == 1 or mode != "off", \
+            "Approvals.required = ${required} with mode = \"off\": off asks nobody, so the rule would never apply. Set mode, or required = 1"
+        len([a for a in approvers if a.strip() == "" or " " in a]) == 0, \
+            "Approvals.approvers must be non-empty identifiers with no spaces"
+        len(approvers) == len({a: 1 for a in approvers}), \
+            "Approvals.approvers names a person twice: ${[a for a in approvers if len([x for x in approvers if x == a]) > 1]}"
+
+schema DeliveryPolicy:
+    """What an env's releases must prove, per control, per env. Set on
+    `Bundle.delivery_policy`. UNSET is the default for every control.
+
+        delivery_policy = forge.DeliveryPolicy {
+            trusted_builder  = forge.TrustedBuilder {mode = "enforce", builders = ["cloudbuild:acme/delivery"]}
+            admission_verify = forge.Control {mode = "enforce"}
+            vuln_gate        = forge.VulnPolicy {mode = "enforce"}
+            approvals        = forge.Approvals {mode = "enforce"}
+        }
+
+    Each control is `off`, `audit` (record and alert, never block) or
+    `enforce`. The default follows one rule: a control that cannot block a
+    deploy is `enforce`; one that can is `audit`. Load `deploy/delivery-policy`
+    for the table, what each enforces, and which controls are recorded but not
+    enforced yet.
+
+    NOT HERE, because they protect other tenants and are not a customer's
+    choice: per-binding apply identity, kubeconfig-ref binding, narrowed
+    controller impersonation, ledger and pointer integrity, ingest
+    validation, head-of-line fairness, and the hub's PSA/NetworkPolicy
+    baseline. Every env gets them.
+
+    The resolved policy is recorded in the release shape (`delivery_policy`)
+    when any value differs from the default, so the control plane enforces
+    what the env declared.
+    """
+    trusted_builder: TrustedBuilder = TrustedBuilder {}
+    signing: Signing = Signing {}
+    provenance_sbom: Control = Control {mode = "enforce"}
+    flux_verify: Control = Control {mode = "enforce"}
+    admission_verify: Control = Control {mode = "audit"}
+    signed_promotions: Control = Control {mode = "audit"}
+    vuln_gate: VulnPolicy = VulnPolicy {}
+    bundle_kinds: BundleKinds = BundleKinds {}
+    approvals: Approvals = Approvals {}
+
+    check:
+        # An ENFORCING control cannot be satisfied when what it checks is never
+        # produced. Audit over a missing prerequisite only records "unverifiable",
+        # so it is allowed: it is noise, not a deploy that can never pass.
+        signing.mode != "off" or len(_delivery_enforced_verifiers(flux_verify, admission_verify, signed_promotions)) == 0, \
+            "DeliveryPolicy: signing is \"off\" but ${', '.join(_delivery_enforced_verifiers(flux_verify, admission_verify, signed_promotions))} enforce(s) signature verification: nothing would carry a signature, so nothing could pass. Set them to \"audit\" or \"off\", or turn signing on"
+        provenance_sbom.mode != "off" or trusted_builder.mode != "enforce", \
+            "DeliveryPolicy: trusted_builder is \"enforce\" but provenance_sbom is \"off\": the builder is read from the provenance, which would not exist, so no artifact could pass. Set trusted_builder to \"audit\" or \"off\", or turn provenance_sbom on"
+        provenance_sbom.mode != "off" or vuln_gate.mode != "enforce", \
+            "DeliveryPolicy: vuln_gate is \"enforce\" but provenance_sbom is \"off\": the gate scans the SBOM, which would not exist, so no release could pass. Set vuln_gate to \"audit\" or \"off\", or turn provenance_sbom on"
+
+# The signature-verifying controls set to enforce, in declaration order.
+_delivery_enforced_verifiers = lambda flux_verify: Control, admission_verify: Control, signed_promotions: Control -> [str] {
+    (["flux_verify"] if flux_verify.mode == "enforce" else []) + (["admission_verify"] if admission_verify.mode == "enforce" else []) + (["signed_promotions"] if signed_promotions.mode == "enforce" else [])
+}
+
+# ---------------------------------------------------------------------------
 # Bundle — the project-level container forge.render() consumes.
 # ---------------------------------------------------------------------------
 
@@ -4400,6 +4641,10 @@ schema Bundle:
     # rendered. The dev env scaffolds the local ClickStack; a real env
     # declares a destination.
     observability?: Observability
+    # What this env's releases must prove before they ship (signing, trusted
+    # builder, vulnerability gate, approvals, ...). UNSET = every control at
+    # its default. See DeliveryPolicy and the `deploy/delivery-policy` skill.
+    delivery_policy?: DeliveryPolicy
 
     check:
         # The key grammar, checked at load so a typo'd key is a KCL error

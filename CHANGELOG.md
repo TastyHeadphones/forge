@@ -28,6 +28,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   colon (`-- forge:backward-compatible: additive`), which before read as no
   declaration at all.
 
+- **`forge.DeliveryPolicy`: what an env's releases must prove, declared per env
+  (schema and shape only).** `Bundle.delivery_policy` carries nine controls, each
+  `off | audit | enforce` with its own parameters: `trusted_builder`, `signing`
+  (org KMS key, a key you hold, or keyless Sigstore), `provenance_sbom`,
+  `flux_verify`, `admission_verify`, `signed_promotions`, `vuln_gate` (severity
+  policy, KEV, fixable-only, time-boxed exemptions), `bundle_kinds` and
+  `approvals` (one person by default; a two-person rule needs declared
+  approvers). Controls that cannot block a deploy default to `enforce`
+  (`signing`, `provenance_sbom`, `flux_verify`); the rest default to `audit`.
+  forge refuses combinations no release could pass (an enforced verifier with
+  signing off, an enforced gate over an SBOM that is off, a two-person rule with
+  no approvers). The resolved policy is recorded in the release shape as
+  `delivery_policy`, omitted when every value is the default so existing shapes
+  hash as before. **Nothing enforces it yet**: it is recorded for the control
+  plane, and `deploy/delivery-policy` says which control is enforced by which task.
 - **A Flux-safe bundle.** Flux re-applies a bundle on every interval and prunes
   what it stops carrying, so some objects that are harmless under `kubectl apply`
   are wrong under it. The bundle build now refuses, and `forge lint` (`flux-safe`)
