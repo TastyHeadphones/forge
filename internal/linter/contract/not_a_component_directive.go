@@ -94,8 +94,14 @@ func CheckNotAComponentDirectives(pkgs []*packages.Package, opts ExcludeGateOpti
 	var out []ExcludeFinding
 	for _, dir := range ordered {
 		p := dirs[dir]
-		marker, ok := codegen.FindNotAComponentMarker(dir)
-		if !ok {
+		markers := codegen.FindNotAComponentMarkers(dir)
+		if len(markers) == 0 {
+			continue
+		}
+		marker, conflict := packageDeclaration(p.PkgPath, "forge:not-a-component", markers,
+			[]string{RuleNotAComponentReason, RuleNotAComponentScope}, RuleNotAComponentConflict)
+		if conflict != nil {
+			out = append(out, *conflict)
 			continue
 		}
 		if marker.Reason == "" {
