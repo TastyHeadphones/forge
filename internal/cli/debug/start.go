@@ -142,7 +142,11 @@ func runDebugStartService(ctx context.Context, f *factory.Factory, target string
 	}
 
 	fmt.Printf("Building %s with debug flags...\n", buildPath)
-	buildCmd := goexec.Graceful(exec.CommandContext(ctx, "go", "build", "-gcflags=all=-N -l", "-o", outputBinary, buildPath))
+	// -trimpath=false overrides a -trimpath in GOFLAGS (the Reliant workspace
+	// image makes it the toolchain default): `forge debug break` hands delve
+	// an ABSOLUTE file path, and a trimmed binary records only module-relative
+	// ones, so every breakpoint would be "could not find file".
+	buildCmd := goexec.Graceful(exec.CommandContext(ctx, "go", "build", "-gcflags=all=-N -l", "-trimpath=false", "-o", outputBinary, buildPath))
 	buildCmd.Env = goexec.Env()
 	buildCmd.Stdout = os.Stdout
 	buildCmd.Stderr = os.Stderr

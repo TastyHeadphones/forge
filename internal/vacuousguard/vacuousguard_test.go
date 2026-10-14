@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -275,8 +274,8 @@ func TestLegitimateShapesAreNeverFlagged(t *testing.T) {
 
 func scanPlanted(t *testing.T) []Finding {
 	t.Helper()
-	_, self, _, _ := runtime.Caller(0)
-	src, err := os.ReadFile(filepath.Join(filepath.Dir(self), "testdata", "planted_defects.go.txt"))
+	// Relative to the package directory `go test` runs in.
+	src, err := os.ReadFile(filepath.Join("testdata", "planted_defects.go.txt"))
 	if err != nil {
 		t.Fatalf("read planted defects: %v", err)
 	}
@@ -329,15 +328,19 @@ func TestCapabilityProbeSetIsComplete(t *testing.T) {
 	}
 }
 
-// repoRoot finds the repository root from this test's own compiled-in source
-// path, so it is correct under `go test ./...` from any directory.
+// repoRoot walks up from the working directory, which `go test` sets to this
+// package's source directory whatever directory it was invoked from.
+//
+// Not runtime.Caller: under -trimpath (the workspace image's GOFLAGS default)
+// that reports "github.com/reliant-labs/forge/internal/...", a module-relative
+// path that is not a file on disk. internal/trimpathguard holds the tree to it.
 func repoRoot(t *testing.T) string {
 	t.Helper()
-	_, self, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("cannot locate this test's source path")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
 	}
-	dir := filepath.Dir(self)
+	dir := wd
 	for {
 		b, err := os.ReadFile(filepath.Join(dir, "go.mod"))
 		if err == nil && bytes.Contains(b, []byte("module github.com/reliant-labs/forge\n")) {
@@ -345,7 +348,7 @@ func repoRoot(t *testing.T) string {
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			t.Fatalf("no go.mod declaring module github.com/reliant-labs/forge found above %s", filepath.Dir(self))
+			t.Fatalf("no go.mod declaring module github.com/reliant-labs/forge found above %s", wd)
 		}
 		dir = parent
 	}

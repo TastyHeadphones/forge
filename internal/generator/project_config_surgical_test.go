@@ -20,20 +20,23 @@ package generator
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
 
-// forgeRepoRoot walks up from this source file to the forge checkout root.
+// forgeRepoRoot is two levels above this package's source directory, which is
+// the working directory `go test` runs it in.
+//
+// Not runtime.Caller: under -trimpath (the workspace image's GOFLAGS default)
+// that reports "github.com/reliant-labs/forge/internal/...", a module-relative
+// path that is not a file on disk. internal/trimpathguard holds the tree to it.
 func forgeRepoRoot(t *testing.T) string {
 	t.Helper()
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller(0) failed — cannot locate the repo root")
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolve the forge checkout root: %v", err)
 	}
-	// .../internal/generator/project_config_surgical_test.go
-	return filepath.Dir(filepath.Dir(filepath.Dir(file)))
+	return root
 }
 
 // TestSetProjectConfigScalar_PreservesForgeOwnManifest is the acceptance

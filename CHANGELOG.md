@@ -125,6 +125,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the bytes differ. `TestHeadersFileIsReReadOnlyWhenItChanges` failed on the
   Windows runner for this reason.
 
+- **Debug builds keep absolute source paths when `-trimpath` is the toolchain
+  default.** The Reliant workspace image sets `GOFLAGS=-trimpath` in
+  `$GOROOT/go.env` so worktrees share the build cache. A trimmed binary
+  records module-relative source paths, and delve sets breakpoints by absolute
+  path, so `forge debug break` reported "could not find file" and IDE
+  breakpoints never bound. `forge debug start`, `forge build --debug` (the
+  `delve` host runner's binary), the scaffolded `.air-debug.toml` and the
+  scaffolded VS Code launch configs now pass `-trimpath=false`, which a command
+  line flag wins over GOFLAGS. Existing projects' `.air-debug.toml` and
+  `.vscode/launch.json` are theirs: add `-trimpath=false` to the debug build
+  there by hand.
+- **forge's own tests pass under `-trimpath`.** Ten test files found the
+  repository root or testdata from `runtime.Caller`, which under `-trimpath`
+  names a module-relative path that is not on disk; they now resolve against
+  the package directory `go test` runs in. `internal/trimpathguard` fails on
+  any new `runtime.Caller` whose file result is kept.
+
 - **A fresh checkout no longer regenerates a committed, current `gen/` before
   every build.** The build's staleness check compared modification times.
   git writes `gen/` before `proto/` (index order), so on every clone the

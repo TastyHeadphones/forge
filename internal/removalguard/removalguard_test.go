@@ -2615,17 +2615,14 @@ func TestLegitimateLookalikesAreStillPresent(t *testing.T) {
 // Plumbing
 // ─────────────────────────────────────────────────────────────────────────────
 
-// repoRoot finds the repository root from this test's own compiled-in source
-// path, so it is correct under `go test ./...` from any directory and from any
-// build cache location. It falls back to walking up from the working directory
-// when the source tree has moved.
+// repoRoot walks up from the working directory, which `go test` sets to this
+// package's source directory whatever directory it was invoked from.
+//
+// Not runtime.Caller: under -trimpath (the workspace image's GOFLAGS default)
+// that reports "github.com/reliant-labs/forge/internal/...", a module-relative
+// path that is not a file on disk. internal/trimpathguard holds the tree to it.
 func repoRoot(t *testing.T) string {
 	t.Helper()
-	if _, self, _, ok := runtime.Caller(0); ok {
-		if root, err := ascendToRoot(filepath.Dir(self)); err == nil {
-			return root
-		}
-	}
 	wd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("locate repo root: %v", err)

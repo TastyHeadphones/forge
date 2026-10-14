@@ -12,7 +12,7 @@
         "ENVIRONMENT": "development",
         "PORT": "{{.ServicePort}}"
       },
-      "buildFlags": "-gcflags='all=-N -l'"
+      "buildFlags": "-gcflags='all=-N -l' -trimpath=false"
     },
     {
       "name": "Attach to Delve",
@@ -32,7 +32,7 @@
       "env": {
         "ENVIRONMENT": "development"
       },
-      "buildFlags": "-gcflags='all=-N -l'"
+      "buildFlags": "-gcflags='all=-N -l' -trimpath=false"
     }
   ]
 }

@@ -94,13 +94,16 @@ func pkgGoDirective() string {
 	return strings.TrimPrefix(runtime.Version(), "go")
 }
 
-// localPkgPath returns the absolute path to forge/pkg from the test's
-// source location. Exposed as a separate helper so tests can also
-// copy go.sum from it.
+// localForgeRoot returns the absolute path to the forge checkout: three
+// levels above this package's source directory, the working directory `go
+// test` runs it in. Exposed as a separate helper so tests can also copy
+// go.sum from it.
+//
+// Not runtime.Caller: under -trimpath (the workspace image's GOFLAGS default)
+// that reports "github.com/reliant-labs/forge/internal/...", a module-relative
+// path that is not a file on disk. internal/trimpathguard holds the tree to it.
 func localForgeRoot() string {
-	_, thisFile, _, _ := runtime.Caller(0)
-	root := filepath.Join(filepath.Dir(thisFile), "..", "..", "..")
-	abs, _ := filepath.Abs(root)
+	abs, _ := filepath.Abs(filepath.Join("..", "..", ".."))
 	return abs
 }
 

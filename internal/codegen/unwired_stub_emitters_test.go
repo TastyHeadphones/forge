@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -384,15 +383,22 @@ func keysOf(m map[string]bool) []string {
 	return out
 }
 
-// forgeRepoRoot locates the repository root from this test's own compiled-in
-// source path, so the walk is correct under `go test ./...` from any directory.
+// testStartDir is this package's source directory: the working directory
+// `go test` starts the binary in, captured before any test runs because
+// crd_kcl_parse.go chdirs (and restores) while it loads a package.
+var testStartDir, testStartDirErr = os.Getwd()
+
+// forgeRepoRoot walks up from this package's directory to the forge checkout.
+//
+// Not runtime.Caller: under -trimpath (the workspace image's GOFLAGS default)
+// that reports "github.com/reliant-labs/forge/internal/...", a module-relative
+// path that is not a file on disk. internal/trimpathguard holds the tree to it.
 func forgeRepoRoot(t *testing.T) string {
 	t.Helper()
-	_, self, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("cannot locate this test's source path")
+	if testStartDirErr != nil {
+		t.Fatalf("getwd: %v", testStartDirErr)
 	}
-	dir := filepath.Dir(self)
+	dir := testStartDir
 	for {
 		b, err := os.ReadFile(filepath.Join(dir, "go.mod"))
 		if err == nil && bytes.Contains(b, []byte("module github.com/reliant-labs/forge\n")) {
@@ -400,7 +406,7 @@ func forgeRepoRoot(t *testing.T) string {
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			t.Fatalf("no go.mod declaring module github.com/reliant-labs/forge found above %s", filepath.Dir(self))
+			t.Fatalf("no go.mod declaring module github.com/reliant-labs/forge found above %s", testStartDir)
 		}
 		dir = parent
 	}

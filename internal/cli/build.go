@@ -2035,7 +2035,11 @@ func buildGoTarget(ctx context.Context, t goBuildTarget, outputDir string, debug
 
 	args := []string{"build", "-o", binaryPath}
 	if debug {
-		args = append(args, "-gcflags=all=-N -l")
+		// -trimpath=false overrides a -trimpath in GOFLAGS (the Reliant
+		// workspace image makes it the toolchain default): a debugger sets
+		// breakpoints by absolute source path, and a trimmed binary records
+		// only module-relative ones, so every breakpoint would miss.
+		args = append(args, "-gcflags=all=-N -l", "-trimpath=false")
 	} else {
 		// Version stamp first; the KCL ldflags follow so a project that
 		// wants to override main.version (e.g. -X main.version=<tag>) wins
