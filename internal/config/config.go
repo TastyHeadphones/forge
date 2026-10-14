@@ -822,29 +822,93 @@ type CIConfig struct {
 // CIGateConfig is what a project adds to the checks forge owns in
 // `forge ci gate`. Forge's own step list (verify-generated, lint, build,
 // vuln-scan, license-check, validate-kcl, deployability) and the versions it
-// pins are not configurable here: a project that wants one of them off sets
-// CI_SKIP for it, which the summary still lists.
+// pins are forge's: a project turns one off with CI_SKIP, which the summary
+// still lists, or takes one over with an extra check that `replaces` it.
 type CIGateConfig struct {
-	// ExtraChecks run after forge's own checks, in the `checks` lane, so the
-	// scaffolded CI job (`task ci:checks`) and a developer's `task ci` run the
-	// same ones.
+	// Env is set for every check of the gate, forge's and the project's
+	// (GOPRIVATE for a private sibling module, a silencing flag).
+	Env map[string]string `yaml:"env,omitempty"`
+	// Path lists project-relative directories put first on every check's
+	// PATH, ahead of forge's pinned tools: a project's own pinned toolchain
+	// (`.tools/bin`). `requires` resolves against the same PATH.
+	Path []string `yaml:"path,omitempty"`
+	// AffectedIgnore lists files no Go test reads, as project-relative globs
+	// (`*.md` matches by base name anywhere, `docs/**` a whole tree): a
+	// change to one does not force the full unit suite when the gate tests
+	// only the packages a branch affects. Any other non-Go change does.
+	AffectedIgnore []string `yaml:"affected_ignore,omitempty"`
+	// ExtraChecks are the project's own rows. By default each runs in the
+	// `checks` lane, so the scaffolded CI job (`task ci:checks`) and a
+	// developer's `task ci` run the same ones.
 	ExtraChecks []CIGateCheck `yaml:"extra_checks,omitempty"`
 }
 
 // CIGateCheck is one project-owned check in `forge ci gate`.
+//
+// The gate runs checks concurrently: a check waits only for its `after`
+// dependencies, a `heavy` one also for a host-wide heavy slot (pkg/hostslot),
+// and a `mutates_tree` one runs alone. Every check still runs when another
+// failed.
 type CIGateCheck struct {
-	// Name is the row in the summary table and the name CI_SKIP matches.
-	// Unique, and not the name of a check forge owns.
+	// Name is the row in the summary table and the name CI_SKIP and CI_ONLY
+	// match. Unique, and not the name of a check forge owns unless this
+	// check `replaces` it.
 	Name string `yaml:"name"`
 	// Command is the argv to run (no shell), from the project root unless
 	// Dir is set. Exit 0 is PASS.
 	Command []string `yaml:"command"`
 	// Dir is the working directory, project-relative.
 	Dir string `yaml:"dir,omitempty"`
+	// Env is added to the check's environment.
+	Env map[string]string `yaml:"env,omitempty"`
 	// Requires lists binaries that must be on PATH. A missing one makes the
 	// check SKIPPED — which fails the gate unless CI_SKIP names it — rather
 	// than a PASS for work that never ran.
 	Requires []string `yaml:"requires,omitempty"`
+	// Probe is a command that must succeed for the check to run (a docker
+	// daemon that answers, a sibling checkout). When it fails the check is
+	// SKIPPED with Probe.Reason.
+	Probe *CIGateProbe `yaml:"probe,omitempty"`
+	// SkipExitCode, when non-zero, is the exit status by which Command says
+	// "I could not run here" (77, the automake convention, is the usual
+	// choice): the row is SKIPPED with the command's last output line as the
+	// reason, instead of FAIL.
+	SkipExitCode int `yaml:"skip_exit_code,omitempty"`
+	// Lane is the gate lane the check belongs to: checks (the default),
+	// test, integration, or a lane of the project's own naming — which only
+	// `forge ci gate <lane>` runs, never `all`.
+	Lane string `yaml:"lane,omitempty"`
+	// Group is a label CI_ONLY can select by (`CI_ONLY=kcl`). Default:
+	// "extras".
+	Group string `yaml:"group,omitempty"`
+	// After names checks this one depends on: it starts once they have
+	// finished (whatever their verdict), and selecting it with CI_ONLY
+	// selects them too.
+	After []string `yaml:"after,omitempty"`
+	// Heavy makes the check hold a host-wide heavy slot while it runs, so a
+	// shared machine never runs more heavy jobs than it has slots for. Set
+	// it for whole-module builds, test runs, renders; leave it off for
+	// linters of a few files and network calls.
+	Heavy bool `yaml:"heavy,omitempty"`
+	// MutatesTree marks a check that writes tracked files (a formatter, a
+	// regenerate-and-diff): it runs alone, before every check that only
+	// reads the tree, and when it fails on a tree that was clean the gate
+	// restores the committed tree.
+	MutatesTree bool `yaml:"mutates_tree,omitempty"`
+	// Cache, when false, never reuses a cached PASS for this check: set it
+	// for a check whose verdict depends on state outside the tree (the
+	// network, a sibling checkout, today's advisories). Default true.
+	Cache *bool `yaml:"cache,omitempty"`
+	// Replaces takes over one of forge's own checks: this check runs in its
+	// place, in its lane and position, and forge's command does not run.
+	Replaces string `yaml:"replaces,omitempty"`
+}
+
+// CIGateProbe is a command whose success a check needs before it runs.
+type CIGateProbe struct {
+	Command []string `yaml:"command"`
+	// Reason is the SKIPPED note when Command fails.
+	Reason string `yaml:"reason,omitempty"`
 }
 
 // CILintConfig controls which linters run in CI.

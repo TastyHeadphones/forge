@@ -488,3 +488,25 @@ func queueLen(dir string) int {
 	entries, _ := os.ReadDir(dir)
 	return len(entries)
 }
+
+func TestSetLabelAndInside(t *testing.T) {
+	opt := testOpts(t, 1)
+	s := acquire(t, opt)
+	s.SetLabel("ci gate: golangci-lint")
+	rep, err := Status(Heavy, opt)
+	if err != nil || len(rep.Holders) != 1 || rep.Holders[0].Command != "ci gate: golangci-lint" {
+		t.Fatalf("after SetLabel, Status = %+v, %v", rep.Holders, err)
+	}
+	if _, ok := Inside(Heavy, opt); ok {
+		t.Fatal("Inside reports true for a process whose env carries no slot")
+	}
+	child := opt
+	child.Env = s.Env()
+	if why, ok := Inside(Heavy, child); !ok || !strings.Contains(why, EnvHeld) {
+		t.Fatalf("Inside with the holder's env = %q, %v; want inside", why, ok)
+	}
+	_ = s.Release()
+	if _, ok := Inside(Heavy, child); ok {
+		t.Fatal("Inside trusts a token whose slot was released")
+	}
+}

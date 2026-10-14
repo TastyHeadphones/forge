@@ -1,6 +1,6 @@
 ---
 name: ci/gate
-description: The local CI gate — `task ci` / `task ci:checks` / `forge ci gate`. What each lane runs, the four rules (every failure reported, a skip is not a pass and needs CI_SKIP, pinned tools, the job summary), the check list, adding project checks with ci.gate.extra_checks, and why the scaffolded ci.yml has few jobs. Use when a CI job is red and you want it locally, when `task ci` reports SKIPPED, or before adding a job or check to CI.
+description: The local CI gate — `task ci` / `task ci:checks` / `forge ci gate`. What each lane runs, the four rules (every failure reported, a skip is not a pass and needs CI_SKIP, pinned tools, the job summary), how checks run concurrently (after, mutates_tree, heavy host slots, --jobs), the verdict cache (`PASS (cached <sha>)`), affected-package unit tests on a branch (CI_FULL), CI_ONLY / CI_REPORT / CI_LOG_DIR, and the full ci.gate.extra_checks schema. Use when a CI job is red and you want it locally, when `task ci` reports SKIPPED, before adding a job or check to CI, or when moving a hand-written gate script onto forge.
 ---
 
 # The local gate
@@ -52,10 +52,85 @@ Four rules every run obeys:
 `verify-generated` needs the COMMITTED tree (it attributes every change to
 `forge generate`), so on a dirty tree it is `SKIPPED` rather than a misleading
 pass. When it fails it resets the tree it dirtied, so the checks after it judge
-the committed code. It runs first for the same reason.
+the committed code.
 
 Change detection stays in the workflow: skipping jobs a docs-only change cannot
-affect is a cost optimization, and locally you scope by running one lane.
+affect is a cost optimization, and locally you scope by running one lane (or
+`CI_ONLY`).
+
+## How checks run
+
+Checks run **concurrently**; the table still lists them in plan order, with
+each one's time and the gate's wall time. Three things bound the concurrency:
+
+- **`after`** — a check starts once the checks it names have finished, whatever
+  their verdict (rule 1 still holds). `lint-<fe>`, `typecheck-<fe>`,
+  `build-<fe>` and `verify-generated` wait for `deps-<fe>`.
+- **Tree mutation** — a check that rewrites tracked files (`verify-generated`,
+  an extra with `mutates_tree: true`) runs ALONE, before every check that reads
+  the tree.
+- **Host slots** — a `heavy` check (whole-module build, test run, lint, render)
+  holds one of the machine's heavy slots while it runs (`ci/slots`), so the
+  gate never adds more heavy jobs than the host has room for, and the commands
+  it runs (`forge generate`, `task test`'s `forge slot run`) run inside that
+  slot instead of queueing again. Light checks run under `--jobs` (default half
+  the CPUs, 2-8). Do not wrap the gate itself in `forge slot run`.
+
+Each check's output goes to `tmp/ci/<lane>/<check>.log` (`CI_LOG_DIR` moves it;
+`.forge/ci/<lane>/` when git does not ignore `tmp/`). The console carries one
+`▶` start and one `✓`/`✗`/`⏭` finish line per check, and a failure's last 25
+lines; under GitHub Actions each check's whole output in its own `::group::`.
+
+## Verdict cache: `PASS (cached <sha>)`
+
+On a **committed** tree, a check that already PASSED on this exact tree is not
+run again; its row reads `PASS (cached 1a2b3c4)`. The key is the tree hash
+(`HEAD^{tree}`), the check's command, dir, env and pinned tools, the forge
+binary, forge's tool pins, the Go toolchain (and node, with frontends) and the
+Go build env (`GOFLAGS`, `GOOS`…). Inputs outside the tree that the build reads
+anyway — a `go.mod` `replace` or `go.work` `use` of a sibling checkout, a
+frontend's `file:` dependency — must themselves be clean git trees, whose hash
+joins the key; otherwise the cache is off for the run.
+
+- Shared across every worktree of the repository (keyed by its git dir), under
+  the user cache dir (`FORGE_CI_CACHE_DIR` moves it). Only PASS is stored, and
+  only when the run ends on the tree it started on.
+- A **dirty tree turns it off**, and the gate says so in one line.
+- `CI_NO_CACHE=1` or `--no-cache` runs everything.
+- Never cached: `vuln-go` / `vuln-npm` (advisories change daily), `deps-<fe>`,
+  and any extra with `cache: false` (network, sibling checkouts, clocks).
+
+## Unit tests on a branch: affected mode
+
+On a non-default branch, `unit-tests` runs `task test -- <packages>` for only the
+Go packages whose test binary (the package, its tests, everything they import)
+contains a package the branch changed since `git merge-base HEAD origin/<default>`
+— committed, staged, unstaged and untracked changes alike. A changed `.go` file,
+a file a package embeds, or a file under a package's own `testdata/` changes that
+package. The gate prints the mode and why, e.g.
+`unit tests: affected mode — 7 of 212 test packages reach the 4 changed file(s) since origin/main`.
+
+It **falls back to the whole suite** when any other file changed (`go.mod`,
+`go.sum`, a `testdata/` outside a package, KCL, proto, migrations, the
+Taskfile, scripts — nothing proves which tests read them), on the default
+branch, when nothing changed, without `origin/<default>`, and with `CI_FULL=1`
+or `--full`. A branch stacked on another names its parent with `CI_BASE=<ref>`
+or `--base`. List files no Go test reads in `ci.gate.affected_ignore`
+(`["*.md", "docs/**"]`) so they do not force it. A direct `task test` always
+runs the whole suite: affected mode is the gate's, for a branch.
+
+## Selecting and recording
+
+| | |
+| --- | --- |
+| `forge ci gate <lane>` | `checks`, `test`, `integration`, `all` (those three), or a lane your extras declare (`docker`) — never part of `all` |
+| `CI_ONLY=a,kcl` / `--only` | just these checks or **groups**, plus what they depend on (`after`); others are not listed. Groups: `setup`, `static`, `kcl`, `test`, `integration`, `extras` (an extra's default), or your own |
+| `CI_SKIP=a,b` / `--skip` | run but list as SKIPPED (allowed). An unknown name in either is an error |
+| `CI_REPORT=path` / `--report` | also write the Markdown table to a file (for a PR body) |
+| `forge ci gate --list` | every check with its lane, group, `heavy`, `mutates-tree`, `after` |
+
+The summary ends with `head: <sha>` (`+ uncommitted changes` when dirty), so a
+pasted table names the commit it judged.
 
 ## Why the workflow has few jobs
 
@@ -78,13 +153,42 @@ in a verdict; PRs cancel a superseded run per ref.
 # forge.yaml
 ci:
   gate:
+    env: { GOPRIVATE: "github.com/acme/*" } # every check, forge's too
+    path: [.tools/bin]                       # first on every check's PATH (your own pins)
+    affected_ignore: ["*.md", "docs/**"]     # files no Go test reads
     extra_checks:
-      - name: gen-llm-gateway # the row, and what CI_SKIP matches; unique
-        command: [go, run, ./cmd/gen-llm-gateway, -check]
-        dir: . # optional, project-relative
-        requires: [go] # optional; missing => SKIPPED, not PASS
+      - name: gen-llm-gateway        # the row; what CI_SKIP / CI_ONLY match; unique
+        command: [go, run, ./cmd/gen-llm-gateway, -check]  # argv, no shell; exit 0 = PASS
+        after: [verify-generated]    # start once these finished (any verdict)
+        heavy: true                  # hold a host heavy slot while it runs
+      - name: kcl-prepull
+        command: [./scripts/test-kata-prepull.sh]
+        group: kcl                   # CI_ONLY=kcl selects it (default group: extras)
+        requires: [yq, jq]           # missing => SKIPPED, not PASS
+        heavy: true
+      - name: migration-chain
+        command: [scripts/ci-step.sh, migration-chain]
+        probe: { command: [docker, info], reason: "docker daemon not reachable" }
+      - name: reliant-vendored-proto
+        command: [scripts/ci-step.sh, reliant-vendored-proto]
+        skip_exit_code: 77           # exit 77 = SKIPPED, last output line is the reason
+        cache: false                 # reads a sibling checkout: never reuse a verdict
+        env: { RELIANT_DIR: ../reliant }
+      - name: pre-commit
+        command: [pre-commit, run, --all-files, --show-diff-on-failure]
+        mutates_tree: true           # runs alone, before the readers; reset on failure
+        dir: .                       # project-relative working directory
+      - name: image-control-plane
+        command: [docker, build, -t, app:ci, .]
+        lane: docker                 # only `forge ci gate docker` runs it
+      - name: lint-go
+        command: [scripts/ci-step.sh, lint-go]
+        replaces: golangci-lint      # take over one of forge's rows, in its place
+        heavy: true
 ```
 
-Extras run in the `checks` lane, after forge's own checks, so `task ci:checks`,
-`task ci` and the CI `checks` job all run them. A name that reuses one of
-forge's is rejected.
+An extra runs in the `checks` lane unless `lane` says otherwise. `replaces` puts
+it in the replaced row's position, lane and group; forge's command does not run.
+An `after` that names no check, and a dependency cycle, are errors. A
+`mutates_tree` check that fails on a tree that was clean when the gate started
+resets the tree; on a dirty tree it never does.

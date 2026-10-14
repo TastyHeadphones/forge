@@ -110,6 +110,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Kind/name` (the `Bundle.overrides` engine), for fields the chart's values do not
   template, such as a pod's `runtimeClassName`. A key that matches nothing fails
   the render.
+- **`forge ci gate` runs checks concurrently, caches verdicts by tree, and
+  tests only what a branch changed.** The gate ran its checks one after another
+  (one project measured a p50 of 35 min, up to 3 h, on a shared machine). Now a
+  check starts as soon as its `after` dependencies have finished; a check that
+  rewrites the tree (`verify-generated`, an extra with `mutates_tree`) runs alone
+  before the checks that read it; heavy checks each hold a host heavy slot and
+  light ones run under `--jobs`. Every check still runs after a failure, and the
+  table keeps plan order, with the wall time and a `head:` line. Each check
+  logs to `tmp/ci/<lane>/<check>.log`. On a committed tree a check that already
+  passed on that tree (any worktree, same forge and pins) is not run again:
+  `PASS (cached <sha>)` (`CI_NO_CACHE=1` / `--no-cache` to bypass; a dirty tree
+  turns it off). On a branch, `unit-tests` runs only the Go packages whose test
+  binaries contain a changed package, and falls back to the whole suite when
+  anything but Go source changed, on the default branch, or with `CI_FULL=1` /
+  `--full`. New: `CI_ONLY` (checks or groups), `CI_REPORT`, `CI_LOG_DIR`, and
+  `ci.gate.env` / `path` / `affected_ignore`; extra checks gained `lane`,
+  `group`, `after`, `heavy`, `mutates_tree`, `cache`, `probe`, `skip_exit_code`,
+  `env` and `replaces`, enough to express a hand-written ~26-step gate script.
+  See `ci/gate` and `migrations/v0.1.46`.
+
 - **Host-wide heavy slots: `pkg/hostslot` and `forge slot`.** On a shared
   machine every heavy job slows the others down — on a 16 vCPU / 32 GiB VM
   `go build ./...` went from 36–50 s beside 0–3 other heavy jobs to 101–155 s
