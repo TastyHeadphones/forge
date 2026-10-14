@@ -410,6 +410,7 @@ var knownDotForgeEntries = map[string]bool{
 	"skills":                true,
 	"state":                 true,
 	"logs":                  true, // forge env up writes per-service logs to .forge/logs/<env>/<name>.log
+	"ci":                    true, // forge ci gate's per-check logs, .forge/ci/<lane>/<check>.log when git does not ignore tmp/ (cli.gateLogDir)
 	"observability":         true, // forge env up renders the local forwarder's pipeline into .forge/observability/forwarder.yaml (clickstack.ForwarderConfigDir)
 	"debug":                 true,
 	"debug-session.json":    true,
