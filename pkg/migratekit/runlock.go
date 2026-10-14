@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
+	"time"
 )
 
 // ONE MIGRATION RUN PER DATABASE, WHICHEVER ENTRY POINT STARTED IT.
@@ -67,8 +68,9 @@ const runLockKey = 7250513029716893483
 // the record's lock is held at SESSION level around both, with the record's
 // own transaction committed before golang-migrate runs (withSessionLock).
 
-// lockRun blocks until conn's session holds the run lock. The caller keeps
-// conn for the whole run and must unlockRun it.
+// lockRun waits until conn's session holds the run lock, polling (see A
+// WAITER HOLDS NOTHING below). The caller keeps conn for the whole run and
+// must unlockRun it.
 func lockRun(ctx context.Context, conn *sql.Conn) error {
 	if err := advisoryLock(ctx, conn, runLockKey); err != nil {
 		return fmt.Errorf("take the migration run lock: %w", err)
@@ -104,9 +106,60 @@ func withSessionLock(ctx context.Context, conn *sql.Conn, key int64, fn func() e
 	return fn()
 }
 
+// A WAITER HOLDS NOTHING WHILE IT WAITS.
+//
+// Every replica of a release boots together, so all but one wait for the run
+// lock while the first migrates. They used to wait inside `SELECT
+// pg_advisory_lock(k)`: one statement that runs until the lock is free, and a
+// running statement holds a snapshot. CREATE INDEX CONCURRENTLY waits for
+// every snapshot older than its own to end before it finishes, so the index
+// build waited on the waiters while the waiters waited on the run lock the
+// build's session held. Postgres breaks that cycle by killing one side: a
+// waiter (`take the migration run lock: … deadlock detected`, every replica
+// but one failing its boot), or the build itself, leaving the schema dirty
+// and the index INVALID. Measured: four replicas racing one CONCURRENTLY
+// migration failed every trial.
+//
+// So a waiter POLLS: pg_try_advisory_lock answers at once, and between
+// attempts the session is idle — no statement, no transaction, no snapshot
+// for an index build to wait on. The interval starts short, so a run that
+// finishes in milliseconds hands over in milliseconds, and backs off to a
+// ceiling, so a run that takes an hour costs one query a second per waiter.
+// The wait ends when ctx does. Through a session-mode PgBouncer it is the
+// same: each poll is a query on the session the run already holds.
+//
+// Every advisory lock migratekit takes at session level waits this way: the
+// run lock, and the record locks held across a golang-migrate write
+// (withSessionLock).
+const (
+	lockPollFirst = 10 * time.Millisecond
+	lockPollMax   = time.Second
+)
+
+// advisoryLock takes the session advisory lock key on conn, polling until it
+// is free or ctx ends. conn must not be in a transaction: the wait would then
+// hold that transaction's snapshot, which is the deadlock this exists to
+// avoid.
 func advisoryLock(ctx context.Context, conn *sql.Conn, key int64) error {
-	_, err := conn.ExecContext(ctx, fmt.Sprintf("SELECT pg_advisory_lock(%d)", key))
-	return err
+	query := fmt.Sprintf("SELECT pg_try_advisory_lock(%d)", key)
+	interval := lockPollFirst
+	for {
+		var got bool
+		if err := conn.QueryRowContext(ctx, query).Scan(&got); err != nil {
+			return err
+		}
+		if got {
+			return nil
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("waiting for advisory lock %d: %w", key, ctx.Err())
+		case <-timer.C:
+		}
+		interval = min(2*interval, lockPollMax)
+	}
 }
 
 // advisoryUnlock releases a session advisory lock.

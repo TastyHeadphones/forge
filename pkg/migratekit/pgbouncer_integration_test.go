@@ -167,3 +167,25 @@ func TestConcurrentRunsBehindASessionModePgBouncer(t *testing.T) {
 		t.Errorf("%d runs applied the migrations; want exactly 1", changed)
 	}
 }
+
+// The run-lock wait behind a session-mode PgBouncer, with the migration the
+// polling wait exists for: a CREATE INDEX CONCURRENTLY. One run builds the
+// index on one server connection while another polls for the run lock on the
+// second, holding no snapshot between polls, and the rest queue in PgBouncer
+// for a server connection, holding none at all.
+func TestConcurrentRunsOverCreateIndexConcurrentlyBehindASessionModePgBouncer(t *testing.T) {
+	dsn := sessionPooler(t)
+	done := make(chan []replicaRun, 1)
+	go func() { done <- raceReplicasQuiet(release(concurrentlyFiles), dsn, 4) }()
+	select {
+	case runs := <-done:
+		for i, r := range runs {
+			if r.Err != nil {
+				t.Errorf("replica %d failed: %v", i, r.Err)
+			}
+		}
+	case <-time.After(pgbouncerWait - 10*time.Second):
+		t.Fatalf("runs over a CREATE INDEX CONCURRENTLY still waiting after %s behind a two-connection session pool",
+			pgbouncerWait-10*time.Second)
+	}
+}

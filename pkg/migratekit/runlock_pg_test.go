@@ -1,11 +1,7 @@
 package migratekit
 
 import (
-	"bytes"
 	"database/sql"
-	"fmt"
-	"log/slog"
-	"sync"
 	"testing"
 	"testing/fstest"
 )
@@ -24,39 +20,7 @@ type replicaRun struct {
 // AUTO_MIGRATE would (AutoMigrate over a pool of its own).
 func raceReplicas(t *testing.T, fsys fstest.MapFS, dsn string, n int) []replicaRun {
 	t.Helper()
-	runs := make([]replicaRun, n)
-	var wg sync.WaitGroup
-	for i := 0; i < n; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			if i%2 == 0 {
-				mg, err := Open(Options{FS: fsys, Dir: "migrations", DSN: dsn})
-				if err != nil {
-					runs[i].Err = fmt.Errorf("Open: %w", err)
-					return
-				}
-				defer func() { _ = mg.Close() }()
-				res, err := mg.Up()
-				if err != nil {
-					err = fmt.Errorf("Up: %w", err)
-				}
-				runs[i] = replicaRun{Res: res, Err: err}
-				return
-			}
-			var logs bytes.Buffer
-			pool, err := sql.Open("pgx/v5", sqlDSN(dsn))
-			if err == nil {
-				defer func() { _ = pool.Close() }()
-				err = AutoMigrate(fsys, "migrations")(pool, slog.New(slog.NewTextHandler(&logs, nil)))
-			}
-			if err != nil {
-				err = fmt.Errorf("AutoMigrate: %w", err)
-			}
-			runs[i] = replicaRun{Logs: logs.String(), Err: err}
-		}(i)
-	}
-	wg.Wait()
+	runs := raceReplicasQuiet(fsys, dsn, n)
 	for _, r := range runs {
 		if r.Err != nil {
 			t.Errorf("replica failed: %v", r.Err)

@@ -67,6 +67,10 @@ against the Deployments at all.
   the others wait, then find nothing to do, and every one exits 0. The lock
   is migratekit's own because golang-migrate's lock key once differed between
   those two entry points, so on its own it never made them wait for each other.
+  A waiting replica polls `pg_try_advisory_lock` and holds no statement or
+  snapshot between attempts, so a `CREATE INDEX CONCURRENTLY` the first replica
+  runs never waits on the replicas waiting for it (when waiters blocked inside
+  `pg_advisory_lock`, postgres broke that cycle with `deadlock detected`).
 - **Migrating through a pooler.** The locks are SESSION locks, so give
   migrations a session-capable URL: the database directly, or a session-mode
   PgBouncer entry, never a transaction pooler. A run is exactly ONE Postgres
