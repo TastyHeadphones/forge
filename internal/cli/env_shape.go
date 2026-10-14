@@ -107,6 +107,14 @@ type envShapeDoc struct {
 	hostedPlaceholder bool
 }
 
+// reconciled reports whether a reconciler may apply this env's bundle: it
+// declares neither a local or ephemeral lifecycle nor forge as its applier. Such
+// a bundle is applied repeatedly and pruned, so it must be safe to (see
+// release.CheckFluxSafety).
+func (d envShapeDoc) reconciled() bool {
+	return d.Lifecycle == "" && d.Shape.Applier == ""
+}
+
 func newEnvShapeCmd() *cobra.Command {
 	var asJSON bool
 

@@ -125,6 +125,14 @@ type BuildInput struct {
 	// CreatedAt is the bundle's creation time. Required, and the caller's:
 	// see the determinism note at the top of this file.
 	CreatedAt time.Time
+	// Reconciled says a reconciler (Flux) may apply this bundle, so it must be
+	// safe to apply repeatedly: a Job with a TTL or without a spec hash is then
+	// REFUSED rather than built. False for an env forge applies itself (a
+	// local or ephemeral lifecycle, or a declared applier of forge): a
+	// one-shot apply neither re-runs a TTL'd Job on a timer nor re-reconciles
+	// an unhashed one, and refusing there would break builds that work today.
+	// The fixes that change nothing at runtime are made either way.
+	Reconciled bool
 	// Units declares the delivery units' order (see release.DeliveryUnit).
 	// An object's unit is its forge.dev/delivery-unit label; a unit nobody
 	// declares waits for the default unit. Every real cluster is split into
@@ -275,6 +283,18 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 	// does not carry — and drift detection compares the live object
 	// against that hash, so each one would read as permanently drifted.
 	// See prune_guard.go.
+	// FLUX-SAFETY, before anything hashes or serializes these bodies, for the
+	// same reason as the guard below: a fix applied afterwards would make every
+	// fixed object's recorded hash describe bytes the layer does not carry.
+	//
+	// Two things are fixed here because the fix does not change what an object
+	// means: a Deployment's implicit strategy and progressDeadlineSeconds are
+	// written down, and an object that needs Flux's recreate policy gets its
+	// force annotation. What only the author can fix (a Job's TTL, an unhashed
+	// Job name) is refused instead. See pkg/release/fluxsafe.go.
+	if err := makeFluxSafe(docs, in.Reconciled); err != nil {
+		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)
+	}
 	guarded := guardStatefulObjects(docs, in.Shape.StatefulWorkloads)
 	objects, err := shapeObjects(docs, in.Shape.Images, in.Shape.StatefulWorkloads)
 	if err != nil {
@@ -473,6 +493,7 @@ func packManifests(docs []parsedDoc, units []release.DeliveryUnit, extra ...tarE
 				object: release.TreeObject{
 					Cluster: cluster, Unit: docUnit(doc), Phase: doc.phase,
 					Kind: doc.meta.kind, Namespace: doc.meta.namespace, Name: doc.meta.name,
+					DeadlineSeconds: docDeadlineSeconds(doc),
 				},
 			})
 		}
@@ -613,4 +634,28 @@ func parentDirs(name string) []string {
 		out = append(out, strings.Join(parts[:i], "/"))
 	}
 	return out
+}
+
+// docDeadlineSeconds is the time allowance an object states for itself: a
+// Deployment's progressDeadlineSeconds, a Job's activeDeadlineSeconds. 0 means
+// it states none and the default for its kind applies (release.TreeBudget).
+func docDeadlineSeconds(doc parsedDoc) int {
+	body, ok := doc.body.(map[string]any)
+	if !ok {
+		return 0
+	}
+	spec, _ := body["spec"].(map[string]any)
+	field := "progressDeadlineSeconds"
+	if doc.meta.kind == "Job" {
+		field = "activeDeadlineSeconds"
+	}
+	switch n := spec[field].(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	}
+	return 0
 }

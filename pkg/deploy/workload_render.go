@@ -160,6 +160,16 @@ const (
 	// period. Superseded Jobs are removed by the spec-hash name plus prune,
 	// never by a timer.
 	jobBackoffLimit int32 = 6
+
+	// Rollout settings a Deployment states explicitly (see the render below):
+	// Kubernetes' own defaults. progressDeadlineSeconds is also what a
+	// control plane derives a rollout's health budget from. They are spelled
+	// here, and again in pkg/release for a Deployment a project hand-writes
+	// into forge.Manifests; TestRolloutDefaultsAgree pins that the two agree.
+	defaultRolloutPercent = "25%"
+	// DefaultProgressDeadlineSeconds is the Deployment progressDeadlineSeconds
+	// forge renders.
+	DefaultProgressDeadlineSeconds int32 = 600
 )
 
 // gatedKinds are the kinds a job may gate: capabilities.k CAP_GATED
@@ -447,7 +457,24 @@ func (set *workloadSet) renderLongRunning(w *workload, ctx Context) []runtime.Ob
 		dep.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.DeploymentStrategyType(s.Strategy)}
 	case s.StorageGiB > 0:
 		dep.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
+	default:
+		dep.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RollingUpdateDeploymentStrategyType}
 	}
+	// STATED, NOT DEFAULTED. Kubernetes fills these in when they are absent,
+	// and fills rollingUpdate under another field manager, which a reconciler
+	// then sees as fields it does not own and cannot remove when the strategy
+	// later becomes Recreate (internal/cluster/strategy_recovery.go repairs
+	// that by hand for direct apply; a reconciler has no such repair). The
+	// values are Kubernetes' own defaults, so nothing changes at runtime: the
+	// render just says what the cluster would have said. The deadline is also
+	// what a control plane derives a rollout's health budget from.
+	if dep.Spec.Strategy.Type == appsv1.RollingUpdateDeploymentStrategyType {
+		dep.Spec.Strategy.RollingUpdate = &appsv1.RollingUpdateDeployment{
+			MaxSurge:       new(intstr.FromString(defaultRolloutPercent)),
+			MaxUnavailable: new(intstr.FromString(defaultRolloutPercent)),
+		}
+	}
+	dep.Spec.ProgressDeadlineSeconds = new(DefaultProgressDeadlineSeconds)
 	objs := []runtime.Object{dep}
 
 	// expand.k:507-515: a service is dialled by name. So is an operator

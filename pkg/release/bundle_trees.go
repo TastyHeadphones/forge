@@ -92,6 +92,14 @@ type BundleTree struct {
 	// listed: a node-level rollout (an image prepull) is not a gate, which
 	// is also what direct apply waits on. Sorted.
 	Health []BundleHealthCheck `json:"health,omitempty"`
+	// BudgetSeconds is how long the control plane lets this tree stay
+	// "progressing" before it calls it failed. Flux's own wait is one short
+	// attempt ([TreeTimeoutSeconds]); this is the whole-rollout allowance the
+	// observer enforces instead (design §8.3), so a long rollout is never a
+	// false alarm and a stuck one is never forgiven forever. It is derived
+	// from the objects the tree is judged on ([TreeBudget]), recorded here so
+	// the observer reads it rather than re-deriving it.
+	BudgetSeconds int `json:"budget_seconds"`
 }
 
 // BundleTreePath is the path, within the extracted manifests layer, of one v2
@@ -117,6 +125,58 @@ type TreeObject struct {
 	Kind      string
 	Namespace string
 	Name      string
+	// DeadlineSeconds is the object's own time allowance, when it states one: a
+	// Deployment's progressDeadlineSeconds, a Job's activeDeadlineSeconds.
+	// Zero means it states none and the default for its kind applies.
+	DeadlineSeconds int
+}
+
+// The budget model (design §8.3): a rollout tree is allowed the LARGEST
+// progressDeadlineSeconds among its Deployments and StatefulSets plus a
+// margin for the apply and the readiness probe's first pass; a Job tree is
+// allowed the largest Job allowance plus the same margin.
+const (
+	// BudgetMarginSeconds is added to the largest deadline: two minutes.
+	BudgetMarginSeconds = 120
+	// DefaultJobBudgetSeconds is a Job's allowance when it declares no
+	// activeDeadlineSeconds: ten minutes, which is what direct apply waits for
+	// a Job before it fails the gate (cluster.DefaultRolloutTimeout is five;
+	// control-plane's migrations are the Jobs that need the difference).
+	DefaultJobBudgetSeconds = 600
+	// DefaultRolloutBudgetSeconds is a workload's allowance when it states no
+	// progressDeadlineSeconds (a StatefulSet has none): Kubernetes' ten
+	// minutes.
+	DefaultRolloutBudgetSeconds = int(DefaultProgressDeadlineSeconds)
+	// MinBudgetSeconds is what a tree with nothing to judge it on is given: its
+	// support objects apply in one attempt, so it only needs to outlast one.
+	MinBudgetSeconds = BudgetMarginSeconds
+)
+
+// TreeBudget is a tree's budget: the largest allowance among the objects it is
+// judged on, plus [BudgetMarginSeconds]. A tree it judges nothing on gets
+// [MinBudgetSeconds].
+func TreeBudget(phase Phase, objects []TreeObject) int {
+	longest := 0
+	for _, o := range objects {
+		if !healthKind(phase, o.Kind) {
+			continue
+		}
+		d := o.DeadlineSeconds
+		if d <= 0 {
+			if phase == PhaseRollout {
+				d = DefaultRolloutBudgetSeconds
+			} else {
+				d = DefaultJobBudgetSeconds
+			}
+		}
+		if d > longest {
+			longest = d
+		}
+	}
+	if longest == 0 {
+		return MinBudgetSeconds
+	}
+	return longest + BudgetMarginSeconds
 }
 
 // healthKinds are the kinds a tree's readiness is judged on, by phase.
@@ -155,6 +215,7 @@ func PlanTrees(objects []TreeObject, units []DeliveryUnit) ([]BundleTree, error)
 	}
 
 	byKey := map[treeKey]*BundleTree{}
+	members := map[treeKey][]TreeObject{}
 	segOwner := map[string]string{}
 	for _, o := range objects {
 		if FlatCluster(o.Cluster) {
@@ -186,6 +247,7 @@ func PlanTrees(objects []TreeObject, units []DeliveryUnit) ([]BundleTree, error)
 			byKey[k] = t
 		}
 		t.Documents++
+		members[k] = append(members[k], o)
 		if healthKind(o.Phase, o.Kind) {
 			t.Health = append(t.Health, BundleHealthCheck{Kind: o.Kind, Namespace: o.Namespace, Name: o.Name})
 		}
@@ -232,7 +294,8 @@ func PlanTrees(objects []TreeObject, units []DeliveryUnit) ([]BundleTree, error)
 	}
 
 	out := make([]BundleTree, 0, len(byKey))
-	for _, t := range byKey {
+	for k, t := range byKey {
+		t.BudgetSeconds = TreeBudget(k.phase, members[k])
 		t.DependsOn = sortedUnique(t.DependsOn)
 		sort.Slice(t.Health, func(i, j int) bool {
 			a, b := t.Health[i], t.Health[j]
@@ -379,6 +442,9 @@ func validateTrees(clusters []BundleClusterTree, trees []BundleTree) error {
 		}
 		if t.TimeoutSeconds <= 0 || t.RetryIntervalSeconds <= 0 {
 			return fmt.Errorf("%w: tree %s has no per-attempt timeout or retry interval", ErrInvalid, t.Path)
+		}
+		if t.BudgetSeconds < MinBudgetSeconds {
+			return fmt.Errorf("%w: tree %s has a %ds budget, under the %ds minimum: the control plane would fail it before one attempt could finish", ErrInvalid, t.Path, t.BudgetSeconds, MinBudgetSeconds)
 		}
 		sum[t.Cluster] += t.Documents
 	}

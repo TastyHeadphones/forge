@@ -27,6 +27,7 @@ type tdoc struct {
 	cluster, unit, kind, name string
 	annotations               string // pre-rendered `    key: value` lines
 	apiVersion                string
+	spec                      string // pre-rendered `  key: value` lines under spec
 }
 
 func (d tdoc) yaml() string {
@@ -42,8 +43,12 @@ func (d tdoc) yaml() string {
 	if d.annotations != "" {
 		ann = "  annotations:\n" + d.annotations
 	}
-	return fmt.Sprintf("# cluster: %s\napiVersion: %s\nkind: %s\nmetadata:\n  name: %s\n  namespace: control-plane-prod\n%s%s",
-		d.cluster, api, d.kind, d.name, labels, ann)
+	spec := ""
+	if d.spec != "" {
+		spec = "spec:\n" + d.spec
+	}
+	return fmt.Sprintf("# cluster: %s\napiVersion: %s\nkind: %s\nmetadata:\n  name: %s\n  namespace: control-plane-prod\n%s%s%s",
+		d.cluster, api, d.kind, d.name, labels, ann, spec)
 }
 
 const (
@@ -56,18 +61,18 @@ const (
 // daemon substrate on its own cluster, and a prune-guarded PVC in hub-base.
 func prodRender() []tdoc {
 	return []tdoc{
-		{tDaemon, "daemon-substrate", "StorageClass", "workspace-ssd", "", "storage.k8s.io/v1"},
-		{tDaemon, "daemon-substrate", "Deployment", "cnpg-controller-manager", "", "apps/v1"},
-		{tDaemon, "daemon-substrate", "DaemonSet", "kata-prepull", "", "apps/v1"},
-		{tHub, "hub-base", "Namespace", "control-plane-prod", "", ""},
-		{tHub, "hub-base", "PersistentVolumeClaim", "nats-jetstream", "", ""},
-		{tHub, "infra", "Job", "temporal-schema-1023848b73", "", "batch/v1"},
-		{tHub, "infra", "Deployment", "temporal", "", "apps/v1"},
-		{tHub, "infra", "Job", "temporal-namespace-040a6cfe06", postAnn, "batch/v1"},
-		{tHub, "reliant", "Deployment", "reliant-api-server", "", "apps/v1"},
-		{tHub, "control-plane", "Job", "control-plane-migrate-b2e57763c4", preAnn, "batch/v1"},
-		{tHub, "control-plane", "Deployment", "admin-server", "", "apps/v1"},
-		{tHub, "control-plane", "Job", "control-plane-idp-provision-aa11", postAnn, "batch/v1"},
+		{cluster: tDaemon, unit: "daemon-substrate", kind: "StorageClass", name: "workspace-ssd", annotations: "", apiVersion: "storage.k8s.io/v1"},
+		{cluster: tDaemon, unit: "daemon-substrate", kind: "Deployment", name: "cnpg-controller-manager", annotations: "", apiVersion: "apps/v1"},
+		{cluster: tDaemon, unit: "daemon-substrate", kind: "DaemonSet", name: "kata-prepull", annotations: "", apiVersion: "apps/v1"},
+		{cluster: tHub, unit: "hub-base", kind: "Namespace", name: "control-plane-prod", annotations: "", apiVersion: ""},
+		{cluster: tHub, unit: "hub-base", kind: "PersistentVolumeClaim", name: "nats-jetstream", annotations: "", apiVersion: ""},
+		{cluster: tHub, unit: "infra", kind: "Job", name: "temporal-schema-1023848b73", annotations: "", apiVersion: "batch/v1"},
+		{cluster: tHub, unit: "infra", kind: "Deployment", name: "temporal", annotations: "", apiVersion: "apps/v1"},
+		{cluster: tHub, unit: "infra", kind: "Job", name: "temporal-namespace-040a6cfe06", annotations: postAnn, apiVersion: "batch/v1"},
+		{cluster: tHub, unit: "reliant", kind: "Deployment", name: "reliant-api-server", annotations: "", apiVersion: "apps/v1"},
+		{cluster: tHub, unit: "control-plane", kind: "Job", name: "control-plane-migrate-b2e57763c4", annotations: preAnn, apiVersion: "batch/v1"},
+		{cluster: tHub, unit: "control-plane", kind: "Deployment", name: "admin-server", annotations: "", apiVersion: "apps/v1"},
+		{cluster: tHub, unit: "control-plane", kind: "Job", name: "control-plane-idp-provision-aa11bb22cc", annotations: postAnn, apiVersion: "batch/v1"},
 	}
 }
 
@@ -90,6 +95,7 @@ func prodInput(docs []tdoc) BuildInput {
 		Manifests: strings.Join(parts, "---\n"),
 	}
 	in.Units = prodUnits
+	in.Reconciled = true
 	return in
 }
 
@@ -117,18 +123,18 @@ func TestV2LayoutPlacesEveryObjectInItsPhase(t *testing.T) {
 		got[strings.TrimSuffix(base[strings.Index(base, "-")+1:], ".yaml")] = treeOf(f)
 	}
 	want := map[string]string{
-		"storageclass-workspace-ssd":           "manifests/gke-prod-daemon/daemon-substrate/pre",
-		"deployment-cnpg-controller-manager":   "manifests/gke-prod-daemon/daemon-substrate/rollout",
-		"daemonset-kata-prepull":               "manifests/gke-prod-daemon/daemon-substrate/rollout",
-		"namespace-control-plane-prod":         "manifests/gke-prod/hub-base/pre",
-		"persistentvolumeclaim-nats-jetstream": "manifests/gke-prod/hub-base/pre",
-		"job-temporal-schema-1023848b73":       "manifests/gke-prod/infra/pre",
-		"deployment-temporal":                  "manifests/gke-prod/infra/rollout",
-		"job-temporal-namespace-040a6cfe06":    "manifests/gke-prod/infra/post",
-		"deployment-reliant-api-server":        "manifests/gke-prod/reliant/rollout",
-		"job-control-plane-migrate-b2e57763c4": "manifests/gke-prod/control-plane/pre",
-		"deployment-admin-server":              "manifests/gke-prod/control-plane/rollout",
-		"job-control-plane-idp-provision-aa11": "manifests/gke-prod/control-plane/post",
+		"storageclass-workspace-ssd":                 "manifests/gke-prod-daemon/daemon-substrate/pre",
+		"deployment-cnpg-controller-manager":         "manifests/gke-prod-daemon/daemon-substrate/rollout",
+		"daemonset-kata-prepull":                     "manifests/gke-prod-daemon/daemon-substrate/rollout",
+		"namespace-control-plane-prod":               "manifests/gke-prod/hub-base/pre",
+		"persistentvolumeclaim-nats-jetstream":       "manifests/gke-prod/hub-base/pre",
+		"job-temporal-schema-1023848b73":             "manifests/gke-prod/infra/pre",
+		"deployment-temporal":                        "manifests/gke-prod/infra/rollout",
+		"job-temporal-namespace-040a6cfe06":          "manifests/gke-prod/infra/post",
+		"deployment-reliant-api-server":              "manifests/gke-prod/reliant/rollout",
+		"job-control-plane-migrate-b2e57763c4":       "manifests/gke-prod/control-plane/pre",
+		"deployment-admin-server":                    "manifests/gke-prod/control-plane/rollout",
+		"job-control-plane-idp-provision-aa11bb22cc": "manifests/gke-prod/control-plane/post",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("layout\n got %v\nwant %v", got, want)
@@ -383,5 +389,175 @@ func TestV1ToV2IsOneWarnPerCluster(t *testing.T) {
 	}
 	if got := plan.Unacknowledged(nil); len(got) != 0 {
 		t.Errorf("the layout migration blocks a deploy: %v", got)
+	}
+}
+
+// ─── F4: the Flux-safe bundle ───────────────────────────────────────────────
+
+func buildErr(t *testing.T, docs []tdoc) error {
+	t.Helper()
+	_, err := Build(t.Context(), prodInput(docs))
+	return err
+}
+
+// A TTL'd Job re-runs every period under a reconciler. The three control-plane
+// Jobs that did are the fixtures.
+func TestBuildRefusesATTLdJob(t *testing.T) {
+	docs := prodRender()
+	docs[5].spec = "  ttlSecondsAfterFinished: 86400\n" // temporal-schema
+	err := buildErr(t, docs)
+	if err == nil {
+		t.Fatal("a Job with ttlSecondsAfterFinished was bundled")
+	}
+	for _, want := range []string{"flux-job-ttl", "temporal-schema-1023848b73", "re-running it every period", "remove ttlSecondsAfterFinished"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal %q does not say %q", err, want)
+		}
+	}
+}
+
+func TestBuildRefusesAnUnhashedJob(t *testing.T) {
+	docs := prodRender()
+	docs[9].name = "control-plane-migrate" // migrate with no hash
+	err := buildErr(t, docs)
+	if err == nil || !strings.Contains(err.Error(), "flux-job-unhashed") || !strings.Contains(err.Error(), "control-plane-migrate") {
+		t.Fatalf("an unhashed Job was bundled: %v", err)
+	}
+}
+
+func TestBuildNamesEveryUnsafeObjectAtOnce(t *testing.T) {
+	docs := prodRender()
+	docs[5].spec = "  ttlSecondsAfterFinished: 86400\n"
+	docs[7].spec = "  ttlSecondsAfterFinished: 86400\n"
+	docs[9].name = "control-plane-migrate"
+	err := buildErr(t, docs)
+	if err == nil || !strings.Contains(err.Error(), "3 object(s)") {
+		t.Fatalf("want all three listed together, got %v", err)
+	}
+}
+
+// The fixes that change nothing at runtime are made, not refused: a Deployment
+// the project hand-wrote gets its rollout stated, a StorageClass gets Flux's
+// recreate policy, a PVC never does.
+func TestBuildStatesWhatTheClusterWouldHaveDefaulted(t *testing.T) {
+	b := mustBuild(t, prodInput(prodRender()))
+	extracted := fluxExtract(t, b, release.BundleManifestsLayer)
+	read := func(suffix string) string {
+		for name, body := range extracted {
+			if strings.HasSuffix(name, suffix) {
+				return body
+			}
+		}
+		t.Fatalf("no entry %s", suffix)
+		return ""
+	}
+	dep := read("deployment-admin-server.yaml")
+	for _, want := range []string{"progressDeadlineSeconds: 600", "type: RollingUpdate", "maxSurge: 25%", "maxUnavailable: 25%"} {
+		if !strings.Contains(dep, want) {
+			t.Errorf("Deployment does not state %q:\n%s", want, dep)
+		}
+	}
+	sc := read("storageclass-workspace-ssd.yaml")
+	if !strings.Contains(sc, "kustomize.toolkit.fluxcd.io/force: enabled") {
+		t.Errorf("StorageClass has no force annotation:\n%s", sc)
+	}
+	for _, name := range []string{"persistentvolumeclaim-nats-jetstream.yaml", "namespace-control-plane-prod.yaml"} {
+		if strings.Contains(read(name), "fluxcd.io/force") {
+			t.Errorf("%s carries the force annotation: recreating it would lose data", name)
+		}
+	}
+	// And the PVC kept its prune guard, so the two annotations do not collide.
+	if !strings.Contains(read("persistentvolumeclaim-nats-jetstream.yaml"), "kustomize.toolkit.fluxcd.io/prune: disabled") {
+		t.Error("the PVC lost its prune guard")
+	}
+}
+
+// What the author wrote is never overridden.
+func TestBuildKeepsAnAuthorsStatedRollout(t *testing.T) {
+	docs := prodRender()
+	docs[10].spec = "  progressDeadlineSeconds: 1800\n  strategy:\n    type: Recreate\n"
+	b := mustBuild(t, prodInput(docs))
+	for name, body := range fluxExtract(t, b, release.BundleManifestsLayer) {
+		if !strings.HasSuffix(name, "deployment-admin-server.yaml") {
+			continue
+		}
+		if !strings.Contains(body, "progressDeadlineSeconds: 1800") || !strings.Contains(body, "type: Recreate") || strings.Contains(body, "rollingUpdate") {
+			t.Errorf("the author's rollout was changed:\n%s", body)
+		}
+	}
+}
+
+func TestBuildRefusesForceOnAPVC(t *testing.T) {
+	docs := prodRender()
+	docs[4].annotations = "    kustomize.toolkit.fluxcd.io/force: enabled\n"
+	err := buildErr(t, docs)
+	if err == nil || !strings.Contains(err.Error(), "flux-force-on-data") || !strings.Contains(err.Error(), "nats-jetstream") {
+		t.Fatalf("force on a PVC was bundled: %v", err)
+	}
+}
+
+// ─── F4: budgets ────────────────────────────────────────────────────────────
+
+func TestTreeBudgetsFollowTheObjectsTheyAreJudgedOn(t *testing.T) {
+	docs := prodRender()
+	docs[10].spec = "  progressDeadlineSeconds: 1800\n" // admin-server: a 30 min rollout
+	docs[9].spec = "  activeDeadlineSeconds: 900\n"     // migrate: a 15 min Job
+	b := mustBuild(t, prodInput(docs))
+	by := map[string]release.BundleTree{}
+	for _, tr := range b.Doc.Trees {
+		by[tr.Path] = tr
+	}
+	for path, want := range map[string]int{
+		// the largest deadline in the tree, plus the 2 min margin
+		"manifests/gke-prod/control-plane/rollout": 1800 + release.BudgetMarginSeconds,
+		"manifests/gke-prod/control-plane/pre":     900 + release.BudgetMarginSeconds,
+		// no stated deadline: forge's 600 s Deployment default / a 600 s Job
+		"manifests/gke-prod/infra/rollout": 600 + release.BudgetMarginSeconds,
+		"manifests/gke-prod/infra/pre":     release.DefaultJobBudgetSeconds + release.BudgetMarginSeconds,
+		"manifests/gke-prod/infra/post":    release.DefaultJobBudgetSeconds + release.BudgetMarginSeconds,
+		// only support objects: one attempt's worth
+		"manifests/gke-prod/hub-base/pre": release.MinBudgetSeconds,
+	} {
+		if got := by[path].BudgetSeconds; got != want {
+			t.Errorf("%s budget = %d, want %d", path, got, want)
+		}
+	}
+}
+
+func TestBudgetIsPartOfTheDocumentAndSurvivesTheStrictDecoder(t *testing.T) {
+	b := mustBuild(t, prodInput(prodRender()))
+	decoded, err := release.DecodeBundleDoc(b.ConfigBlob())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tr := range decoded.Trees {
+		if tr.BudgetSeconds < release.MinBudgetSeconds {
+			t.Errorf("%s decoded with budget %d", tr.Path, tr.BudgetSeconds)
+		}
+	}
+}
+
+// An env forge applies itself is never reconciled, so the refusals do not
+// apply: control-plane prod is forge-applied and carries three TTL'd Jobs until
+// its own fix lands, and its bundle must keep building.
+func TestRefusalsApplyOnlyToABundleAReconcilerMayApply(t *testing.T) {
+	docs := prodRender()
+	docs[5].spec = "  ttlSecondsAfterFinished: 86400\n"
+	docs[9].name = "control-plane-migrate"
+	in := prodInput(docs)
+	in.Reconciled = false
+	if _, err := Build(t.Context(), in); err != nil {
+		t.Fatalf("a forge-applied env's bundle was refused: %v", err)
+	}
+	// The fixes are still made, so one render path serves both.
+	b := mustBuild(t, in)
+	var stated bool
+	for name, body := range fluxExtract(t, b, release.BundleManifestsLayer) {
+		if strings.HasSuffix(name, "deployment-admin-server.yaml") {
+			stated = strings.Contains(body, "progressDeadlineSeconds: 600")
+		}
+	}
+	if !stated {
+		t.Error("the rollout was not stated for a forge-applied env")
 	}
 }

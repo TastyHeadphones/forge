@@ -560,6 +560,23 @@ func lintPipeline() []linterStep {
 			collect:   collectPDBJSON,
 		},
 
+		// 13d-ter-ter. Flux-safe — a Job with a TTL or without a spec hash is
+		// wrong only under a reconciler (see lint_flux_safe.go). An error for
+		// an env a reconciler may apply, a warning for one forge applies.
+		{
+			name:  "flux-safe lint",
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return rc.cwd != "" && dirExists(filepath.Join(rc.cwd, deployKCLDirFor(rc.cfg))), ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runFluxSafeLint(rc.ctx, rc.cwd, rc.cfg)
+			},
+			errFormat: "❌ flux-safe lint: %v\n",
+			collect:   collectFluxSafeJSON,
+		},
+
 		// 13d-bis. Column-markers — flags a COMMENT ON COLUMN/CONSTRAINT
 		// whose text contains forge: but matches no known column marker
 		// (see lint_column_markers.go). Warnings only.
