@@ -326,8 +326,11 @@ func TestEnsureGeneratedMergeDriver_OptOutsAndEphemeralBinaries(t *testing.T) {
 		}
 	}
 
-	// A configured command that passes %P and whose binary exists is kept:
-	// another worktree's forge must not rewrite it on every command.
+	// A usable command another forge wrote is kept by a forge that is not
+	// the project's pin (merge_driver_pin.go).
+	prevCheck := mergeDriverPinCheck
+	t.Cleanup(func() { mergeDriverPinCheck = prevCheck })
+	mergeDriverPinCheck = func(string) (string, string, bool) { return "v1.0.0", "v0.9.0", true }
 	dir := clone()
 	kept := filepath.Join(t.TempDir(), "forge")
 	writeTreeFileT(t, kept, "#!/bin/sh\n")
@@ -338,6 +341,6 @@ func TestEnsureGeneratedMergeDriver_OptOutsAndEphemeralBinaries(t *testing.T) {
 	mergeDriverExecutable = func() (string, error) { return "/opt/forge/bin/forge", nil }
 	ensureGeneratedMergeDriver(dir)
 	if got := configured(dir); got != want {
-		t.Errorf("a usable driver command was rewritten: %q, want %q", got, want)
+		t.Errorf("a forge that is not the pin rewrote a usable driver: %q, want %q", got, want)
 	}
 }

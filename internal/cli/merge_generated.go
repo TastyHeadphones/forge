@@ -295,6 +295,17 @@ func newMergeGeneratedCmd() *cobra.Command {
 			if len(args) == 5 {
 				relPath = args[4]
 			}
+			// Only the forge the project pins merges by its rules; see
+			// merge_driver_pin.go.
+			if handled, clean, err := pinnedMerge(cmd.Context(), cmd.ErrOrStderr(), args, relPath, base, ours, theirs, marker); handled {
+				if err != nil {
+					return err
+				}
+				if !clean {
+					return exitCodeError{code: 1, msg: "conflicts remain"}
+				}
+				return nil
+			}
 			merged, clean, note, err := mergeGeneratedPath(cmd.Context(), relPath, base, ours, theirs, marker)
 			if err != nil {
 				return err
@@ -328,12 +339,12 @@ func newMergeGeneratedCmd() *cobra.Command {
 //
 // The command names this binary by absolute path. A bare name resolves on
 // PATH at merge time, which is either nothing (a pinned forge run by path)
-// or a different forge. Two guards keep that path valid for the next merge:
-// an ephemeral binary (`go run`, a test's build, anything under the temp
-// directory) is never written, because it is gone by then; and a command
-// already naming an existing forge binary with %P is left alone, so
-// worktrees running different forge builds do not rewrite the shared
-// config on every command.
+// or a different forge. An ephemeral binary (`go run`, a test's build,
+// anything under the temp directory) is never written, because it is gone by
+// the next merge. The forge the project pins writes itself over any other
+// driver, and records itself under its identity so a driver from another pin
+// can hand it the merge; a forge that is NOT the pin only fills in a missing
+// or unusable command (merge_driver_pin.go).
 //
 // FORGE_NO_GIT_HOOKS / FORGE_NO_HOOKS keep forge out of the clone's git
 // configuration altogether (a test suite running forge against a developer's
@@ -353,13 +364,21 @@ func ensureGeneratedMergeDriver(root string) {
 	changed := writeMergeAttributes(root)
 	key := "merge." + generatedMergeDriver + ".driver"
 	cur, _ := exec.CommandContext(context.Background(), "git", "-C", root, "config", "--get", key).Output()
-	if command, ok := mergeDriverCommand(); ok {
-		if current := strings.TrimSpace(string(cur)); current != command && !driverCommandUsable(current) {
-			_ = exec.CommandContext(context.Background(), "git", "-C", root, "config", "--local",
-				"merge."+generatedMergeDriver+".name", "forge-generated files: merge, keeping fingerprint lines for forge generate to refresh").Run()
-			if exec.CommandContext(context.Background(), "git", "-C", root, "config", "--local", key, command).Run() == nil {
-				changed = true
-			}
+	current := strings.TrimSpace(string(cur))
+	command, ok := mergeDriverCommand()
+	// A forge that is not the project's pin never installs itself, and an
+	// unusable command is replaced by whatever forge runs. The pinned forge
+	// takes the driver over from any other (merge_driver_pin.go): that is
+	// what repairs a driver a pin bump left behind.
+	_, _, skewed := mergeDriverPinCheck(root)
+	if ok && !skewed {
+		registerPinnedDriver(root, command)
+	}
+	if ok && current != command && (!driverCommandUsable(current) || !skewed) {
+		_ = exec.CommandContext(context.Background(), "git", "-C", root, "config", "--local",
+			"merge."+generatedMergeDriver+".name", "forge-generated files: merge, keeping fingerprint lines for forge generate to refresh").Run()
+		if exec.CommandContext(context.Background(), "git", "-C", root, "config", "--local", key, command).Run() == nil {
+			changed = true
 		}
 	}
 	if changed {
