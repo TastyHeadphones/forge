@@ -74,10 +74,12 @@ _values = output.helm_charts[0].values
 assert_flux_hermetic = "--no-remote-bases=true" in _values.kustomizeController.container.additionalArgs
 assert_flux_no_cross_ns = "--no-cross-namespace-refs=true" in _values.kustomizeController.container.additionalArgs
 
-# NO multitenancy block: it makes kustomize-controller impersonate
-# flux-system:default, which cannot apply the Namespaces and CRDs the env's
-# own bundle carries (measured: every apply failed Forbidden).
-assert_flux_no_multitenancy = "multitenancy" not in _values
+# The hardened default turns multitenancy on and strips the controllers'
+# cluster-admin binding; the authority comes back per namespace
+# (positive_flux_chart_hardened.k pins every piece). This used to assert the
+# opposite, measured against forge's own Flux pointer path, which #673 deleted:
+# nothing forge writes into flux-system relies on the controller's own identity.
+assert_flux_multitenancy_on = _values.multitenancy.enabled == True and _values.multitenancy.privileged == False
 
 # Only source-controller and kustomize-controller. Each of these four is
 # attack surface with nothing on this path to justify it.

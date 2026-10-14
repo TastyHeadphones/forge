@@ -105,8 +105,16 @@ var removals = []removal{
 					"kcl/lib/flux.k",
 					"kcl/render.k",
 					"kcl/tests/positive_flux_chart.k",
+					"kcl/tests/positive_flux_chart_*.k",
+					"kcl/tests/negative_flux_chart_*.k",
+					"internal/flux/",
+					"internal/cluster/flux_chart_hardening_test.go",
 					"internal/cli/flux_reconcile_e2e_test.go",
 					"internal/templates/project/skills/forge/deploy/flux/SKILL.md",
+					"internal/templates/project/skills/forge/migrations/v0.1.46/SKILL.md",
+					"docs/runbooks/flux-patch-and-upgrade.md",
+					// Describes the shared Flux's tenancy (F19's ingest gate).
+					"pkg/release/manifests_layer.go",
 				},
 			},
 			{
@@ -124,6 +132,17 @@ var removals = []removal{
 					"internal/cli/cluster_connect_test.go",
 					"internal/templates/project/skills/forge/deploy/cluster-connect/SKILL.md",
 				},
+			},
+			{
+				Name: "Flux's per-namespace controller ClusterRoles in the changelog",
+				Reason: "The changelog entry for the hardened flux_chart() names the two ClusterRoles \n" +
+					"(`flux-tenant-reconciler`, `flux-tenant-source`) and Flux's own `multitenancy` chart \n" +
+					"value. Those are Flux/control-plane identifiers shared with the control plane's Go \n" +
+					"writer and cannot be renamed here; they are not a tenant column, header, context key \n" +
+					"or helper in forge. Scoped to those exact literals in CHANGELOG.md, so any other \n" +
+					"`tenant` there still fails.",
+				Token: regexp.MustCompile(`flux-tenant-(reconciler|source)|multitenancy`),
+				Paths: []string{"CHANGELOG.md"},
 			},
 			{
 				Name: "the control plane's own organization-lookup RPC, DeployService/GetTenant",
@@ -317,6 +336,13 @@ var removals = []removal{
 					// the files carry an `rbac` local naming that bootstrap-manifest struct.
 					"internal/cli/cluster_connect*.go",
 					"internal/templates/project/skills/forge/deploy/cluster-connect/SKILL.md",
+					// The Flux chart's controller RBAC (rbac = "namespaced") is Kubernetes
+					// ClusterRoles/RoleBindings for the controllers' ServiceAccounts: pod
+					// identity on the deploy surface, in its skill, runbook and changelog.
+					"internal/templates/project/skills/forge/deploy/flux/SKILL.md",
+					"internal/templates/project/skills/forge/migrations/v0.1.46/SKILL.md",
+					"docs/runbooks/flux-patch-and-upgrade.md",
+					"CHANGELOG.md",
 					"internal/doctor/clusterhealth*.go",
 					"internal/templates/deploy_build_test.go",
 				},

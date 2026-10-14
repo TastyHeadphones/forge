@@ -40,6 +40,20 @@ const (
 	// configurable: a second spelling would only let the writer and the
 	// controller disagree about where the OCIRepository lives.
 	Namespace = "flux-system"
+	// ReconcilerRole / SourceRole are the ClusterRoles of the
+	// per-namespace RBAC model (kcl/lib/flux.k, `rbac = "namespaced"`): they
+	// grant nothing until a RoleBinding in a namespace names them. A writer
+	// of a namespace that holds Flux objects binds kustomize-controller to
+	// the first and source-controller to the second. Same names as KCL's
+	// FLUX_RECONCILER_ROLE / FLUX_SOURCE_ROLE, pinned by
+	// kcl/tests/positive_flux_chart_hardened.k and TestKCLRoleNamesAgree: a
+	// RoleBinding naming a ClusterRole that is not declared is accepted by
+	// the apiserver and grants nothing, so drift would fail late.
+	ReconcilerRole = "flux-tenant-reconciler"
+	SourceRole     = "flux-tenant-source"
+	// DeployServiceAccount is the ServiceAccount the controller impersonates
+	// by default and is pinned to.
+	DeployServiceAccount = "reliant-deploy-tenant"
 )
 
 // ChartProvidedBy reports whether any of the chart references given already

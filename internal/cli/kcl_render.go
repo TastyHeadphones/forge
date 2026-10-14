@@ -595,6 +595,9 @@ type HelmChartEntity struct {
 	// render. A pointer so a contract that omits it (an older render) reads as
 	// the schema default, true, rather than as false.
 	Prune *bool `json:"prune,omitempty"`
+	// Patches are merge patches for the objects the chart renders, keyed
+	// `Kind/name` (see cluster.HelmChartSpec.Patches).
+	Patches map[string]any `json:"patches,omitempty"`
 }
 
 // PruneEnabled reports the chart's prune setting: on unless declared off.

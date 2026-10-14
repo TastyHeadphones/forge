@@ -51,10 +51,50 @@ just that one.
 
 The chart is **version-pinned with no knob**, and it runs **two controllers, not
 six** (`source-controller`, `kustomize-controller`; helm, notification and the two
-image controllers are off, a security decision rather than a resource one). The
-posture is `--no-remote-bases` and `--no-cross-namespace-refs`, with no
-`multitenancy` block: a consumer isolating several authors through the same Flux
-turns that on via `values`.
+image controllers are off, a security decision rather than a resource one).
+
+### Hardened and sized by default
+
+A Flux that reconciles bundles for more than one author is a shared control
+point, so the defaults are the hardened ones. Everything is overridable.
+
+| Default | What it does | Turn it off / change it |
+|---|---|---|
+| `rbac = "namespaced"` | Flux CRs cluster-wide; leader election in `flux-system`; impersonation (pinned by `resourceNames` to one ServiceAccount) and Secret reads only where a RoleBinding names `flux-tenant-reconciler` / `flux-tenant-source`. Multitenancy on, no cluster-admin binding | `rbac = "pinned"` (cluster-wide reads, impersonation pinned), `rbac = "chart"` (the chart's own), `impersonate_service_account` |
+| `flux_namespace_bindings(ns)` | the two RoleBindings a namespace holding Flux objects needs | declare per namespace |
+| `DisableConfigWatchers` | config watcher off (it needs a cluster-wide Secret list) | `feature_gates = {DisableConfigWatchers = False}` with `rbac = "pinned"` |
+| `CancelHealthCheckOnNewRevision` | a fix-forward revision cancels a stuck health check | `feature_gates = {...}` |
+| `concurrency = 16`, `concurrency_ssa = 8`, `source_concurrency = 8`, `--requeue-dependency=10s` | one 13-minute rollout holds 1 of 4 default workers; this keeps a slow rollout from blocking everyone | the three arguments; or `values` |
+| requests/limits, `priority_class_name = "forge-delivery"` | sized starting points; the PriorityClass is declared with the chart | `values`; `priority_class_create = False` to name a class that exists |
+| NetworkPolicies | `allow-egress` only: **ingress to every `flux-system` pod only from `flux-system` pods** (an invariant, tested); no `allow-webhooks`; `allow-scraping` only for `scrape_namespaces` | `scrape_namespaces = ["observability"]`; `network_policies = "chart"` |
+| `pod_security = "restricted"` | Pod Security enforce/warn/audit on `flux-system` | `pod_security = "baseline"` or `""` |
+
+Opt-in placement, for a dedicated delivery node pool (forge has no node-pool
+primitive, so provision it yourself, tainted `reliant.dev/pool=delivery-v1:NoSchedule`):
+
+```kcl
+forge.flux_chart(
+    placement = forge.flux_placement_delivery_v1(
+        runtime_class_name = forge.FLUX_RUNTIME_CLASS_GVISOR,   # only where the target has it
+    )
+)
+```
+
+`runtime_class_name` is never defaulted on: a pod naming a RuntimeClass the
+cluster lacks never schedules. The chart has no `runtimeClassName` value, so it
+reaches the pods through `HelmChart.patches` (`"Deployment/kustomize-controller" = {...}`),
+which fails the render, naming the candidates, if a chart bump renames a Deployment.
+The same field patches any chart's rendered objects.
+
+**gVisor.** GKE Sandbox's documented gVisor limits (no privileged containers,
+no hostPath, no port-forward, seccomp/AppArmor unsupported) are not features the
+two controllers use: they run non-root with a read-only root filesystem and
+`/tmp` / `/data` emptyDirs, listen on 8080/9090/9440 and call the API server.
+Compatibility has not been run under a real sandbox here: verify on the target
+(`kubectl -n flux-system get pods -o jsonpath='{.items[*].spec.runtimeClassName}'`,
+a reconcile to a new revision, and `kubectl top`) before relying on it, and fall
+back to the pool alone if it fails. Patching and CVE watch:
+`docs/runbooks/flux-patch-and-upgrade.md`.
 
 > **Chart version ≠ Flux version.** There is no fluxcd-published chart; forge
 > uses the community chart at `oci://ghcr.io/fluxcd-community/charts/flux2`, whose

@@ -3231,6 +3231,8 @@ schema HelmChart:
                       for the chart. See NAMESPACE METADATA below.
       * `prune`     — whether a re-apply deletes the chart's objects that
                       left the render. Default True. See PRUNING below.
+      * `patches`   — merge patches for objects the chart renders, keyed
+                      `Kind/name`. See PATCHES below.
 
     CLUSTER TARGETING. An operator must be installed where the custom
     resources it reconciles actually land. In a multi-cluster env those
@@ -3278,6 +3280,24 @@ schema HelmChart:
     into one cluster must declare the SAME metadata, or each re-apply
     strips what the other set. Keys under `forge.dev/` are forge's own and
     are refused.
+
+    PATCHES. A chart's values reach only what its templates expose. `patches`
+    reaches the rest — a pod's `runtimeClassName`, an `initContainer` — by
+    merging into the objects `helm template` rendered, before forge stamps and
+    applies them:
+
+        patches = {
+            "Deployment/kustomize-controller" = {
+                spec.template.spec.runtimeClassName = "gvisor"
+            }
+        }
+
+    The merge is the one `Bundle.overrides` uses: strategic for a built-in kind
+    (a patch naming a container by `name` lands on it), RFC 7386 for a CRD,
+    `null` deletes a field. Each key must match EXACTLY one rendered object; a
+    key that matches nothing (a typo, or a chart bump that renamed the object)
+    fails the render naming the candidates, so a patch can never silently stop
+    applying.
 
     PRUNING. forge applies a chart's objects but a plain `kubectl apply`
     never deletes, so an object a chart version stops rendering (a
@@ -3343,9 +3363,16 @@ schema HelmChart:
     # (PRUNING above). Meaningful for delivery 'bootstrap' only: a bundle
     # chart is pruned by whatever reconciles the bundle.
     prune: bool = True
+    # Merge patches for the objects the chart renders, keyed `Kind/name`
+    # (PATCHES below). Reaches a field the chart's values do not template.
+    patches: {str: any} = {}
 
     check:
         name, "HelmChart.name is required (the --target selector)"
+        all k, _p in patches { regex.match(k, "^[A-Z][A-Za-z0-9]*/[a-z0-9]([-a-z0-9.]*[a-z0-9])?$") }, \
+            "HelmChart '${name}'.patches keys must be `Kind/name` (UpperCamelCase kind, RFC-1123 name), e.g. `Deployment/kustomize-controller`"
+        all _k, p in patches { typeof(p) == "dict" }, \
+            "HelmChart '${name}'.patches values must be maps of the fields to change, e.g. {spec.template.spec.runtimeClassName = \"gvisor\"}"
         delivery != "bundle" or (not namespace_labels and not namespace_annotations), \
             "HelmChart '${name}': a delivery 'bundle' chart has no forge-created Namespace to label - declare the Namespace as a forge.Manifests object, or keep the chart on delivery 'bootstrap'"
         delivery != "bundle" or prune, \

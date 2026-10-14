@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BEHAVIOR CHANGE: `forge.flux_chart()` is hardened and sized by default (F8).**
+  The chart's own RBAC let both controllers read every Secret and ConfigMap
+  cluster-wide and impersonate ANY ServiceAccount, and its defaults (4 workers,
+  100m/64Mi, no priority) let one slow rollout block every other author's
+  deploy. The default now installs: per-namespace controller RBAC
+  (`rbac = "namespaced"`: Flux CRs cluster-wide, leader election in `flux-system`,
+  impersonation pinned by `resourceNames`, Secret reads only where a RoleBinding
+  names `flux-tenant-reconciler` / `flux-tenant-source`, written with
+  `forge.flux_namespace_bindings(ns)`); multitenancy on with no cluster-admin
+  binding; `--concurrent=16 --concurrent-ssa=8 --requeue-dependency=10s`
+  (source-controller `--concurrent=8`); `CancelHealthCheckOnNewRevision` and
+  `DisableConfigWatchers`; requests and limits; PriorityClass `forge-delivery`;
+  NetworkPolicies reduced to `allow-egress` (ingress to every `flux-system` pod
+  only from `flux-system` pods), `allow-scraping` only for the namespaces in
+  `scrape_namespaces`, no `allow-webhooks`; Pod Security `restricted` on
+  `flux-system`. Every piece is overridable (`rbac = "pinned" | "chart"`,
+  `network_policies = "chart"`, `pod_security`, `feature_gates`, `values`, ...).
+  A namespace holding Flux objects needs `flux_namespace_bindings` or its source and
+  apply fail `Forbidden`. See `migrations/v0.1.46` and
+  `docs/runbooks/flux-patch-and-upgrade.md`.
+
 - **BEHAVIOR CHANGE: a re-apply of a `forge.HelmChart` now deletes the objects
   the chart stopped rendering.** forge applies a chart with `kubectl apply`,
   which never deletes, so an object a chart version dropped (the Flux chart's
@@ -30,6 +51,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `migrations/v0.1.45/helm-chart-prune`.
 
 ### Added
+
+- **`flux_chart(placement = flux_placement_delivery_v1())`** places the
+  controllers on a dedicated tainted node pool, with `runtime_class_name =
+  FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
+- **`HelmChart.patches`** merge-patches the objects a chart renders, keyed
+  `Kind/name` (the `Bundle.overrides` engine), for fields the chart's values do not
+  template, such as a pod's `runtimeClassName`. A key that matches nothing fails
+  the render.
 
 - **`//forge:resolves-caller` declares a project's own caller resolver.** The
   `unscoped_auth` audit counted a handler as resolving the caller only when it
