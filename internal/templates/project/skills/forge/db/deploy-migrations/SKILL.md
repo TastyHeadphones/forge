@@ -117,6 +117,34 @@ A migration states that it is the safe (expand) kind in its `.up.sql`:
 ALTER TABLE plans ADD COLUMN retired_at TIMESTAMPTZ;
 ```
 
+A migration that deliberately is NOT the safe kind — it drops or renames a
+column the previous release reads, or adds a NOT NULL column it does not write —
+says that instead, with why:
+
+```sql
+-- forge:breaks-rollback the 2026-09 release stopped reading plans.legacy_tier
+ALTER TABLE plans DROP COLUMN legacy_tier;
+```
+
+At runtime it means what saying nothing means (an older binary refuses to
+serve over it); what it adds is that the break was a decision. `forge db
+migration new <name> --backward-compatible "<why>"` or `--breaks-rollback
+"<why>"` writes either line. A project that wants every migration to be that
+decision sets
+
+```yaml
+database:
+  migration_safety:
+    require_compat_declaration: true
+```
+
+and `forge lint --migration-safety` then fails a migration after the baseline
+(the newest `-- forge:adopts` migration, or the first one) that declares
+neither (`migration-compat-undeclared`) or gives no reason
+(`migration-compat-reason`); `migration new` writes both choices as a comment
+to replace. A file declaring both is refused everywhere
+(`migration-compat-conflict`), and the migrator reads it as not compatible.
+
 The migrator (`forge/pkg/migratekit`: the scaffolded `db migrate up` and
 `AutoMigrate`) records each version's declaration in `schema_migrations_compat`
 as it applies. A binary that meets a schema AHEAD of it — an old pod booting

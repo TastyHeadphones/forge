@@ -17,6 +17,14 @@ import (
 // MigrationOptions controls what context is included when creating a new migration.
 type MigrationOptions struct {
 	DSN string // If set, introspect the live DB for schema
+
+	// The compatibility declaration written at the top of the file (see
+	// compatHeader). At most one of BackwardCompatible and BreaksRollback,
+	// each the reason; RequireCompatDeclaration writes the choices as
+	// examples when neither is given.
+	BackwardCompatible       string
+	BreaksRollback           string
+	RequireCompatDeclaration bool
 }
 
 // MigrationContext holds all gathered context for generating rich migration comments.

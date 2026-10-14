@@ -80,3 +80,30 @@ func TestScanDistinguishesMissingFromEmpty(t *testing.T) {
 		t.Error("missing dir: Scan returned no error; an unreadable migration set must not read as empty")
 	}
 }
+
+func TestDeclarations_ReasonsAndBreaksRollback(t *testing.T) {
+	compatible, breaks := Declarations("-- forge:backward-compatible — additive column\n" +
+		"SELECT 1;\n" +
+		"--  FORGE:breaks-rollback: drops y\n" +
+		"-- forge:breaks-rollback-ish not this one\n" +
+		"--   -- forge:breaks-rollback an example in prose, not a directive\n")
+	if len(compatible) != 1 || compatible[0] != (Declaration{Line: 1, Reason: "additive column"}) {
+		t.Errorf("compatible = %+v", compatible)
+	}
+	if len(breaks) != 1 || breaks[0] != (Declaration{Line: 3, Reason: "drops y"}) {
+		t.Errorf("breaks-rollback = %+v", breaks)
+	}
+	if _, b := Declarations("-- forge:breaks-rollback <why, deliberately, it does not>\n"); len(b) != 1 || b[0].Reason != "" {
+		t.Errorf("a <placeholder> is not a reason: %+v", b)
+	}
+}
+
+// A file that declares both is read the safe way: not compatible.
+func TestDeclared_ContradictionIsNotCompatible(t *testing.T) {
+	if Declared("-- forge:backward-compatible\n-- forge:breaks-rollback drops y\n") {
+		t.Error("a migration that also declares breaks-rollback was read as backward-compatible")
+	}
+	if !Declared("-- forge:backward-compatible\n") {
+		t.Error("the plain declaration stopped counting")
+	}
+}

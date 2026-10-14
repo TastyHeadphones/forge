@@ -104,9 +104,11 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 		{
 			// The per-migration exemption is the `-- forge:allow-destructive`
 			// directive in the SQL file, not a glob list here.
+			// require_compat_declaration: read by migrationlint
+			// (compat_declaration.go) through ConfigFromProject.
 			name: "MigrationSafetyConfig",
 			typ:  reflect.TypeFor[MigrationSafetyConfig](),
-			want: []string{"destructive_change", "enabled", "unsafe_add_column", "volatile_default"},
+			want: []string{"destructive_change", "enabled", "require_compat_declaration", "unsafe_add_column", "volatile_default"},
 		},
 		{
 			// Only the two escape hatches. The contract rules are

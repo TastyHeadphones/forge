@@ -125,6 +125,9 @@ type RuleConfig struct {
 	UnsafeAddColumn   string
 	DestructiveChange string
 	VolatileDefault   string
+	// RequireCompatDeclaration turns on migration-compat-undeclared and
+	// migration-compat-reason (compat_declaration.go).
+	RequireCompatDeclaration bool
 }
 
 // ConfigFromProject lifts a config.MigrationSafetyConfig into a
@@ -135,6 +138,8 @@ func ConfigFromProject(cfg config.MigrationSafetyConfig) RuleConfig {
 		UnsafeAddColumn:   cfg.EffectiveUnsafeAddColumn(),
 		DestructiveChange: cfg.EffectiveDestructiveChange(),
 		VolatileDefault:   cfg.EffectiveVolatileDefault(),
+
+		RequireCompatDeclaration: cfg.RequireCompatDeclaration,
 	}
 }
 
@@ -213,11 +218,13 @@ func LintMigrationsDir(dir string, cfg RuleConfig) (Result, error) {
 	}
 
 	var adopting []adoptingFile
+	var contents []compatFile
 	for _, file := range files {
 		data, err := os.ReadFile(file)
 		if err != nil {
 			return Result{}, err
 		}
+		contents = append(contents, compatFile{path: file, content: string(data)})
 		findings = append(findings, lintMigrationFile(file, string(data), cfg)...)
 		a, adoptFindings := lintAdoption(file, string(data))
 		findings = append(findings, adoptFindings...)
@@ -226,6 +233,7 @@ func LintMigrationsDir(dir string, cfg RuleConfig) (Result, error) {
 		}
 	}
 	findings = append(findings, lintAdoptionPlacement(files, adopting)...)
+	findings = append(findings, lintCompatDeclarations(contents, adopting, cfg.RequireCompatDeclaration)...)
 	return Result{Findings: findings, Dir: dir, Scanned: files}, nil
 }
 

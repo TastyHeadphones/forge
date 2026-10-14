@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A migration can declare that it breaks rollback, and a project can require
+  every migration to declare either way.** `-- forge:breaks-rollback <why>` is
+  the counterpart of `-- forge:backward-compatible`: the previous release
+  deliberately does NOT keep working on the schema the migration leaves. The
+  migrator treats it as it treats a migration that declares nothing; what it
+  adds is that the break is a reviewed decision. With
+  `database.migration_safety.require_compat_declaration: true`, `forge lint
+  --migration-safety` fails every migration after the baseline (the newest
+  `-- forge:adopts` migration, or the first) that declares neither
+  (`migration-compat-undeclared`) or gives no reason, or only a `<why>`
+  placeholder (`migration-compat-reason`). A migration declaring both is
+  refused whether or not the requirement is on (`migration-compat-conflict`),
+  and the migrator reads it as not compatible. `forge db migration new
+  --backward-compatible "<why>"` / `--breaks-rollback "<why>"` writes the line;
+  in a project that requires one and got neither, it writes both choices as a
+  comment to replace. Either directive may now separate its reason with a
+  colon (`-- forge:backward-compatible: additive`), which before read as no
+  declaration at all.
+
 - **A Flux-safe bundle.** Flux re-applies a bundle on every interval and prunes
   what it stops carrying, so some objects that are harmless under `kubectl apply`
   are wrong under it. The bundle build now refuses, and `forge lint` (`flux-safe`)

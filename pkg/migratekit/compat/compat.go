@@ -1,6 +1,6 @@
 // Package compat reads the contracts a migration declares about itself: that
-// it is BACKWARD-COMPATIBLE (this file), and which foreign migration history a
-// baseline ADOPTS (adopt.go).
+// it is BACKWARD-COMPATIBLE, or deliberately BREAKS ROLLBACK (this file), and
+// which foreign migration history a baseline ADOPTS (adopt.go).
 //
 // THE CONTRACT. A migration's .up.sql may carry the line
 //
@@ -48,16 +48,77 @@ const Directive = "-- forge:backward-compatible"
 // directiveRe matches Directive as a whole SQL line comment, case-insensitive,
 // tolerating indentation and the `--   forge:` spacing people actually type.
 //
-// The directive must END at whitespace, an em dash or end of line — not at a
+// The directive must END at whitespace, a colon or end of line — not at a
 // `\b`. A word boundary sits between `e` and `-`, so `\b` would read
 // `forge:backward-compatible-ish` as the declaration; a rationale may follow
-// after a space (`-- forge:backward-compatible — additive column`).
+// after a space or a colon (`-- forge:backward-compatible — additive column`).
 //
 // Only a LINE COMMENT counts. A mention inside a block comment or a string is
 // prose about the directive, not the directive, and treating it as a
 // declaration would let a migration that merely discusses compatibility claim
 // it.
-var directiveRe = regexp.MustCompile(`(?i)^\s*--\s*forge:backward-compatible(?:\s|$)`)
+var directiveRe = regexp.MustCompile(`(?i)^\s*--\s*forge:backward-compatible(?:\s|:|$)`)
+
+// BreaksRollbackDirective is the line a migration carries to declare the
+// opposite: the PREVIOUS release does NOT keep working on the schema this
+// migration leaves — a dropped or renamed column old code reads, a NOT NULL
+// column old code does not write. It takes a reason on the same line:
+//
+//	-- forge:breaks-rollback the 2026-09 release stopped reading plans.legacy_tier
+//
+// The migrator treats it exactly as it treats a migration that declares
+// nothing (an older binary refuses to serve over it). What it adds is that the
+// author SAID so, in review, with why: a project that requires every migration
+// to declare itself (`database.migration_safety.require_compat_declaration`)
+// can tell a deliberate break from a forgotten declaration.
+const BreaksRollbackDirective = "-- forge:breaks-rollback"
+
+// breaksRollbackRe matches BreaksRollbackDirective by the same rules as
+// directiveRe.
+var breaksRollbackRe = regexp.MustCompile(`(?i)^\s*--\s*forge:breaks-rollback(?:\s|:|$)`)
+
+// directiveTailRe captures what follows either directive on its line.
+var directiveTailRe = regexp.MustCompile(`(?i)^\s*--\s*forge:(?:backward-compatible|breaks-rollback)(.*)$`)
+
+// Declaration is one compatibility directive line in a migration.
+type Declaration struct {
+	// Line is the 1-based line it is on.
+	Line int
+	// Reason is the text after the directive, with the separator a reader
+	// types (`—`, `-`, `:`) trimmed; "" when there is none. A reason that
+	// starts with `<` is a template placeholder (`<why …>`), not a reason,
+	// and reads as "".
+	Reason string
+}
+
+// Declarations returns every backward-compatible and every breaks-rollback
+// line in one migration's up SQL. A file is meant to carry exactly one of
+// the two; the linter reports anything else.
+func Declarations(upSQL string) (compatible, breaksRollback []Declaration) {
+	sc := bufio.NewScanner(strings.NewReader(upSQL))
+	sc.Buffer(make([]byte, 0, 64<<10), 16<<20)
+	for line := 1; sc.Scan(); line++ {
+		text := sc.Text()
+		var into *[]Declaration
+		switch {
+		case directiveRe.MatchString(text):
+			into = &compatible
+		case breaksRollbackRe.MatchString(text):
+			into = &breaksRollback
+		default:
+			continue
+		}
+		reason := ""
+		if m := directiveTailRe.FindStringSubmatch(text); m != nil {
+			reason = strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(m[1]), "—–-:"))
+		}
+		if strings.HasPrefix(reason, "<") {
+			reason = ""
+		}
+		*into = append(*into, Declaration{Line: line, Reason: reason})
+	}
+	return compatible, breaksRollback
+}
 
 // upFileRe is golang-migrate's filename grammar, restricted to the up half:
 // `<digits>_<name>.up.<ext>`. Stated here rather than imported so this
@@ -66,16 +127,12 @@ var directiveRe = regexp.MustCompile(`(?i)^\s*--\s*forge:backward-compatible(?:\
 var upFileRe = regexp.MustCompile(`^([0-9]+)_(.*)\.up\.(.*)$`)
 
 // Declared reports whether one migration's up SQL declares itself
-// backward-compatible.
+// backward-compatible. A file that ALSO declares breaks-rollback contradicts
+// itself, and is read the safe way: not compatible, so an older binary
+// refuses to serve over it rather than trusting half of the claim.
 func Declared(upSQL string) bool {
-	sc := bufio.NewScanner(strings.NewReader(upSQL))
-	sc.Buffer(make([]byte, 0, 64<<10), 16<<20)
-	for sc.Scan() {
-		if directiveRe.MatchString(sc.Text()) {
-			return true
-		}
-	}
-	return false
+	compatible, breaks := Declarations(upSQL)
+	return len(compatible) > 0 && len(breaks) == 0
 }
 
 // Migration is one up migration's version and what it declares.
@@ -90,8 +147,11 @@ type Migration struct {
 	// It is what identifies WHICH migration a version is: two branches that
 	// both claim 91 differ here, while a change of zero-padding does not.
 	Descriptor string
-	// BackwardCompatible is whether the file carries Directive.
+	// BackwardCompatible is whether the file carries Directive (and not
+	// BreaksRollbackDirective as well; see Declared).
 	BackwardCompatible bool
+	// BreaksRollback is whether the file carries BreaksRollbackDirective.
+	BreaksRollback bool
 	// Adopts is the foreign history this migration replaces, from its
 	// AdoptsDirective lines; nil when it declares none. See adopt.go.
 	Adopts *Adoption
@@ -132,7 +192,9 @@ func Scan(fsys fs.FS, dir string) ([]Migration, error) {
 		if aerr != nil {
 			return nil, fmt.Errorf("migration %s: %w", e.Name(), aerr)
 		}
-		out = append(out, Migration{Version: uint(v), Name: e.Name(), Descriptor: m[2], BackwardCompatible: Declared(string(raw)), Adopts: adopts})
+		_, breaks := Declarations(string(raw))
+		out = append(out, Migration{Version: uint(v), Name: e.Name(), Descriptor: m[2],
+			BackwardCompatible: Declared(string(raw)), BreaksRollback: len(breaks) > 0, Adopts: adopts})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })
 	return out, nil

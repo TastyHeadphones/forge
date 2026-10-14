@@ -31,6 +31,13 @@ func CreateMigration(ctx context.Context, name, dir string, opts *MigrationOptio
 	if sanitizedName == "" {
 		return fmt.Errorf("migration name %q produced an empty filename; use letters or numbers", name)
 	}
+	if opts == nil {
+		opts = &MigrationOptions{}
+	}
+	declaration, err := compatHeader(*opts)
+	if err != nil {
+		return err
+	}
 
 	version, err := migrationver.Next(dir)
 	if err != nil {
@@ -56,7 +63,7 @@ func CreateMigration(ctx context.Context, name, dir string, opts *MigrationOptio
 		upContents = GenerateContextComment(migCtx)
 	}
 
-	if err := writeNewFile(upPath, upContents); err != nil {
+	if err := writeNewFile(upPath, declaration+upContents); err != nil {
 		return err
 	}
 

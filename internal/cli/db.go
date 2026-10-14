@@ -455,6 +455,9 @@ func newDBMigrationCommand() *cobra.Command {
 	var (
 		migDir string
 		dsn    string
+
+		backwardCompatible string
+		breaksRollback     string
 	)
 
 	migrationCmd := &cobra.Command{
@@ -501,19 +504,43 @@ same one.
 There is no .down.sql. Forge rolls forward — a bad migration is repaired by a
 new migration written against the state the database is actually in.
 
+Declare, in the file, whether the PREVIOUS release keeps working on the
+schema this migration leaves — every rolling deploy runs it there:
+  --backward-compatible "<why>"  writes  -- forge:backward-compatible — <why>
+  --breaks-rollback "<why>"      writes  -- forge:breaks-rollback <why>
+A project with database.migration_safety.require_compat_declaration gets
+both choices as a comment to replace when neither flag is given, and
+` + "`forge lint --migration-safety`" + ` fails the file until it says one.
+
 Examples:
   forge db migration new add_users_table
-  forge db migration new add_preferences --dsn "$DATABASE_URL"`,
+  forge db migration new add_preferences --dsn "$DATABASE_URL"
+  forge db migration new add_retired_at --backward-compatible "additive column the previous release never reads"`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			for _, flag := range []string{"backward-compatible", "breaks-rollback"} {
+				if v, _ := cmd.Flags().GetString(flag); cmd.Flags().Changed(flag) && strings.TrimSpace(v) == "" {
+					return fmt.Errorf("--%s takes the reason: why the previous release keeps working on this schema, or why it deliberately does not", flag)
+				}
+			}
 			opts := &database.MigrationOptions{
-				DSN: dsn,
+				DSN:                dsn,
+				BackwardCompatible: backwardCompatible,
+				BreaksRollback:     breaksRollback,
+			}
+			if store, err := loadProjectStore(); err == nil {
+				opts.RequireCompatDeclaration = store.Database().MigrationSafety.RequireCompatDeclaration
 			}
 			return database.CreateMigration(cmd.Context(), args[0], resolveMigrationsDir(migDir), opts)
 		},
 	}
 	newCmd.Flags().StringVar(&migDir, "dir", "", migrationsDirFlagUsage)
 	newCmd.Flags().StringVar(&dsn, "dsn", "", "Database connection string for live schema introspection")
+	newCmd.Flags().StringVar(&backwardCompatible, "backward-compatible", "",
+		"declare that the previous release keeps working on this schema, and why (writes `-- forge:backward-compatible — <why>`)")
+	newCmd.Flags().StringVar(&breaksRollback, "breaks-rollback", "",
+		"declare that the previous release deliberately does NOT keep working on this schema, and why (writes `-- forge:breaks-rollback <why>`)")
+	newCmd.MarkFlagsMutuallyExclusive("backward-compatible", "breaks-rollback")
 	migrationCmd.AddCommand(newCmd)
 	migrationCmd.AddCommand(newDBMigrationRebaseCommand())
 
