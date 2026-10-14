@@ -283,37 +283,7 @@ release's workloads running declares `deployPhase = "post-rollout"`.
 
 ### Delivery units: how a Flux-applied bundle is ordered
 
-`forge env deploy` applies an env in its own order. A bundle a reconciler (Flux)
-applies cannot, so it states the order as TREES: every real cluster is split into
-`manifests/<cluster>/<unit>/<phase>/` (phase `pre`, `rollout`, `post`), and each
-tree depends on the one before it. Phases are the same rules as above: a Job is
-`pre` unless it declares `deployPhase = "post-rollout"`, workloads are `rollout`,
-and everything else is the `pre` support a Job rests on.
-
-A **unit** is a named slice you deliver in a chosen order. Declare the order once
-and place workloads and raw objects in units:
-
-```kcl
-delivery_units = [
-    forge.DeliveryUnit {name = "daemon-substrate", after = []}            # waits for nothing
-    forge.DeliveryUnit {name = "hub-base", after = ["daemon-substrate"]}
-    forge.DeliveryUnit {name = "control-plane", after = ["hub-base"]}
-]
-wl.migrate | {delivery_unit = "control-plane", runtime = ...}
-forge.Manifests {name = "crds", delivery_unit = "hub-base", objects = [...]}
-```
-
-- `after` names the units whose LAST tree must be Ready, on every cluster it has
-  trees, before this unit's first tree applies. Unset means "after `base`"
-  (the unit nothing else declares); `after = []` waits for nothing. "The daemon
-  cluster before the hub" is a dependency between units, never a cluster name.
-- An env that declares no units puts everything in `base`: it still gets trees.
-- A cycle, a dependency on a unit nothing declares, or a unit name that is not a
-  path segment is refused at render.
-- **Moving an object to another unit between releases is a `tree_moved` stop
-  finding** (acknowledge it with `--acknowledge-destructive tree_moved`): the tree
-  it leaves prunes it and the tree it joins creates it, with nothing ordering the
-  two. Adopt it into the new tree first, or accept the delete and re-create.
+A bundle a reconciler applies states its order as trees per cluster × unit × phase. Declare units with `Bundle.delivery_units`, place objects with `delivery_unit`: `deploy/delivery-units`.
 
 ### Frontends bind a runtime too
 
