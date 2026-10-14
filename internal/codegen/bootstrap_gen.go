@@ -646,6 +646,12 @@ type DepsAutoStub struct {
 	// deduplicates these across stubs into the top-level
 	// ExtraImports field on the template data.
 	ExtraImports []ExtraImport
+	// Optional marks a `// forge:optional-dep` field. Its stub type is
+	// emitted so a test can pass one through With<Svc>Deps, but
+	// NewTest<Svc> does not install it: nil is the field's declared
+	// state, and the code's nil path is what a test that says nothing
+	// about the field should exercise.
+	Optional bool
 }
 
 // GenerateBootstrapTesting generates the per-component test harness: one
@@ -1506,11 +1512,13 @@ var bareDepsFieldNames = map[string]bool{
 
 // computeAutoStubs walks a service's handler directory, parses its
 // Deps struct + locally-declared interfaces, and returns one
-// DepsAutoStub for every required Deps field whose type is an
+// DepsAutoStub for every Deps field whose type is an
 // interface forge can satisfy with a zero-value stub. The bare-Deps
-// pair (Logger / Config) and the optional-dep set are excluded —
-// those are either filled in by the template's existing
-// default-merge step or deliberately left nil.
+// pair (Logger / Config) is excluded — the template's default-merge
+// step fills it. A `// forge:optional-dep` field gets a stub too, marked
+// Optional: the type exists for a test to pass, and NewTest<Svc> leaves
+// the field nil (see DepsAutoStub.Optional). An optional field forge
+// cannot stub is no TODO: nothing requires it.
 //
 // Two type shapes are handled:
 //
@@ -1551,14 +1559,14 @@ func computeAutoStubsWith(handlerDir string, resolver *typesResolver) ([]DepsAut
 		if bareDepsFieldNames[f.Name] {
 			continue
 		}
-		if f.Optional {
-			continue
-		}
 		t := strings.TrimSpace(f.Type)
 
 		// (1) Bare-identifier interface declared in this package.
 		if iface, ok := locals[t]; ok {
 			if len(iface.Unresolved) > 0 {
+				if f.Optional {
+					continue // nothing requires it; no TODO
+				}
 				// A stub missing the methods of an embed it could not
 				// read would not compile; leave the field to the test.
 				unresolved = append(unresolved, UnresolvedAutoStub{
@@ -1580,6 +1588,7 @@ func computeAutoStubsWith(handlerDir string, resolver *typesResolver) ([]DepsAut
 				// see the note on that field: it describes where the INTERFACE
 				// lives, and it gates the "<alias>." rewrite this stub needs.
 				ExtraImports: iface.ExtraImports,
+				Optional:     f.Optional,
 			})
 			continue
 		}
@@ -1593,6 +1602,9 @@ func computeAutoStubsWith(handlerDir string, resolver *typesResolver) ([]DepsAut
 			typeName := t[dot+1:]
 			res, ok := resolveCrossPkgInterface(handlerDir, pkgAlias, typeName, resolver)
 			if !ok {
+				if f.Optional {
+					continue // nothing requires it; no TODO
+				}
 				// Soft-fail: record the selector so the template can
 				// surface a TODO comment. The field still stays nil
 				// at construction time — the comment exists purely to
@@ -1611,6 +1623,7 @@ func computeAutoStubsWith(handlerDir string, resolver *typesResolver) ([]DepsAut
 				Methods:            res.Methods,
 				CrossPackage:       true,
 				ExtraImports:       SortedNeededImports(res.NeededImports),
+				Optional:           f.Optional,
 			})
 		}
 	}
