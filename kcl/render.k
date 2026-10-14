@@ -2047,6 +2047,7 @@ _render_helm_chart = lambda h: HelmChart -> any {
         "namespace_labels": h.namespace_labels if h.namespace_labels else None
         "namespace_annotations": h.namespace_annotations if h.namespace_annotations else None
         "prune": h.prune
+        "patches": h.patches if h.patches else None
     }
 }
 
@@ -2133,6 +2134,13 @@ crd = crd_lib.crd
 # in one cluster collide on the same CRDs and the same `flux-system`.
 flux_chart = flux_lib.flux_chart
 
+# flux_placement_delivery_v1 / flux_namespace_bindings — the `delivery-v1` pool
+# placement for flux_chart(placement = ...), and the per-namespace RoleBindings
+# its default RBAC model (rbac = "namespaced") needs in every namespace that holds
+# Flux objects (lib/flux.k).
+flux_placement_delivery_v1 = flux_lib.flux_placement_delivery_v1
+flux_namespace_bindings = flux_lib.flux_namespace_bindings
+
 # FLUX_CHART_OCI / FLUX_CHART_VERSION / FLUX_NAMESPACE — the pinned chart
 # reference, its version and Flux's namespace (lib/flux.k). Re-exported
 # because FLUX_CHART_OCI is the SHARED-FLUX DETECTOR: a consumer declaring
@@ -2141,6 +2149,11 @@ flux_chart = flux_lib.flux_chart
 FLUX_CHART_OCI = flux_lib.FLUX_CHART_OCI
 FLUX_CHART_VERSION = flux_lib.FLUX_CHART_VERSION
 FLUX_NAMESPACE = flux_lib.FLUX_NAMESPACE
+FLUX_DEPLOY_SERVICE_ACCOUNT = flux_lib.FLUX_DEPLOY_SERVICE_ACCOUNT
+FLUX_RECONCILER_ROLE = flux_lib.FLUX_RECONCILER_ROLE
+FLUX_SOURCE_ROLE = flux_lib.FLUX_SOURCE_ROLE
+FLUX_PRIORITY_CLASS = flux_lib.FLUX_PRIORITY_CLASS
+FLUX_RUNTIME_CLASS_GVISOR = flux_lib.FLUX_RUNTIME_CLASS_GVISOR
 
 # target_arch — the GOARCH forge resolved for this build (lib/build.k).
 #

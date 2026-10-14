@@ -148,6 +148,12 @@ type HelmChartSpec struct {
 	// spec built by hand never deletes anything by accident; the KCL
 	// declaration defaults it to on.
 	Prune bool
+	// Patches are merge patches applied to the objects `helm template`
+	// rendered, keyed `Kind/name` (the Bundle.overrides grammar, minus the
+	// cluster qualifier). They reach what a chart's values cannot — a field
+	// the chart does not template, such as a pod's runtimeClassName. Every
+	// key must match exactly one rendered object.
+	Patches map[string]any
 }
 
 // renderedChart pairs a chart spec with its rendered (stamped,
@@ -453,7 +459,48 @@ func RenderHelmChart(ctx context.Context, spec HelmChartSpec) (string, error) {
 	// Secret) are KEPT — they produce prerequisite cluster state the
 	// workloads mount, not a post-facto check. See dropPostHelmHooks.
 	withNS = dropPostHelmHooks(withNS)
+	withNS, err = applyChartPatches(spec.Name, withNS, spec.Patches)
+	if err != nil {
+		return "", err
+	}
 	return stampAppLabel(withNS, spec.Name, spec.Owner), nil
+}
+
+// applyChartPatches merges HelmChart.patches into the rendered stream. It
+// reuses the Bundle.overrides engine, so a patch merges the way an override
+// does (strategic for a built-in kind, RFC 7386 for a CRD, `null` deletes) and
+// a key that matches nothing, or two objects, is an error naming the chart and
+// the candidates rather than a silently ignored patch. A chart with no patches
+// is returned byte for byte.
+func applyChartPatches(chart, manifests string, patches map[string]any) (string, error) {
+	if len(patches) == 0 {
+		return manifests, nil
+	}
+	overrides := make(map[string]map[string]any, len(patches))
+	for k, v := range patches {
+		patch, ok := v.(map[string]any)
+		if !ok {
+			return "", fmt.Errorf("helm chart %q: patches[%q] must be a map of the fields to change, got %T", chart, k, v)
+		}
+		overrides[k] = patch
+	}
+	items, err := decodeObjectStream(manifests)
+	if err != nil {
+		return "", fmt.Errorf("helm chart %q: patches need a readable render: %w", chart, err)
+	}
+	patched, _, err := applyOverrides(items, overrides, nil)
+	if err != nil {
+		return "", fmt.Errorf("helm chart %q: patches: %w", chart, err)
+	}
+	docs := make([]string, 0, len(patched))
+	for _, it := range patched {
+		b, err := yaml.Marshal(it)
+		if err != nil {
+			return "", fmt.Errorf("helm chart %q: encode patched object: %w", chart, err)
+		}
+		docs = append(docs, strings.TrimRight(string(b), "\n"))
+	}
+	return strings.Join(docs, docDelimiter), nil
 }
 
 // namespaceManifest renders the `kind: Namespace` document for ns, or "" when

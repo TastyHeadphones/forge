@@ -132,6 +132,7 @@ func helmChartSpecsFromEntities(ctx context.Context, charts []HelmChartEntity, d
 			NamespaceAnnotations: c.NamespaceAnnotations,
 			Owner:                owner,
 			Prune:                c.PruneEnabled(),
+			Patches:              c.Patches,
 		})
 	}
 	return specs, nil
