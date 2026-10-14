@@ -750,6 +750,11 @@ type MigrationSafetyConfig struct {
 	UnsafeAddColumn   string `yaml:"unsafe_add_column,omitempty"`  // error, warn, off
 	DestructiveChange string `yaml:"destructive_change,omitempty"` // error, warn, off
 	VolatileDefault   string `yaml:"volatile_default,omitempty"`   // warn, error, off
+	// RequireCompatDeclaration makes `forge lint --migration-safety` require
+	// every migration after the baseline to declare `-- forge:backward-compatible
+	// — <why>` or `-- forge:breaks-rollback <why>` (migration-compat-undeclared,
+	// migration-compat-reason). Off by default.
+	RequireCompatDeclaration bool `yaml:"require_compat_declaration,omitempty"`
 }
 
 // IsEnabled reports whether migration safety linting is on. Nil
