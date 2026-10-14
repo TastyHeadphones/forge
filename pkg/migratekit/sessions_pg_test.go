@@ -68,12 +68,15 @@ func sessionCapped(t *testing.T, n int) (dsn, role string, admin *sql.DB) {
 	return u.String(), role, admin
 }
 
-// sessionsOf counts the role's live sessions, and how many of them are blocked
-// on an advisory lock.
+// sessionsOf counts the role's live sessions, and how many of them are waiting
+// for the run lock. A waiter polls (runlock.go, A WAITER HOLDS NOTHING), so it
+// is mostly idle and invisible to pg_locks: it is a session whose last query
+// was the run lock's poll, while the test holds that lock.
 func sessionsOf(t *testing.T, admin *sql.DB, role string) (total, waiting int) {
 	t.Helper()
-	err := admin.QueryRow(`SELECT count(*), count(*) FILTER (WHERE wait_event_type = 'Lock' AND wait_event = 'advisory')
-		FROM pg_stat_activity WHERE usename = $1`, role).Scan(&total, &waiting)
+	poll := fmt.Sprintf("SELECT pg_try_advisory_lock(%d)", int64(runLockKey))
+	err := admin.QueryRow(`SELECT count(*), count(*) FILTER (WHERE query = $2)
+		FROM pg_stat_activity WHERE usename = $1`, role, poll).Scan(&total, &waiting)
 	if err != nil {
 		t.Fatal(err)
 	}

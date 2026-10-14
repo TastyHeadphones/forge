@@ -241,6 +241,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its error, returns a `connect.Code…`, or assigns one in a function that
   builds the error from it. Those last two spellings (a code mapper; a switch
   that picks the code for one `NewError` after it) are now caught as well.
+- **Replicas waiting for the migration run lock no longer deadlock a
+  `CREATE INDEX CONCURRENTLY`.** migratekit's waiters blocked inside `SELECT
+  pg_advisory_lock(…)`, a statement that holds a snapshot until the lock is
+  free. A concurrent index build waits for every older snapshot to end, so the
+  build waited on the waiters while they waited on the run lock its session
+  held, and postgres killed one side: a waiter (`take the migration run lock:
+  … deadlock detected (40P01)`, failing every replica's boot but one), or the
+  build, leaving the schema dirty and the index INVALID. Reliant measured it
+  with four replicas booting together, every trial. Every session-level lock
+  migratekit takes (the run lock, and the record locks held across a
+  golang-migrate write) now polls `pg_try_advisory_lock`, 10ms backing off to
+  1s, holding nothing between attempts, through every entry point (`Apply`,
+  `AutoMigrate`, `Open`, `Up`, `Force`) and on the run's one session, so a
+  session-mode PgBouncer sees the same thing. The wait ends with the caller's
+  context (`Apply`; `Open`/`Up`/`Force` take none and wait for the running
+  migration as before). A `CREATE INDEX CONCURRENTLY` still has to be its
+  migration file's only statement.
 
 - **An interface that embeds another package's interface keeps its embedded
   methods in every generated double.** The handler test harness, the contract
