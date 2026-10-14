@@ -220,6 +220,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`forgeconv-no-handler-error-mapping` fires only on sentinels mapped to
+  connect errors.** The body-shape signal counted every `errors.Is` /
+  `errors.As` in a function and fired when the function also built a
+  `connect.NewError` anywhere, so a handler that switches on sentinels to
+  choose a RESPONSE status — reliant's `PollCopilotDeviceAuth` maps Copilot
+  device-flow errors to PENDING / EXPIRED / DENIED and builds connect errors
+  only for a missing argument and a failed save — was reported as a
+  hand-rolled mapper. A sentinel now counts only when the `case` (or `if`)
+  arm it selects produces a connect error: it returns a `connect.NewError` as
+  its error, returns a `connect.Code…`, or assigns one in a function that
+  builds the error from it. Those last two spellings (a code mapper; a switch
+  that picks the code for one `NewError` after it) are now caught as well.
+
 - **An interface that embeds another package's interface keeps its embedded
   methods in every generated double.** The handler test harness, the contract
   mock (`mock_gen.go`) and the observe decorator (`middleware_gen.go`) read
