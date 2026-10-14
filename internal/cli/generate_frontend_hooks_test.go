@@ -284,27 +284,26 @@ func TestGenerateFrontendHooks_RenamedServiceOrphanIsSweptAsStale(t *testing.T) 
 	ctx := newCleanupCtx(dir, cs, []codegen.ServiceDef{
 		fakeService("WorkorderService", "proto/services/workorder/v1/workorder.proto"),
 	}, cfg)
-	candidates, handEdited, err := cleanupStaleArtifacts(ctx)
+	sweep, err := cleanupStaleArtifacts(ctx)
 	if err != nil {
 		t.Fatalf("cleanupStaleArtifacts: %v", err)
 	}
-	if len(handEdited) != 0 {
-		t.Errorf("handEdited = %v, want empty", handEdited)
+	if len(sweep.HandEdited) != 0 {
+		t.Errorf("handEdited = %v, want empty", sweep.HandEdited)
 	}
-	wantAbs := filepath.Join(dir, oldRel)
 	found := false
-	for _, c := range candidates {
-		if c == wantAbs {
+	for _, c := range sweep.Removed {
+		if c == oldRel {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("expected the orphaned pre-rename hooks file %s among cleanup candidates, got %v", wantAbs, candidates)
+		t.Errorf("expected the orphaned pre-rename hooks file %s among removed stale files, got %v", oldRel, sweep.Removed)
 	}
-	// The renamed file must NOT be a candidate — this run wrote it.
-	for _, c := range candidates {
-		if c == filepath.Join(dir, newRel) {
-			t.Errorf("current hooks file %s should not be a stale-artifact candidate", newRel)
+	// The renamed file must NOT be removed — this run wrote it.
+	for _, c := range sweep.Removed {
+		if c == newRel {
+			t.Errorf("current hooks file %s should not be a stale artifact", newRel)
 		}
 	}
 }

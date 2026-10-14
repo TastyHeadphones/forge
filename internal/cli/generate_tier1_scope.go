@@ -160,7 +160,7 @@ var tier1OwnerRegistry = []tier1OwnerEntry{
 	// internal/<pkg>/mock_gen.go is emitted by stepInternalContracts
 	// (gateContractsEnabled). When features.contracts=false the emitter
 	// never runs, so absence-from-WrittenThisRun is uninformative and
-	// the stale sweep must leave the mocks alone — `--force-cleanup`
+	// the stale sweep must leave the mocks alone — the sweep
 	// deleting live mocks that package tests compile against is the
 	// disaster case (kalshi FORGE_BACKLOG #15). Two depth variants
 	// because filepath.Match's `*` doesn't cross `/` and the contracts

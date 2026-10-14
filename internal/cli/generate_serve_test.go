@@ -186,9 +186,8 @@ func TestAllServiceRuntimeNames(t *testing.T) {
 // TestCleanupStale_TombstonedHandlerFilesBecomeCandidates pins the
 // retirement flow's cleanup half: certified (forge:hash-stamped) Tier-1
 // files under a retired handlers dir (not re-written this run because
-// the emitters are gated) are report-only candidates by default and
-// deleted under --force-cleanup; user-owned (unmarked Tier-2) files in
-// the same dir are never candidates.
+// the emitters are gated) are deleted; user-owned (unmarked Tier-2)
+// files in the same dir are never candidates.
 func TestCleanupStale_TombstonedHandlerFilesBecomeCandidates(t *testing.T) {
 	checksums.ResetPerRunState()
 	checksums.ResetSkipWrite()
@@ -223,34 +222,26 @@ func TestCleanupStale_TombstonedHandlerFilesBecomeCandidates(t *testing.T) {
 		HasServices: true, // owner-step gate for handlers paths
 	}
 
-	candidates, handEdited, err := cleanupStaleArtifacts(ctx)
+	sweep, err := cleanupStaleArtifacts(ctx)
 	if err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
-	if len(handEdited) != 0 {
-		t.Errorf("handEdited = %v, want none", handEdited)
+	if len(sweep.HandEdited) != 0 {
+		t.Errorf("handEdited = %v, want none", sweep.HandEdited)
 	}
-	if len(candidates) != 1 || !strings.HasSuffix(candidates[0], filepath.Join("internal", "handlers", "project", "handlers_gen.go")) {
-		t.Fatalf("candidates = %v, want exactly the Tier-1 handlers_gen.go", candidates)
-	}
-	// Report-only by default: the file survives.
-	if _, statErr := os.Stat(filepath.Join(handlerDir, "handlers_gen.go")); statErr != nil {
-		t.Errorf("default run must not delete: %v", statErr)
+	if want := []string{"internal/handlers/project/handlers_gen.go"}; strings.Join(sweep.Removed, ",") != strings.Join(want, ",") {
+		t.Fatalf("removed = %v, want exactly the Tier-1 handlers_gen.go", sweep.Removed)
 	}
 
-	// --force-cleanup deletes the candidate, but never touches the
-	// user-written Tier-2 file. (The manifest-prune assertion is gone
-	// with the manifest: the marker that recorded forge's authorship is
-	// deleted WITH the file — nothing else to prune.)
-	ctx.ForceCleanup = true
-	if _, _, err := cleanupStaleArtifacts(ctx); err != nil {
-		t.Fatalf("force cleanup: %v", err)
-	}
+	// The pristine stale file goes, but the user-written Tier-2 file is
+	// never touched. (The manifest-prune assertion is gone with the
+	// manifest: the marker that recorded forge's authorship is deleted
+	// WITH the file — nothing else to prune.)
 	if _, statErr := os.Stat(filepath.Join(handlerDir, "handlers_gen.go")); !os.IsNotExist(statErr) {
-		t.Errorf("force-cleanup must delete handlers_gen.go, stat err = %v", statErr)
+		t.Errorf("the sweep must delete handlers_gen.go, stat err = %v", statErr)
 	}
 	if _, statErr := os.Stat(filepath.Join(handlerDir, "handlers.go")); statErr != nil {
-		t.Errorf("user-written handlers.go must survive force-cleanup: %v", statErr)
+		t.Errorf("user-written handlers.go must survive the sweep: %v", statErr)
 	}
 }
 

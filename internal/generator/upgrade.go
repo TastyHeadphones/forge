@@ -332,7 +332,7 @@ func managedFilesForKindBinary(kind, binary, binName string) []managedFile {
 		// EVERY ONE of them also needs an UpgradeManagedPaths entry — they
 		// were Tier-1 in older projects, so a copy is on disk carrying
 		// forge's certification marker that no run writes anymore. See the
-		// exclusion list there; without it `--force-cleanup` deletes them.
+		// exclusion list there; without it the stale sweep deletes them.
 		//
 		// cmd/<bin>/cmd/root_gen.go is RETIRED — there is no generated file in
 		// the command tree anymore. It held three things, and none of them
@@ -351,7 +351,7 @@ func managedFilesForKindBinary(kind, binary, binName string) []managedFile {
 		//     newDBCmd directly.
 		//
 		// The on-disk copy is swept by removeRetiredRootGen; the
-		// UpgradeManagedPaths entry below keeps --force-cleanup from racing it.
+		// UpgradeManagedPaths entry below keeps the stale sweep from racing it.
 
 		// ── Tier 2: Checksum-protected, committed to git ──
 
@@ -446,7 +446,7 @@ func managedFilesForKindBinary(kind, binary, binName string) []managedFile {
 // never matched and the sweep flagged these files as stale again. Every
 // key goes through add, so the extra list below cannot skip the
 // normalization: it once did, and on Windows the sweep marked the
-// scaffold-once cmd/cmd/*.go files stale and --force-cleanup deleted them.
+// scaffold-once cmd/cmd/*.go files stale and deleted them.
 func UpgradeManagedPaths() map[string]bool {
 	out := map[string]bool{}
 	add := func(p string) { out[filepath.ToSlash(p)] = true }
@@ -488,8 +488,8 @@ func UpgradeManagedPaths() map[string]bool {
 		// generated" + forge:hash markers. Each is now scaffold-once and
 		// user-owned, so no `forge generate` run writes it and it never
 		// enters WrittenThisRun. Without these entries the stale sweep sees
-		// a certified file nobody emitted, calls it stale, and
-		// `--force-cleanup` DELETES it — files that, post-split, hold
+		// a certified file nobody emitted, calls it stale, and DELETES
+		// it — files that, post-split, hold
 		// decisions the user may have edited: the serve pipeline, the
 		// all-services ServeSpec, the ldflags version stamp, and the
 		// migration policy.
@@ -509,8 +509,8 @@ func UpgradeManagedPaths() map[string]bool {
 		// project has a Tier-1 root.go on disk, all of them pristine (there
 		// was no reason to edit a file forge overwrote), and pristine is
 		// exactly the condition under which the sweep deletes rather than
-		// reports. Without this line `--force-cleanup` removes the command
-		// root from every upgraded project.
+		// reports. Without this line the sweep removes the command root
+		// from every upgraded project.
 		cmdTreePath("", "root.go"),
 	} {
 		add(p)

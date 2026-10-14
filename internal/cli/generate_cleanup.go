@@ -21,11 +21,25 @@
 //     WrittenThisRun is uninformative.
 //   - Upgrade-managed paths. `forge project upgrade` is their emitter; `forge
 //     generate` deliberately leaves them alone.
-//   - Verification. Only PRISTINE markers (certified machine output)
-//     are deleted. A file whose marker fails verification was
-//     hand-edited — stale or not, those bytes are the user's now, so
-//     it is reported but never removed.
+//   - Scaffold-once paths. A path in the scaffold ledger is the user's,
+//     marker or not.
+//   - Verification. A PRISTINE marker (certified machine output) is
+//     deleted: those bytes are exactly what forge rendered, so nothing
+//     of the user's goes with them. A file whose marker fails
+//     verification was hand-edited — the bytes are the user's now, so
+//     it is reported and kept unless --force-cleanup asks for it too.
 //   - Disowned paths are never candidates.
+//
+// Deletion is the default because a report nobody acts on leaves a
+// stale file in the build: a factories test for an entity forge no
+// longer generates keeps compiling against helpers that are gone, and
+// the only way out used to be a flag --help did not show. Every delete
+// is journaled, so a run that fails later rewinds it; and the sweep
+// runs only in a full pipeline (no --steps preset or --templates-only
+// run includes it) after every emitter, so "not written this run"
+// means no emitter writes the path any more. The caller (stepCleanupStale)
+// skips the sweep when a step failed as a warning: that step's outputs
+// are unwritten for a reason other than staleness.
 //
 // Scoped-fallback entries (.forge/hashes.json, comment-incapable
 // formats) get the same treatment keyed off the recorded hash.
@@ -49,20 +63,28 @@ import (
 // cleanupStaleArtifacts.
 var upgradeManagedPaths = generator.UpgradeManagedPaths()
 
-// cleanupStaleArtifacts scans for forge-certified files the current
-// pipeline run did not re-emit and returns them as deletion candidates,
-// plus the list of stale-but-hand-edited files (reported, never
-// deleted). Both slices are sorted for deterministic output. Candidate
-// paths are returned absolute (legacy contract of the caller's
-// Rel-based display); handEdited paths are project-relative.
-//
-// Deletion is gated on ctx.ForceCleanup: when true the function deletes
-// each pristine candidate as it walks; when false it returns the
-// candidate list without touching the filesystem so the caller can
-// format a "would delete" warning.
-func cleanupStaleArtifacts(ctx *pipelineContext) (candidates []string, handEdited []string, err error) {
+// staleSweep is what one stale-artifact sweep found and did. Paths are
+// project-relative and sorted.
+type staleSweep struct {
+	// Removed are the stale files deleted this run: every pristine one,
+	// and the hand-edited ones too under --force-cleanup.
+	Removed []string
+	// HandEdited are the stale files whose marker no longer verifies.
+	// They are kept unless --force-cleanup was passed, in which case
+	// each one deleted is also in Removed.
+	HandEdited []string
+}
+
+// cleanupStaleArtifacts deletes the forge-certified files the current
+// pipeline run did not re-emit, subject to the guardrails in the file
+// comment: pristine ones always, hand-edited ones only under
+// ctx.ForceCleanup. A removal that fails (permission denied and the
+// like) is warned about and left out of Removed rather than aborting
+// the sweep.
+func cleanupStaleArtifacts(ctx *pipelineContext) (staleSweep, error) {
+	var sweep staleSweep
 	if ctx == nil {
-		return nil, nil, nil
+		return sweep, nil
 	}
 	cs := ctx.Checksums
 
@@ -103,9 +125,19 @@ func cleanupStaleArtifacts(ctx *pipelineContext) (candidates []string, handEdite
 		// are the same lane, but their paths depend on the frontends a
 		// project declares, so they cannot be in the static union above.
 		// Without this the sweep reads them as "certified, not written this
-		// run" and --force-cleanup DELETES the pristine ones — the exact
-		// data loss UpgradeManagedPaths exists to prevent.
+		// run" and DELETES the pristine ones — the exact data loss
+		// UpgradeManagedPaths exists to prevent.
 		if generator.IsFrontendManagedPath(rel) {
+			continue
+		}
+		// Scaffold-once paths are the user's. A file that was Tier-1 in an
+		// older forge and is scaffold-once now still carries the old marker,
+		// pristine, and its emitter never rewrites it — but that emitter
+		// asked the scaffold ledger about it (ScaffoldOnceDecision records
+		// a present file), so the ledger says it is live. Without this a
+		// missing UpgradeManagedPaths entry deletes, say, a project's
+		// command root on the first run after the transition.
+		if checksums.ScaffoldRecorded(ctx.ProjectDir, rel) {
 			continue
 		}
 		// Owner-step gate. If the owning emitter step is gated off this
@@ -130,18 +162,15 @@ func cleanupStaleArtifacts(ctx *pipelineContext) (candidates []string, handEdite
 			pristine = checksums.BodyHash(content) == cs.Unstampable[rel]
 		}
 		if !pristine {
-			// Stale AND hand-edited: the bytes are the user's now.
-			// Surface it so the drift isn't silent, but never delete.
-			handEdited = append(handEdited, rel)
-			continue
+			// Stale AND hand-edited: the bytes are the user's now, so
+			// they go only when --force-cleanup asks for them.
+			sweep.HandEdited = append(sweep.HandEdited, rel)
+			if !ctx.ForceCleanup {
+				continue
+			}
 		}
 
-		candidates = append(candidates, full)
-		if !ctx.ForceCleanup {
-			continue
-		}
-
-		// Journaled: the --force-cleanup sweep must rewind with an aborted run.
+		// Journaled: the sweep must rewind with an aborted run.
 		if removeErr := checksums.RemoveJournaled(full); removeErr != nil && !os.IsNotExist(removeErr) {
 			// Permission-denied and friends: surface a warning rather
 			// than aborting — a single locked file shouldn't tank the
@@ -149,6 +178,7 @@ func cleanupStaleArtifacts(ctx *pipelineContext) (candidates []string, handEdite
 			fmt.Fprintf(os.Stderr, "⚠️  cleanup partial: could not remove %s (%v)\n", full, removeErr)
 			continue
 		}
+		sweep.Removed = append(sweep.Removed, rel)
 		if cs != nil {
 			delete(cs.Unstampable, rel)
 		}
@@ -163,7 +193,6 @@ func cleanupStaleArtifacts(ctx *pipelineContext) (candidates []string, handEdite
 		}
 	}
 
-	sort.Strings(candidates)
-	sort.Strings(handEdited)
-	return candidates, handEdited, nil
+	// rels is sorted, so both slices already are.
+	return sweep, nil
 }

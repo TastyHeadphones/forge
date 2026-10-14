@@ -17,9 +17,9 @@ import (
 // WHY A RENAME NEEDS THIS AT ALL. A generated file's old copy is still on disk
 // after the emitter starts writing a new name, and it still carries forge's
 // "Code generated — DO NOT EDIT" banner and hash marker. Nothing emits it
-// anymore, which makes it exactly what the stale-artifact sweep deletes under
-// `--force-cleanup` — and in the meantime the package has two declarations of
-// the same symbols and does not compile. Reclaiming it here, in the emitter
+// anymore, which makes it exactly what the stale-artifact sweep deletes — but
+// the sweep runs after every emitter, and before it the package has two
+// declarations of the same symbols and does not compile. Reclaiming it here, in the emitter
 // that supersedes it, is what makes a rename a single atomic-looking change to
 // the user.
 //

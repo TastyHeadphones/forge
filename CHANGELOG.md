@@ -101,6 +101,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ProjectShape` and `Build` now build the shape through one constructor, and
   `TestBundleSealsEveryShapeField` fails when a shape field is recorded but not
   sealed. See `forge skill load migrations/v0.1.46`.
+- **`forge generate` deletes the stale files it generated.** A forge-certified
+  file that no emitter writes any more was only listed, with "run with
+  --force-cleanup to delete", and `--force-cleanup` was hidden from `--help`
+  — so the files stayed and kept compiling. On reliant, marking the
+  model-endpoint rpcs `// forge:custom` left
+  `internal/handlers/model_endpoint/factories_gen_test.go` behind. Now a
+  stale file whose bytes are still exactly what forge rendered is deleted (the
+  delete is journaled, so a run that fails later puts it back). A stale file
+  that was hand-edited is kept and listed with the two ways to settle it:
+  `forge generate --force-cleanup`, now in `--help`, deletes those too, and
+  `forge project disown <path>` keeps one as yours. The sweep is skipped, and
+  says so, when a step failed as a warning that run, since that step's outputs
+  look stale only because it wrote nothing. A path in the scaffold-once ledger
+  is never deleted, even when it still carries a marker from the forge
+  version in which it was regenerated every run.
 - **`forge db migration new` writes a short header; `--context` writes the
   full one.** Every new migration used to open with the reconstructed schema,
   the whole previous migration and every filename in the directory — 4,658
@@ -292,9 +307,9 @@ FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
   having written nothing (every CRUD rpc hand-written, or the scaffold-once test
   already born). Now: a failed ORM step prints no success line; the CRUD step
   after it reports itself skipped, with the reason, and writes nothing; each
-  CRUD line reports what its call did (`⏭️ handlers/<svc>: no CRUD wiring
-  written — every CRUD rpc (GetMessage) is implemented by hand`); and the
-  completion line is followed by the steps that failed as warnings. (The ORM
+  CRUD line reports what its call did
+  (`⏭️ handlers/<svc>: no CRUD wiring written — every CRUD rpc (GetMessage) is implemented by hand`);
+  and the completion line is followed by the steps that failed as warnings. (The ORM
   failure itself is correct there: reliant's `internal/db` declares `Message`
   and `ModelEndpoint`, which forge's ORM would redeclare.)
 - **`forge project shapes` diffs declared rpcs against handlers.** A handler
@@ -334,6 +349,9 @@ FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
   ChatService.ListMessages (proto/reliant/v1/chat.proto:221)`), by the same
   rule that decides what is an entity. The refusal is now a typed
   `*generator.ORMCollisionError`.
+  overlap — and says why. Any command run by the pinned forge
+  (`forge generate` after a pin bump) points the driver at itself; a forge that
+  is not the pin never replaces a working driver.
 
 - **`forgeconv-no-handler-error-mapping` fires only on sentinels mapped to
   connect errors.** The body-shape signal counted every `errors.Is` /

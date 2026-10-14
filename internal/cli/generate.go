@@ -220,7 +220,7 @@ forensics, parallel-lane and migration escape hatches); run
 	cmd.Flags().BoolVar(&skipValidate, "skip-validate", false, "Skip the final validate step — compiling every package and _test.go, as 'go build ./...' would, without linking (useful during multi-lane migrations when the tree is in a partial-build state)")
 	cmd.Flags().BoolVar(&skipPreChecks, "skip-pre-checks", false, "Bypass the pre-codegen contract-shape check (useful when a parallel lane's contract violation would otherwise block regen of this lane)")
 	cmd.Flags().BoolVar(&checkOnly, "check", false, "Run generate into a tmpdir and diff against the current tree; exit 1 on drift (for CI guards)")
-	cmd.Flags().BoolVar(&forceCleanup, "force-cleanup", false, "Actually delete stale generated files. Default is report-only: print which files WOULD be deleted and leave them in place.")
+	cmd.Flags().BoolVar(&forceCleanup, "force-cleanup", false, "Also delete stale generated files that carry hand-edits. Generate always deletes the stale files nobody edited; without this flag it lists the edited ones and keeps them.")
 	cmd.Flags().BoolVar(&templatesOnly, "templates-only", false, "Re-render template-driven files only. Skips cleanup sweep, drift-guard, and validation. Use when a template change needs to propagate to a project that has uncommitted WIP and can't tolerate a full regen.")
 	cmd.Flags().StringVar(&steps, "steps", "", "Narrow the pipeline to a named step preset. Valid values: \"bootstrap-only\" (used internally by 'forge scaffold worker'), \"mocks\" (regen both kinds of mock_gen.go — contract-derived and service-derived — after a contract.go or proto change; skips the Tier-1 drift guard since mocks cannot stomp Tier-1 files), \"env-config\" (write only the config modules every env's KCL imports — config_gen.k, frontend_config_gen.k, each env's config.k — so the envs render; used internally by 'forge project rescaffold').")
 	// Loud-by-default architecture flags. See the per-flag fields on
@@ -255,7 +255,6 @@ forensics, parallel-lane and migration escape hatches); run
 		"explain-drift",     // drift forensics (debugging the drift guard)
 		"skip-validate",     // multi-lane migration escape hatch
 		"skip-pre-checks",   // parallel-lane escape hatch
-		"force-cleanup",     // destructive cleanup of stale generated files
 		"templates-only",    // forge-template-development fast path
 		"steps",             // pipeline narrowing (internal/agent fast paths)
 		"strict",            // pipeline-hardening mode for forge CI/dev
@@ -337,11 +336,9 @@ type pipelineFlags struct {
 	// touches, just at different layers (drift-guard vs step execution).
 	Steps string
 
-	// ForceCleanup opts in to the destructive stale-artifact sweep.
-	// Default (false) makes stepCleanupStale report-only: it prints
-	// which manifest-recorded files would be deleted but leaves them
-	// on disk. See the matching pipelineContext.ForceCleanup field for
-	// the cp-forge surprise-delete rationale.
+	// ForceCleanup makes the stale-artifact sweep delete hand-edited
+	// stale files as well as pristine ones. See the matching
+	// pipelineContext.ForceCleanup field.
 	ForceCleanup bool
 
 	// TemplatesOnly restricts the pipeline to template-driven render

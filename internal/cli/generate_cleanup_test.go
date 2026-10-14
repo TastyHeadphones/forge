@@ -6,7 +6,7 @@
 // current run did not re-emit it, its owning emitter step is active,
 // it is not disowned / upgrade-managed, and its marker still VERIFIES
 // (pristine machine output). Hand-edited stale files are reported in
-// the handEdited slice and never deleted.
+// HandEdited and deleted only under --force-cleanup.
 package cli
 
 import (
@@ -48,11 +48,9 @@ func mustWriteStamped(t *testing.T, path, rel, content string) {
 // to true so the owner gates that key on HasServices behave normally
 // for cleanup tests.
 //
-// ForceCleanup defaults to true here so the pre-2026 deletion-asserting
-// test cases continue to exercise the destructive branch. Tests covering
-// the new report-only default behavior construct the context inline
-// (or flip the field back to false) — see
-// TestCleanupStaleArtifacts_ReportOnlyByDefault below.
+// ForceCleanup is false, as in a plain `forge generate`: pristine stale
+// files are deleted, hand-edited ones kept. Tests of --force-cleanup set
+// it themselves.
 func newCleanupCtx(projectDir string, cs *checksums.FileChecksums, services []codegen.ServiceDef, cfg *config.ProjectConfig) *pipelineContext {
 	return &pipelineContext{
 		ProjectDir:   projectDir,
@@ -62,7 +60,6 @@ func newCleanupCtx(projectDir string, cs *checksums.FileChecksums, services []co
 		HasServices:  len(services) > 0,
 		Services:     services,
 		ConfigFields: map[string]bool{},
-		ForceCleanup: true,
 	}
 }
 
@@ -88,15 +85,15 @@ func TestCleanupStaleArtifacts_DeletesCertifiedFileNotWrittenThisRun(t *testing.
 	// Nothing marked written-this-run: the certified file is the candidate.
 
 	ctx := newCleanupCtx(dir, cs, []codegen.ServiceDef{{Name: "KeptService"}}, nil)
-	removed, handEdited, err := cleanupStaleArtifacts(ctx)
+	sweep, err := cleanupStaleArtifacts(ctx)
 	if err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
-	if len(removed) != 1 || removed[0] != stale {
-		t.Errorf("removed = %v, want exactly %q", removed, stale)
+	if want := []string{"internal/handlers/stale/handlers_crud_gen.go"}; !reflect.DeepEqual(sweep.Removed, want) {
+		t.Errorf("removed = %v, want %v", sweep.Removed, want)
 	}
-	if len(handEdited) != 0 {
-		t.Errorf("handEdited = %v, want empty", handEdited)
+	if len(sweep.HandEdited) != 0 {
+		t.Errorf("handEdited = %v, want empty", sweep.HandEdited)
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Errorf("stale not removed: %v", err)
@@ -124,12 +121,12 @@ func TestCleanupStaleArtifacts_PreservesPathWrittenThisRun(t *testing.T) {
 	checksums.MarkWrittenThisRun("internal/handlers/keep/handlers_crud_gen.go")
 
 	ctx := newCleanupCtx(dir, cs, []codegen.ServiceDef{{Name: "KeepService"}}, nil)
-	removed, _, err := cleanupStaleArtifacts(ctx)
+	sweep, err := cleanupStaleArtifacts(ctx)
 	if err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
-	if len(removed) != 0 {
-		t.Errorf("removed = %v, want empty", removed)
+	if len(sweep.Removed) != 0 {
+		t.Errorf("removed = %v, want empty", sweep.Removed)
 	}
 	if _, err := os.Stat(kept); err != nil {
 		t.Errorf("kept file removed: %v", err)
@@ -161,54 +158,88 @@ func TestCleanupStaleArtifacts_OwnerGateBlocks(t *testing.T) {
 		Checksums:   cs,
 		HasServices: false,
 	}
-	removed, _, err := cleanupStaleArtifacts(ctx)
+	sweep, err := cleanupStaleArtifacts(ctx)
 	if err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
-	if len(removed) != 0 {
-		t.Errorf("removed = %v, want empty (owner gate blocks)", removed)
+	if len(sweep.Removed) != 0 {
+		t.Errorf("removed = %v, want empty (owner gate blocks)", sweep.Removed)
 	}
 	if _, err := os.Stat(target); err != nil {
 		t.Errorf("file removed despite gate: %v", err)
 	}
 }
 
-// TestCleanupStaleArtifacts_HandEditedReportedNeverDeleted is the
-// successor of the manifest-era banner backstop: a certified file whose
-// marker FAILS verification was hand-edited after forge stamped it —
-// stale or not, those bytes are the user's now. It must land in the
-// handEdited report and never be deleted, even under --force-cleanup.
-func TestCleanupStaleArtifacts_HandEditedReportedNeverDeleted(t *testing.T) {
-	resetCleanupRunState(t)
-	dir := t.TempDir()
-
-	mustMkdir(t, filepath.Join(dir, "internal", "handlers", "swap"))
-	rel := "internal/handlers/swap/handlers_crud_gen.go"
-	target := filepath.Join(dir, "internal", "handlers", "swap", "handlers_crud_gen.go")
-	// Marker claims the original render's hash; the body is the user's
-	// rewrite → Verify == Modified.
+// writeHandEditedStale writes a certified file whose marker FAILS
+// verification: the marker claims the original render's hash, the body
+// is the user's rewrite, so Verify == Modified.
+func writeHandEditedStale(t *testing.T, dir, rel string) string {
+	t.Helper()
+	target := filepath.Join(dir, filepath.FromSlash(rel))
+	mustMkdir(t, filepath.Dir(target))
 	edited, ok := checksums.StampWithValue(rel,
 		[]byte("package swap\n// fully hand-rewritten after forge stamped it\n"),
 		checksums.BodyHash([]byte("// Code generated by forge. DO NOT EDIT.\npackage swap\n")))
 	if !ok {
-		t.Fatal("handlers_crud_gen.go should be stampable")
+		t.Fatalf("%s should be stampable", rel)
 	}
 	mustWrite(t, target, string(edited))
+	return target
+}
+
+// TestCleanupStaleArtifacts_HandEditedKeptByDefault is the successor of
+// the manifest-era banner backstop: a certified file whose marker FAILS
+// verification was hand-edited after forge stamped it — stale or not,
+// those bytes are the user's now. A plain run lists it in HandEdited
+// and keeps it.
+func TestCleanupStaleArtifacts_HandEditedKeptByDefault(t *testing.T) {
+	resetCleanupRunState(t)
+	dir := t.TempDir()
+	rel := "internal/handlers/swap/handlers_crud_gen.go"
+	target := writeHandEditedStale(t, dir, rel)
 
 	cs := &checksums.FileChecksums{}
 	ctx := newCleanupCtx(dir, cs, []codegen.ServiceDef{{Name: "SwapService"}}, nil)
-	removed, handEdited, err := cleanupStaleArtifacts(ctx)
+	sweep, err := cleanupStaleArtifacts(ctx)
 	if err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
-	if len(removed) != 0 {
-		t.Errorf("removed = %v, want empty (hand-edited files are never deleted)", removed)
+	if len(sweep.Removed) != 0 {
+		t.Errorf("removed = %v, want empty (hand-edited files are kept without --force-cleanup)", sweep.Removed)
 	}
-	if !reflect.DeepEqual(handEdited, []string{rel}) {
-		t.Errorf("handEdited = %v, want [%s]", handEdited, rel)
+	if !reflect.DeepEqual(sweep.HandEdited, []string{rel}) {
+		t.Errorf("handEdited = %v, want [%s]", sweep.HandEdited, rel)
 	}
 	if _, err := os.Stat(target); err != nil {
 		t.Errorf("hand-edited file removed: %v", err)
+	}
+}
+
+// TestCleanupStaleArtifacts_ForceCleanupDeletesHandEdited: --force-cleanup
+// is the user's answer to the hand-edited list, so under it the edited
+// stale file goes too — reported in both slices, so the summary can say
+// which deletions took edits with them.
+func TestCleanupStaleArtifacts_ForceCleanupDeletesHandEdited(t *testing.T) {
+	resetCleanupRunState(t)
+	dir := t.TempDir()
+	rel := "internal/handlers/swap/handlers_crud_gen.go"
+	target := writeHandEditedStale(t, dir, rel)
+
+	cs := &checksums.FileChecksums{}
+	ctx := newCleanupCtx(dir, cs, []codegen.ServiceDef{{Name: "SwapService"}}, nil)
+	ctx.ForceCleanup = true
+	sweep, err := cleanupStaleArtifacts(ctx)
+	if err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	if !reflect.DeepEqual(sweep.Removed, []string{rel}) {
+		t.Errorf("removed = %v, want [%s]", sweep.Removed, rel)
+	}
+	if !reflect.DeepEqual(sweep.HandEdited, []string{rel}) {
+		t.Errorf("handEdited = %v, want [%s]", sweep.HandEdited, rel)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Errorf("hand-edited stale file not removed under --force-cleanup: %v", err)
 	}
 }
 
@@ -232,12 +263,12 @@ func TestCleanupStaleArtifacts_DisownedMarkerBeltAndBraces(t *testing.T) {
 	}}
 
 	ctx := newCleanupCtx(dir, cs, []codegen.ServiceDef{{Name: "ForkService"}}, nil)
-	removed, _, err := cleanupStaleArtifacts(ctx)
+	sweep, err := cleanupStaleArtifacts(ctx)
 	if err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
-	if len(removed) != 0 {
-		t.Errorf("removed = %v, want empty (disowned entries preserved)", removed)
+	if len(sweep.Removed) != 0 {
+		t.Errorf("removed = %v, want empty (disowned entries preserved)", sweep.Removed)
 	}
 }
 
@@ -257,15 +288,15 @@ func TestCleanupStaleArtifacts_GoneFallbackEntrySkipped(t *testing.T) {
 	}}
 
 	ctx := newCleanupCtx(dir, cs, []codegen.ServiceDef{{Name: "GhostService"}}, nil)
-	removed, handEdited, err := cleanupStaleArtifacts(ctx)
+	sweep, err := cleanupStaleArtifacts(ctx)
 	if err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
-	if len(removed) != 0 {
-		t.Errorf("removed = %v, want empty (already gone)", removed)
+	if len(sweep.Removed) != 0 {
+		t.Errorf("removed = %v, want empty (already gone)", sweep.Removed)
 	}
-	if len(handEdited) != 0 {
-		t.Errorf("handEdited = %v, want empty (gone files are not drift)", handEdited)
+	if len(sweep.HandEdited) != 0 {
+		t.Errorf("handEdited = %v, want empty (gone files are not drift)", sweep.HandEdited)
 	}
 }
 
@@ -313,7 +344,7 @@ func TestCleanupStaleArtifacts_CPForgeRegression(t *testing.T) {
 	checksums.MarkWrittenThisRun("internal/handlers/admin_server/handlers_crud_gen.go")
 
 	ctx := newCleanupCtx(dir, cs, []codegen.ServiceDef{{Name: "AdminServerService"}}, nil)
-	removed, _, err := cleanupStaleArtifacts(ctx)
+	sweep, err := cleanupStaleArtifacts(ctx)
 	if err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
@@ -331,10 +362,10 @@ func TestCleanupStaleArtifacts_CPForgeRegression(t *testing.T) {
 		t.Errorf("new generated path was deleted: %v", err)
 	}
 
-	// Confirm `removed` reports the old path exactly.
-	wantRemoved := []string{oldGen}
-	if !reflect.DeepEqual(removed, wantRemoved) {
-		t.Errorf("removed = %v, want %v", removed, wantRemoved)
+	// Confirm Removed reports the old path exactly.
+	wantRemoved := []string{"internal/handlers/adminserver/handlers_crud_gen.go"}
+	if !reflect.DeepEqual(sweep.Removed, wantRemoved) {
+		t.Errorf("removed = %v, want %v", sweep.Removed, wantRemoved)
 	}
 }
 
@@ -345,93 +376,160 @@ func TestCleanupStaleArtifacts_NilOrEmptyState(t *testing.T) {
 	dir := t.TempDir()
 
 	// nil context
-	removed, handEdited, err := cleanupStaleArtifacts(nil)
-	if err != nil || len(removed) != 0 || len(handEdited) != 0 {
-		t.Errorf("nil ctx: removed=%v handEdited=%v err=%v", removed, handEdited, err)
+	sweep, err := cleanupStaleArtifacts(nil)
+	if err != nil || len(sweep.Removed) != 0 || len(sweep.HandEdited) != 0 {
+		t.Errorf("nil ctx: sweep=%+v err=%v", sweep, err)
 	}
 
 	// nil checksums
 	ctx := &pipelineContext{ProjectDir: dir, AbsPath: dir}
-	removed, handEdited, err = cleanupStaleArtifacts(ctx)
-	if err != nil || len(removed) != 0 || len(handEdited) != 0 {
-		t.Errorf("nil checksums: removed=%v handEdited=%v err=%v", removed, handEdited, err)
+	sweep, err = cleanupStaleArtifacts(ctx)
+	if err != nil || len(sweep.Removed) != 0 || len(sweep.HandEdited) != 0 {
+		t.Errorf("nil checksums: sweep=%+v err=%v", sweep, err)
 	}
 
 	// empty state
 	ctx.Checksums = &checksums.FileChecksums{}
-	removed, handEdited, err = cleanupStaleArtifacts(ctx)
-	if err != nil || len(removed) != 0 || len(handEdited) != 0 {
-		t.Errorf("empty state: removed=%v handEdited=%v err=%v", removed, handEdited, err)
+	sweep, err = cleanupStaleArtifacts(ctx)
+	if err != nil || len(sweep.Removed) != 0 || len(sweep.HandEdited) != 0 {
+		t.Errorf("empty state: sweep=%+v err=%v", sweep, err)
 	}
 }
 
-// TestCleanupStaleArtifacts_ReportOnlyByDefault verifies the new
-// default-deny posture: ForceCleanup=false returns the stale candidate
-// list (so stepCleanupStale can print a warning) but does NOT delete
-// the file.
-func TestCleanupStaleArtifacts_ReportOnlyByDefault(t *testing.T) {
+// TestCleanupStaleArtifacts_DeletesPristineWithoutFlag pins the default:
+// a plain `forge generate` (ForceCleanup=false) deletes a pristine stale
+// file. It used to only list it and point at --force-cleanup, a flag
+// --help did not show, so stale files outlived the reports about them —
+// reliant kept a factories test for an entity forge no longer generated.
+func TestCleanupStaleArtifacts_DeletesPristineWithoutFlag(t *testing.T) {
 	resetCleanupRunState(t)
 	dir := t.TempDir()
 
-	mustMkdir(t, filepath.Join(dir, "internal", "handlers", "stale"))
-	stale := filepath.Join(dir, "internal", "handlers", "stale", "handlers_crud_gen.go")
-	mustWriteStamped(t, stale, "internal/handlers/stale/handlers_crud_gen.go",
-		"// Code generated by forge. DO NOT EDIT.\npackage stale\n")
+	rel := "internal/handlers/model_endpoint/factories_gen_test.go"
+	stale := filepath.Join(dir, filepath.FromSlash(rel))
+	mustMkdir(t, filepath.Dir(stale))
+	mustWriteStamped(t, stale, rel, "// Code generated by forge. DO NOT EDIT.\npackage model_endpoint\n")
 
-	cs := &checksums.FileChecksums{}
-
-	ctx := newCleanupCtx(dir, cs, []codegen.ServiceDef{{Name: "KeptService"}}, nil)
-	ctx.ForceCleanup = false // explicit: report-only mode (the new default)
-
-	candidates, handEdited, err := cleanupStaleArtifacts(ctx)
+	ctx := newCleanupCtx(dir, &checksums.FileChecksums{}, []codegen.ServiceDef{{Name: "ModelEndpointService"}}, nil)
+	if ctx.ForceCleanup {
+		t.Fatal("newCleanupCtx must model a plain run (ForceCleanup=false)")
+	}
+	sweep, err := cleanupStaleArtifacts(ctx)
 	if err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
-	if len(handEdited) != 0 {
-		t.Errorf("handEdited = %v, want empty", handEdited)
-	}
-	// The candidate is reported so the caller can warn.
-	if len(candidates) != 1 || candidates[0] != stale {
-		t.Errorf("candidates = %v, want exactly %q", candidates, stale)
-	}
-	// File still on disk WITH its certification intact — a subsequent
-	// --force-cleanup run can still find and delete it.
-	onDisk, rerr := os.ReadFile(stale)
-	if rerr != nil {
-		t.Fatalf("stale file deleted in report-only mode: %v", rerr)
-	}
-	if checksums.Verify(onDisk) != checksums.Pristine {
-		t.Errorf("report-only mode must leave the certification marker intact")
-	}
-}
-
-// TestCleanupStaleArtifacts_ForceCleanupDeletes is the symmetric
-// confirmation: ForceCleanup=true restores the historical destructive
-// behavior — same candidate list, but the files actually go (taking
-// their embedded authorship record with them).
-func TestCleanupStaleArtifacts_ForceCleanupDeletes(t *testing.T) {
-	resetCleanupRunState(t)
-	dir := t.TempDir()
-
-	mustMkdir(t, filepath.Join(dir, "internal", "handlers", "stale"))
-	stale := filepath.Join(dir, "internal", "handlers", "stale", "handlers_crud_gen.go")
-	mustWriteStamped(t, stale, "internal/handlers/stale/handlers_crud_gen.go",
-		"// Code generated by forge. DO NOT EDIT.\npackage stale\n")
-
-	cs := &checksums.FileChecksums{}
-
-	ctx := newCleanupCtx(dir, cs, []codegen.ServiceDef{{Name: "KeptService"}}, nil)
-	ctx.ForceCleanup = true // explicit: actually delete
-
-	candidates, _, err := cleanupStaleArtifacts(ctx)
-	if err != nil {
-		t.Fatalf("cleanup: %v", err)
-	}
-	if len(candidates) != 1 || candidates[0] != stale {
-		t.Errorf("candidates = %v, want exactly %q", candidates, stale)
+	if !reflect.DeepEqual(sweep.Removed, []string{rel}) {
+		t.Errorf("removed = %v, want [%s]", sweep.Removed, rel)
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
-		t.Errorf("stale not removed under --force-cleanup: %v", err)
+		t.Errorf("pristine stale file kept by a plain run: %v", err)
+	}
+}
+
+// TestCleanupStaleArtifacts_ScaffoldLedgerPathIsLive: a file that was
+// Tier-1 in an older forge and is scaffold-once now keeps its old,
+// pristine marker, and its emitter never rewrites it — the exact shape
+// of a stale file. Its emitter did ask the scaffold ledger about it,
+// though, and a ledger-recorded path is the user's: deleting it would
+// remove, say, the command root of every project that upgraded past
+// the transition without an UpgradeManagedPaths entry.
+func TestCleanupStaleArtifacts_ScaffoldLedgerPathIsLive(t *testing.T) {
+	resetCleanupRunState(t)
+	checksums.ResetScaffoldLedgerCache()
+	t.Cleanup(checksums.ResetScaffoldLedgerCache)
+	dir := t.TempDir()
+
+	rel := "internal/handlers/orders/wiring.go"
+	target := filepath.Join(dir, filepath.FromSlash(rel))
+	mustMkdir(t, filepath.Dir(target))
+	mustWriteStamped(t, target, rel, "// Code generated by forge. DO NOT EDIT.\npackage orders\n")
+	// What the scaffold-once emitter does when it finds the file present.
+	if checksums.ScaffoldOnceDecision(dir, rel) {
+		t.Fatal("ScaffoldOnceDecision must not write over a present file")
+	}
+
+	ctx := newCleanupCtx(dir, &checksums.FileChecksums{}, []codegen.ServiceDef{{Name: "OrdersService"}}, nil)
+	ctx.ForceCleanup = true
+	sweep, err := cleanupStaleArtifacts(ctx)
+	if err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	if len(sweep.Removed) != 0 || len(sweep.HandEdited) != 0 {
+		t.Errorf("sweep = %+v, want nothing (a scaffold-ledger path is the user's)", sweep)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Errorf("scaffold-once file deleted: %v", err)
+	}
+}
+
+// TestStepCleanupStale_SkippedAfterASoftFailure: a step that failed as a
+// warning wrote none of its outputs, and to the sweep those look exactly
+// like files no emitter writes any more. Deleting them would turn the
+// warning into missing code, so the step skips the sweep and says why.
+func TestStepCleanupStale_SkippedAfterASoftFailure(t *testing.T) {
+	resetCleanupRunState(t)
+	dir := t.TempDir()
+
+	rel := "internal/db/message_orm_gen.go"
+	target := filepath.Join(dir, filepath.FromSlash(rel))
+	mustMkdir(t, filepath.Dir(target))
+	mustWriteStamped(t, target, rel, "// Code generated by forge. DO NOT EDIT.\npackage db\n")
+
+	ctx := newCleanupCtx(dir, &checksums.FileChecksums{}, []codegen.ServiceDef{{Name: "MessageService"}}, nil)
+	ctx.SoftFailures = []string{"ORM generation"}
+	buf, restore := captureStderr(t)
+	err := stepCleanupStale(ctx)
+	restore()
+	if err != nil {
+		t.Fatalf("stepCleanupStale: %v", err)
+	}
+	stderr := buf.String()
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("output of a failed step deleted as stale: %v", err)
+	}
+	for _, want := range []string{"Stale-file sweep skipped", "ORM generation failed this run"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr missing %q:\n%s", want, stderr)
+		}
+	}
+}
+
+// TestPrintStaleSweep names what was removed and, for each kept
+// hand-edited file, both ways to settle it — a flag --help shows, and
+// disown — instead of a hidden flag.
+func TestPrintStaleSweep(t *testing.T) {
+	sweep := staleSweep{
+		Removed:    []string{"internal/handlers/a/factories_gen_test.go"},
+		HandEdited: []string{"internal/handlers/b/handlers_crud_gen.go"},
+	}
+	var out, errOut strings.Builder
+	printStaleSweep(&out, &errOut, sweep, false)
+	if !strings.Contains(out.String(), "Removed 1 stale generated file(s)") ||
+		!strings.Contains(out.String(), "internal/handlers/a/factories_gen_test.go") {
+		t.Errorf("removal summary missing:\n%s", out.String())
+	}
+	for _, want := range []string{
+		"Kept 1 stale generated file(s) with hand-edits",
+		"generate --force-cleanup",
+		"project disown <path>",
+		"internal/handlers/b/handlers_crud_gen.go",
+	} {
+		if !strings.Contains(errOut.String(), want) {
+			t.Errorf("hand-edited report missing %q:\n%s", want, errOut.String())
+		}
+	}
+
+	// Under --force-cleanup the edited file was removed: it is listed as
+	// such, and there is nothing kept to report.
+	sweep.Removed = append(sweep.Removed, "internal/handlers/b/handlers_crud_gen.go")
+	out.Reset()
+	errOut.Reset()
+	printStaleSweep(&out, &errOut, sweep, true)
+	if !strings.Contains(out.String(), "internal/handlers/b/handlers_crud_gen.go (hand-edited; --force-cleanup)") {
+		t.Errorf("forced removal of an edited file not marked:\n%s", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("nothing was kept, but stderr reported:\n%s", errOut.String())
 	}
 }
 
@@ -524,12 +622,12 @@ func TestCleanupStaleArtifacts_MockGenSurvivesForceCleanup(t *testing.T) {
 	}
 
 	ctx := newCleanupCtx(dir, cs, []codegen.ServiceDef{{Name: "KeptService"}}, nil)
-	// newCleanupCtx defaults ForceCleanup=true — exactly the disaster path.
-	removed, _, err := cleanupStaleArtifacts(ctx)
+	ctx.ForceCleanup = true // the widest sweep — exactly the disaster path
+	sweep, err := cleanupStaleArtifacts(ctx)
 	if err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
-	for _, p := range removed {
+	for _, p := range sweep.Removed {
 		if strings.HasSuffix(p, "mock_gen.go") {
 			t.Errorf("live mock flagged for deletion: %s", p)
 		}
@@ -560,12 +658,12 @@ func TestCleanupStaleArtifacts_MockGenOwnerGateWhenContractsDisabled(t *testing.
 
 	cfg := &config.ProjectConfig{Features: config.FeaturesConfig{}.With(config.FeatureContracts, false)}
 	ctx := newCleanupCtx(dir, cs, []codegen.ServiceDef{{Name: "KeptService"}}, cfg)
-	removed, _, err := cleanupStaleArtifacts(ctx)
+	sweep, err := cleanupStaleArtifacts(ctx)
 	if err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
-	if len(removed) != 0 {
-		t.Errorf("removed = %v, want empty (contracts emitter gated off — not a stale signal)", removed)
+	if len(sweep.Removed) != 0 {
+		t.Errorf("removed = %v, want empty (contracts emitter gated off — not a stale signal)", sweep.Removed)
 	}
 	for _, rel := range []string{"internal/climate/mock_gen.go", "internal/mcp/database/mock_gen.go"} {
 		if _, err := os.Stat(filepath.Join(dir, rel)); err != nil {
@@ -594,15 +692,15 @@ func TestCleanupStaleArtifacts_DisownedPathNotACandidate(t *testing.T) {
 	}}
 
 	ctx := newCleanupCtx(dir, cs, []codegen.ServiceDef{{Name: "KeepService"}}, nil)
-	removed, handEdited, err := cleanupStaleArtifacts(ctx)
+	sweep, err := cleanupStaleArtifacts(ctx)
 	if err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
-	if len(removed) != 0 {
-		t.Errorf("removed = %v, want empty (disowned path is alive by intent)", removed)
+	if len(sweep.Removed) != 0 {
+		t.Errorf("removed = %v, want empty (disowned path is alive by intent)", sweep.Removed)
 	}
-	if len(handEdited) != 0 {
-		t.Errorf("handEdited = %v, want empty (disowned files are not drift)", handEdited)
+	if len(sweep.HandEdited) != 0 {
+		t.Errorf("handEdited = %v, want empty (disowned files are not drift)", sweep.HandEdited)
 	}
 	if _, err := os.Stat(kept); err != nil {
 		t.Errorf("disowned path deleted: %v", err)
@@ -624,12 +722,12 @@ func TestCleanupStaleArtifacts_PreservesTier2File(t *testing.T) {
 	cs := &checksums.FileChecksums{}
 
 	ctx := newCleanupCtx(dir, cs, nil, nil)
-	removed, _, err := cleanupStaleArtifacts(ctx)
+	sweep, err := cleanupStaleArtifacts(ctx)
 	if err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
-	if len(removed) != 0 {
-		t.Errorf("removed = %v, want empty (Tier-2 files are user-owned)", removed)
+	if len(sweep.Removed) != 0 {
+		t.Errorf("removed = %v, want empty (Tier-2 files are user-owned)", sweep.Removed)
 	}
 	if _, err := os.Stat(target); err != nil {
 		t.Errorf("Tier-2 file deleted: %v", err)
