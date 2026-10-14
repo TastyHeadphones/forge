@@ -2,6 +2,7 @@ package bundle
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"sort"
 	"strings"
@@ -148,5 +149,66 @@ func TestObservabilityFilesPassTheSecretScan(t *testing.T) {
 	// shipped unscanned.
 	if _, err := Build(t.Context(), withObservability(ObservabilityFile{Path: "observability/dashboards/x.json", Data: []byte("{not json or yaml")})); err == nil {
 		t.Error("an unreadable observability file was packed")
+	}
+}
+
+// THE INGEST GATE RUNS AT BUILD. forge refuses to cut a bundle the control
+// plane would refuse to record, and names the file.
+func TestBuildRefusesALayerTheIngestValidatorRefuses(t *testing.T) {
+	cases := map[string]struct {
+		in   func() BuildInput
+		file string
+	}{
+		"kustomization smuggled in as an observability file": {
+			in: func() BuildInput {
+				return withObservability(ObservabilityFile{Path: "observability/dashboards/kustomization.json", Data: []byte(`{}`)})
+			},
+			file: "observability/dashboards/kustomization.json",
+		},
+		"observability artifact that is not JSON": {
+			in: func() BuildInput {
+				return withObservability(ObservabilityFile{Path: release.BundleMetricsSchemaPath, Data: []byte(`{"a":`)})
+			},
+			file: release.BundleMetricsSchemaPath,
+		},
+		"observability file outside the allowed names": {
+			in: func() BuildInput {
+				return withObservability(ObservabilityFile{Path: "observability/run.json", Data: []byte(`{}`)})
+			},
+			file: "observability/run.json",
+		},
+		"a kustomize configuration rendered as a manifest": {
+			in: func() BuildInput {
+				in := buildFixture()
+				in.Shape.Manifests += "---\n# cluster: gke-prod\napiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nmetadata:\n  name: sneaky\n"
+				return in
+			},
+			file: "-kustomization-sneaky.yaml",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := Build(context.Background(), tc.in())
+			if !errors.Is(err, release.ErrInvalidManifestsLayer) {
+				t.Fatalf("Build accepted an invalid layer, or failed differently: %v", err)
+			}
+			if !strings.Contains(err.Error(), tc.file) {
+				t.Errorf("error does not name %q: %v", tc.file, err)
+			}
+		})
+	}
+}
+
+// What forge builds is always a layer the validator accepts: the producer and
+// the gate cannot disagree.
+func TestBuiltLayerPassesIngestValidation(t *testing.T) {
+	built := mustBuild(t, withObservability(sampleObservability...))
+	layer, _ := built.Layer(release.BundleManifestsLayer)
+	sum, err := release.ValidateManifestsLayer(bytes.NewReader(layer))
+	if err != nil {
+		t.Fatalf("forge's own bundle fails ingest validation: %v", err)
+	}
+	if len(sum.Artifacts) != len(sampleObservability) || len(sum.Objects) == 0 {
+		t.Errorf("summary = %d objects, %d artifacts", len(sum.Objects), len(sum.Artifacts))
 	}
 }
