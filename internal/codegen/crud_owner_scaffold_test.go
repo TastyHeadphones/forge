@@ -92,7 +92,7 @@ func generateOwnerShim(t *testing.T, owner, authRequired bool) string {
 	if len(crudMethods) != 5 {
 		t.Fatalf("fixture should match all five CRUD shapes, matched %d", len(crudMethods))
 	}
-	if err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("GenerateCRUDHandlers: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(handlerDir, "handlers_crud.go"))

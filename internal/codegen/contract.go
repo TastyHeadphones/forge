@@ -37,8 +37,8 @@ type Service interface {
 	// forge generates no access-control artifact, so none appears here.
 
 	// CRUD generation.
-	GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath string, projectDir string, cs *checksums.FileChecksums) error
-	GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath string, projectDir string, cs *checksums.FileChecksums) error
+	GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath string, projectDir string, cs *checksums.FileChecksums) (CRUDResult, error)
+	GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath string, projectDir string, cs *checksums.FileChecksums) (CRUDResult, error)
 
 	// Config loader / cmd-server wiring.
 	GenerateCmdServer(messages []ConfigMessage, targetDir string, cs *checksums.FileChecksums) error

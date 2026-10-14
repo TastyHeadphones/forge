@@ -502,20 +502,46 @@ func declaresEntityMessage(svc ServiceDef, name string) bool {
 	return declaresWireMessage(svc, name)
 }
 
+// CRUDResult is what one CRUD generation call did, so its caller reports
+// that rather than what it asked for. A run used to print "✅ Generated
+// handlers/<svc> CRUD wiring" and "✅ Generated …/handlers_crud_test.go"
+// after calls that returned early having written nothing — every rpc was
+// hand-written, or the scaffold-once test was already born — and the files
+// it named did not exist.
+type CRUDResult struct {
+	// Wrote is true when the call emitted (or refreshed) its file.
+	Wrote bool
+	// Skipped, when Wrote is false, says why nothing was written, phrased to
+	// follow "nothing written: ".
+	Skipped string
+	// Routine marks a skip that is the steady state on every re-run (the
+	// scaffold-once test already exists), reported only under --verbose.
+	Routine bool
+}
+
+// crudMethodList names crudMethods' rpcs for a message.
+func crudMethodList(crudMethods []CRUDMethod) string {
+	names := make([]string, 0, len(crudMethods))
+	for _, cm := range crudMethods {
+		names = append(names, cm.Method.Name)
+	}
+	return strings.Join(names, ", ")
+}
+
 // GenerateCRUDHandlers generates handlers_crud_gen.go for a service with CRUD methods.
 // It skips methods that already exist in user-owned handler files.
 //
 // cs is the project's checksum tracker. Passing it ensures the rendered
 // handlers_crud_gen.go is recorded so it doesn't show up as an orphan in
 // `forge project audit`. A nil cs is tolerated.
-func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath string, projectDir string, cs *checksums.FileChecksums) error {
+func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath string, projectDir string, cs *checksums.FileChecksums) (CRUDResult, error) {
 	// Disk-first: handlers_crud_gen.go lands inside the EXISTING handler
 	// dir and must declare that dir's real package clause. Re-synthesizing
 	// the path from the proto name is how the historical
 	// handlers/adminserver-vs-admin_server duplicate-dir bug was created.
 	res, resErr := ResolveServiceComponent(projectDir, svc.Name)
 	if resErr != nil {
-		return resErr
+		return CRUDResult{}, resErr
 	}
 	pkg := res.PackageName
 	targetDir := res.Dir
@@ -536,7 +562,7 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 		crudNames[cm.Method.GoName()] = true
 	}
 	if excised, xerr := ExciseUnwiredStubs(projectDir, targetDir, crudNames); xerr != nil {
-		return fmt.Errorf("excise unwired stubs for %s: %w", pkg, xerr)
+		return CRUDResult{}, fmt.Errorf("excise unwired stubs for %s: %w", pkg, xerr)
 	} else if len(excised) > 0 {
 		fmt.Printf("  ✂️  Excised %d now-entity-backed unwired stub(s) so CRUD can take over: %s\n", len(excised), strings.Join(excised, ", "))
 	}
@@ -546,7 +572,7 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 	// crud_op_demand.go for the rule and the incident behind it.
 	scan, err := scanHandlerPackage(targetDir)
 	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("scan handler package %s: %w", pkg, err)
+		return CRUDResult{}, fmt.Errorf("scan handler package %s: %w", pkg, err)
 	}
 	opMethods, helperEntities := crudOpsDemand(scan, crudMethods)
 
@@ -567,14 +593,15 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 		// Every CRUD RPC is implemented by hand and nothing calls into
 		// the ops file — drop it.
 		removeRetiredForgeFile(projectDir, opsRel, cs)
-		return nil
+		return CRUDResult{Skipped: "every CRUD rpc (" + crudMethodList(crudMethods) +
+			") is implemented by hand and nothing calls a CRUD op"}, nil
 	}
 
 	// Ensure the Deps struct in service.go has a DB field for CRUD
 	// operations. Conversion helpers alone never touch s.deps.DB.
 	if len(opMethods) > 0 {
 		if err := ensureDepsDBField(targetDir); err != nil {
-			return fmt.Errorf("ensure Deps DB field for %s: %w", pkg, err)
+			return CRUDResult{}, fmt.Errorf("ensure Deps DB field for %s: %w", pkg, err)
 		}
 	}
 
@@ -586,7 +613,7 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 	// ship a phantom-column query.
 	data, err := buildCRUDTemplateData(svc, opMethods, helperEntities, modulePath)
 	if err != nil {
-		return err
+		return CRUDResult{}, err
 	}
 	data.Package = pkg
 
@@ -597,10 +624,10 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 	if data.NeedsOpsFile {
 		content, rerr := templates.ServiceTemplates().Render("handlers_crud_ops_gen.go.tmpl", data)
 		if rerr != nil {
-			return fmt.Errorf("render handlers_crud_ops_gen.go.tmpl: %w", rerr)
+			return CRUDResult{}, fmt.Errorf("render handlers_crud_ops_gen.go.tmpl: %w", rerr)
 		}
 		if werr := writeForgeOwned(projectDir, opsRel, content, cs); werr != nil {
-			return fmt.Errorf("write handlers_crud_ops_gen.go: %w", werr)
+			return CRUDResult{}, fmt.Errorf("write handlers_crud_ops_gen.go: %w", werr)
 		}
 	} else {
 		removeRetiredForgeFile(projectDir, opsRel, cs)
@@ -617,7 +644,10 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 			unshimmed = append(unshimmed, m)
 		}
 	}
-	return ensureCRUDShimFile(projectDir, relDir, data, unshimmed, cs, previouslyImplemented)
+	if err := ensureCRUDShimFile(projectDir, relDir, data, unshimmed, cs, previouslyImplemented); err != nil {
+		return CRUDResult{}, err
+	}
+	return CRUDResult{Wrote: true}, nil
 }
 
 // removeRetiredForgeFile deletes a generated file forge no longer
@@ -1750,13 +1780,13 @@ type CRUDTestFieldData struct {
 // when actually written; once the user clears every FORGE_SCAFFOLD marker
 // the file becomes user-owned and forge stops re-rendering it (and stops
 // updating the checksum). A nil cs is tolerated.
-func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath string, projectDir string, cs *checksums.FileChecksums) error {
+func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath string, projectDir string, cs *checksums.FileChecksums) (CRUDResult, error) {
 	// Disk-first: same handler-dir + package-clause resolution as
 	// GenerateCRUDHandlers (the two MUST land in the same directory and
 	// declare the same package).
 	res, resErr := ResolveServiceComponent(projectDir, svc.Name)
 	if resErr != nil {
-		return resErr
+		return CRUDResult{}, resErr
 	}
 	pkg := res.PackageName
 	targetDir := res.Dir
@@ -1774,7 +1804,7 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 	// implemented by hand keep their own tests.
 	existingMethods, err := ScanExistingMethods(targetDir, false)
 	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("scan existing methods for %s tests: %w", pkg, err)
+		return CRUDResult{}, fmt.Errorf("scan existing methods for %s tests: %w", pkg, err)
 	}
 	var filteredMethods []CRUDMethod
 	for _, cm := range crudMethods {
@@ -1784,7 +1814,8 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 		filteredMethods = append(filteredMethods, cm)
 	}
 	if len(filteredMethods) == 0 {
-		return nil
+		return CRUDResult{Skipped: "every CRUD rpc (" + crudMethodList(crudMethods) +
+			") is implemented by hand, and a hand-written rpc keeps its own tests"}, nil
 	}
 
 	// The lifecycle test covers string-PK entities with create+get (the
@@ -1807,7 +1838,7 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 		}
 	}
 	if !qualifying {
-		return nil
+		return CRUDResult{Skipped: "the lifecycle test needs an entity with both a Create and a Get rpc over a string primary key, and none has"}, nil
 	}
 
 	// Scaffold-once: handlers_crud_test.go is user-owned from line one —
@@ -1819,7 +1850,7 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 	lifecycleRel := filepath.Join(relDir, "handlers_crud_test.go")
 	lifecyclePath := filepath.Join(projectDir, lifecycleRel)
 	if !checksums.ScaffoldOnceDecision(projectDir, lifecycleRel) {
-		return nil
+		return CRUDResult{Skipped: "scaffolded once already — the file is yours (or you deleted it)", Routine: true}, nil
 	}
 
 	// The file carries NO fixture data. Its rows come from the regenerated
@@ -1851,17 +1882,17 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 
 	content, err := templates.ServiceTemplates().Render("handlers_crud_test.go.tmpl", data)
 	if err != nil {
-		return fmt.Errorf("render handlers_crud_test.go.tmpl: %w", err)
+		return CRUDResult{}, fmt.Errorf("render handlers_crud_test.go.tmpl: %w", err)
 	}
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
-		return err
+		return CRUDResult{}, err
 	}
 	if err := writeUserScaffold(lifecyclePath, content); err != nil {
-		return fmt.Errorf("write handlers_crud_test.go: %w", err)
+		return CRUDResult{}, fmt.Errorf("write handlers_crud_test.go: %w", err)
 	}
 	checksums.RecordScaffold(projectDir, lifecycleRel)
 	recordTier2(cs, lifecycleRel, content)
-	return nil
+	return CRUDResult{Wrote: true}, nil
 }
 
 // removeRetiredScaffoldTest deletes a retired marker-scaffold test file —

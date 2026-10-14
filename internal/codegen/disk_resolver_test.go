@@ -371,7 +371,7 @@ type Service struct{ deps Deps }
 		t.Fatal("expected CreateTrade to match CRUD pattern")
 	}
 
-	if err := GenerateCRUDHandlers(svc, crudMethods, "example.com/proj", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDHandlers(svc, crudMethods, "example.com/proj", projectDir, nil); err != nil {
 		t.Fatalf("GenerateCRUDHandlers: %v", err)
 	}
 

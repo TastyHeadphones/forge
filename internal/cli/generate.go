@@ -596,7 +596,21 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	}
 	fmt.Println()
 	printGenerateOutcome(os.Stdout, summary, outside, flags, len(steps), totalSteps)
+	printSoftFailures(os.Stdout, ctx.SoftFailures)
 	return nil
+}
+
+// printSoftFailures closes a run that continued past failed steps by naming
+// them under the completion line. Each was printed as a warning where it
+// happened, often hundreds of lines up; a completion line alone reads as a
+// clean run.
+func printSoftFailures(w io.Writer, failed []string) {
+	if len(failed) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "⚠️  %d step(s) FAILED and the run continued without their output: %s. Their warnings are above; "+
+		"steps that depend on them said they were skipped. `--strict` makes a step failure fatal.\n",
+		len(failed), strings.Join(failed, ", "))
 }
 
 // selectPipelineSteps returns the steps this run executes after the

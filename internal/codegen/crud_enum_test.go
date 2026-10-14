@@ -356,7 +356,7 @@ type Service struct {
 	}}
 
 	crudMethods := MatchCRUDMethods(svc, entities)
-	if err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
 	}
 

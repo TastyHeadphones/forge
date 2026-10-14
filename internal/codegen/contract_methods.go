@@ -28,11 +28,11 @@ func (s *svc) GenerateMock(svc ServiceDef, projectDir, mockDir string, cs *check
 	return GenerateMock(svc, projectDir, mockDir, cs)
 }
 
-func (s *svc) GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath string, projectDir string, cs *checksums.FileChecksums) error {
+func (s *svc) GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath string, projectDir string, cs *checksums.FileChecksums) (CRUDResult, error) {
 	return GenerateCRUDHandlers(svc, crudMethods, modulePath, projectDir, cs)
 }
 
-func (s *svc) GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath string, projectDir string, cs *checksums.FileChecksums) error {
+func (s *svc) GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath string, projectDir string, cs *checksums.FileChecksums) (CRUDResult, error) {
 	return GenerateCRUDTests(svc, crudMethods, modulePath, projectDir, cs)
 }
 

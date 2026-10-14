@@ -85,7 +85,7 @@ func TestGenerateCRUDHandlers_FailsOnUnsatisfiableColumn(t *testing.T) {
 	})
 	crudMethods := MatchCRUDMethods(svc, entities)
 
-	err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil)
+	_, err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil)
 	if err == nil {
 		t.Fatal("expected GenerateCRUDHandlers to fail on an unsatisfiable column, got nil error")
 	}
@@ -108,7 +108,7 @@ func TestGenerateCRUDHandlers_FillULIDSuppressesTheGate(t *testing.T) {
 	})
 	crudMethods := MatchCRUDMethods(svc, entities)
 
-	if err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("forge:fill=ulid must suppress the unsatisfiable-column gate: %v", err)
 	}
 	// fill=ulid is forge's own job (pkg/crud.Repo.fillULIDColumns) — it must
@@ -136,7 +136,7 @@ func TestGenerateCRUDHandlers_FillHandlerScaffoldsOpEntityWrapper(t *testing.T) 
 	})
 	crudMethods := MatchCRUDMethods(svc, entities)
 
-	if err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("forge:fill=handler must suppress the unsatisfiable-column gate: %v", err)
 	}
 

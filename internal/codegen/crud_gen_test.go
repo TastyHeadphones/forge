@@ -217,7 +217,7 @@ func (s *Service) CreatePatient(ctx context.Context, req *connect.Request[pb.Cre
 
 	crudMethods := MatchCRUDMethods(svc, entities)
 
-	err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil)
+	_, err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil)
 	if err != nil {
 		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
 	}
@@ -367,7 +367,7 @@ func (s *Service) ListPatients(ctx context.Context, req *connect.Request[pb.List
 		t.Fatalf("expected 1 CRUD match (ListPatients → Patient), got %d", len(crudMethods))
 	}
 
-	if err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
 	}
 
@@ -461,7 +461,7 @@ type Service struct {
 
 	crudMethods := MatchCRUDMethods(svc, entities)
 
-	if err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
 	}
 
@@ -576,7 +576,7 @@ func (s *Service) CreateWidget(ctx context.Context, req *connect.Request[pb.Crea
 		t.Fatal("expected Patient CRUD methods to match")
 	}
 
-	if err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
 	}
 
@@ -657,7 +657,7 @@ func (s *Service) CreatePatient(ctx context.Context, req *connect.Request[pb.Cre
 		},
 	}
 
-	err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil)
+	_, err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil)
 	if err != nil {
 		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
 	}
@@ -715,7 +715,7 @@ func TestGenerateCRUDHandlers_KeepsUserOwnedLegacyGen(t *testing.T) {
 		Fields: []EntityField{{Name: "id", GoName: "ID", GoType: "int64"}},
 	}}
 
-	if err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, cs); err != nil {
+	if _, err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, cs); err != nil {
 		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
 	}
 
@@ -823,7 +823,7 @@ func TestGenerateCRUDTests_BasicGeneration(t *testing.T) {
 
 	crudMethods := MatchCRUDMethods(svc, entities)
 
-	err := GenerateCRUDTests(svc, crudMethods, "example.com/test", projectDir, nil)
+	_, err := GenerateCRUDTests(svc, crudMethods, "example.com/test", projectDir, nil)
 	if err != nil {
 		t.Fatalf("GenerateCRUDTests() error = %v", err)
 	}
@@ -890,7 +890,7 @@ func TestGenerateCRUDTests_BasicGeneration(t *testing.T) {
 	if err := os.WriteFile(lifecyclePath, []byte(custom), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := GenerateCRUDTests(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDTests(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("GenerateCRUDTests() second run error = %v", err)
 	}
 	after, err := os.ReadFile(lifecyclePath)
@@ -941,7 +941,7 @@ func TestGenerateCRUDTests_PartialCRUD(t *testing.T) {
 
 	crudMethods := MatchCRUDMethods(svc, entities)
 
-	err := GenerateCRUDTests(svc, crudMethods, "example.com/test", projectDir, nil)
+	_, err := GenerateCRUDTests(svc, crudMethods, "example.com/test", projectDir, nil)
 	if err != nil {
 		t.Fatalf("GenerateCRUDTests() error = %v", err)
 	}
@@ -1004,7 +1004,7 @@ func TestGenerateCRUDTests_SkipsNonQualifyingEntities(t *testing.T) {
 		},
 	}}
 
-	if err := GenerateCRUDTests(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDTests(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("GenerateCRUDTests() error = %v", err)
 	}
 
@@ -1039,7 +1039,7 @@ func TestGenerateCRUDTests_CleanupWhenNoMethods(t *testing.T) {
 
 	svc := ServiceDef{Name: "PatientsService"}
 
-	err := GenerateCRUDTests(svc, nil, "example.com/test", projectDir, nil)
+	_, err := GenerateCRUDTests(svc, nil, "example.com/test", projectDir, nil)
 	if err != nil {
 		t.Fatalf("GenerateCRUDTests() error = %v", err)
 	}
@@ -1057,7 +1057,7 @@ func TestGenerateCRUDTests_CleanupWhenNoMethods(t *testing.T) {
 	if err := os.WriteFile(unitPath, []byte(customized), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := GenerateCRUDTests(svc, nil, "example.com/test", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDTests(svc, nil, "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("GenerateCRUDTests() second run error = %v", err)
 	}
 	after, err := os.ReadFile(unitPath)
@@ -1146,7 +1146,7 @@ func (s *Service) CreatePatient(ctx context.Context, req *connect.Request[pb.Cre
 
 	crudMethods := MatchCRUDMethods(svc, entities)
 
-	if err := GenerateCRUDTests(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDTests(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("GenerateCRUDTests() error = %v", err)
 	}
 
@@ -1222,7 +1222,7 @@ func (s *Service) GetPatient(ctx context.Context, req *connect.Request[pb.GetPat
 		Fields: []EntityField{{Name: "id", GoName: "ID", GoType: "int64"}},
 	}}
 
-	if err := GenerateCRUDTests(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDTests(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("GenerateCRUDTests() error = %v", err)
 	}
 
@@ -1673,7 +1673,7 @@ type Service struct {
 
 	crudMethods := MatchCRUDMethods(svc, entities)
 
-	err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil)
+	_, err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil)
 	if err != nil {
 		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
 	}
@@ -1843,7 +1843,7 @@ type Service struct {
 	}}
 
 	crudMethods := MatchCRUDMethods(svc, entities)
-	if err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
 	}
 
@@ -1952,7 +1952,7 @@ type Service struct {
 	}}
 
 	crudMethods := MatchCRUDMethods(svc, entities)
-	if err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
 	}
 
@@ -2468,7 +2468,7 @@ type Service struct {
 	}}
 
 	crudMethods := MatchCRUDMethods(svc, entities)
-	if err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
 	}
 
@@ -2689,7 +2689,7 @@ type Service struct {
 	if len(crudMethods) != 5 {
 		t.Fatalf("expected 5 matched CRUD methods, got %d", len(crudMethods))
 	}
-	if err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
 	}
 
@@ -2790,7 +2790,7 @@ type Service struct {
 
 	checksums.ResetSkipWrite()
 	cs := &checksums.FileChecksums{}
-	if err := GenerateCRUDHandlers(svcV1, MatchCRUDMethods(svcV1, entities), "example.com/test", projectDir, cs); err != nil {
+	if _, err := GenerateCRUDHandlers(svcV1, MatchCRUDMethods(svcV1, entities), "example.com/test", projectDir, cs); err != nil {
 		t.Fatalf("GenerateCRUDHandlers() first run error = %v", err)
 	}
 
@@ -2831,7 +2831,7 @@ type Service struct {
 		{Name: "CreatePatient", InputType: "CreatePatientRequest", OutputType: "CreatePatientResponse"},
 		{Name: "GetPatient", InputType: "GetPatientRequest", OutputType: "GetPatientResponse"},
 	}
-	if err := GenerateCRUDHandlers(svcV2, MatchCRUDMethods(svcV2, entities), "example.com/test", projectDir, cs); err != nil {
+	if _, err := GenerateCRUDHandlers(svcV2, MatchCRUDMethods(svcV2, entities), "example.com/test", projectDir, cs); err != nil {
 		t.Fatalf("GenerateCRUDHandlers() second run error = %v", err)
 	}
 
@@ -2863,7 +2863,7 @@ type Service struct {
 	}
 
 	// A third run with no new methods is a no-op.
-	if err := GenerateCRUDHandlers(svcV2, MatchCRUDMethods(svcV2, entities), "example.com/test", projectDir, cs); err != nil {
+	if _, err := GenerateCRUDHandlers(svcV2, MatchCRUDMethods(svcV2, entities), "example.com/test", projectDir, cs); err != nil {
 		t.Fatalf("GenerateCRUDHandlers() third run error = %v", err)
 	}
 	third, err := os.ReadFile(shimPath)
@@ -2948,7 +2948,7 @@ type Service struct {
 		},
 	}
 
-	if err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
 	}
 
@@ -2961,7 +2961,7 @@ type Service struct {
 	}
 
 	// Idempotent: a second pass must not duplicate the check.
-	if err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("second GenerateCRUDHandlers() error = %v", err)
 	}
 	content, err = os.ReadFile(servicePath)

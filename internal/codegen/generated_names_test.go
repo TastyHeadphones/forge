@@ -129,10 +129,10 @@ func TestGenerateCRUD_DigitNamesUseTheGeneratorsCasing(t *testing.T) {
 	if len(crud) != 5 {
 		t.Fatalf("matched %d CRUD methods, want 5", len(crud))
 	}
-	if err := GenerateCRUDHandlers(svc, crud, "example.com/test", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDHandlers(svc, crud, "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("GenerateCRUDHandlers: %v", err)
 	}
-	if err := GenerateCRUDTests(svc, crud, "example.com/test", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDTests(svc, crud, "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("GenerateCRUDTests: %v", err)
 	}
 	read := func(name string) string {
