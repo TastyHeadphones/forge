@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 )
 
@@ -155,6 +156,45 @@ func TestGeneratedCodeNeedsRefresh(t *testing.T) {
 		}
 		if reason == "" {
 			t.Fatal("want a non-empty reason")
+		}
+	})
+
+	// A fresh git checkout writes gen/ before proto/ (index order), so the
+	// protos are always the newer files. A stamped descriptor must win over
+	// that: content decides, in both directions.
+	stamped := func(t *testing.T, protoBody string) string {
+		t.Helper()
+		dir := t.TempDir()
+		writeFileAt(t, dir, "go.mod", "module example.com/x\n\ngo 1.26.2\n")
+		writeFileAt(t, dir, "proto/v1/a.proto", protoBody)
+		hash := codegen.DescriptorSourceHash(dir)
+		gen := writeFileAt(t, dir, "gen/forge_descriptor.json", `{"services": [], "source_hash": "`+hash+`"}`)
+		past := time.Now().Add(-time.Hour)
+		if err := os.Chtimes(gen, past, past); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	t.Run("stamped descriptor matching the protos is fresh even when proto is newer", func(t *testing.T) {
+		dir := stamped(t, "syntax = \"proto3\";\n")
+		if reason, needs := generatedCodeNeedsRefresh(dir); needs {
+			t.Fatalf("a committed, current gen/ was judged stale by mtime: %q", reason)
+		}
+	})
+	t.Run("stamped descriptor not matching the protos is stale even when gen is newer", func(t *testing.T) {
+		dir := stamped(t, "syntax = \"proto3\";\n")
+		proto := writeFileAt(t, dir, "proto/v1/a.proto", "syntax = \"proto3\";\nmessage Edited {}\n")
+		gen := filepath.Join(dir, "gen", "forge_descriptor.json")
+		past, future := time.Now().Add(-time.Hour), time.Now().Add(time.Hour)
+		if err := os.Chtimes(proto, past, past); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(gen, future, future); err != nil {
+			t.Fatal(err)
+		}
+		reason, needs := generatedCodeNeedsRefresh(dir)
+		if !needs || reason == "" {
+			t.Fatalf("an edited proto behind a newer gen/ was judged fresh (needs=%v, reason=%q)", needs, reason)
 		}
 	})
 

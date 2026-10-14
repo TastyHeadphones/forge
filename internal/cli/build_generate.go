@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -62,10 +63,11 @@ func ensureGeneratedCode(projectDir string, skip bool) error {
 //     Hits every fresh checkout when gen/ is gitignored, and any tree
 //     after `forge generate`'s clean sweep removed gen/.
 //
-//  2. Stale output — proto sources are newer than the generated tree.
-//     Only consulted when both proto/ and gen/ exist; a clean git
-//     checkout stamps both at the same time, so this stays quiet unless
-//     a developer actually edited a .proto without regenerating.
+//  2. Stale output — the protos are not the ones gen/ was generated from.
+//     When gen/forge_descriptor.json carries a source_hash, that is the
+//     answer: it is a digest of every .proto's CONTENT, stamped by the
+//     generate that wrote gen/, so it is exact (see staleByDescriptor).
+//     Only an unstamped tree falls back to comparing modification times.
 func generatedCodeNeedsRefresh(projectDir string) (string, bool) {
 	if missing := missingGoWorkModule(projectDir); missing != "" {
 		return fmt.Sprintf("module %q is missing (listed in go.work, no go.mod)", missing), true
@@ -79,12 +81,46 @@ func generatedCodeNeedsRefresh(projectDir string) (string, bool) {
 	// that a single KCL evaluation renders is not a reason to regenerate a
 	// tree that is committed and current: ensureDevRuntimeConfigs renders
 	// just that file, where a build actually consumes it.
+	if stale, decided := staleByDescriptor(projectDir); decided {
+		if stale {
+			return "is stale (the .proto files differ from the ones gen/forge_descriptor.json was generated from)", true
+		}
+		return "", false
+	}
 	protoNewest, okProto := newestModTime(filepath.Join(projectDir, "proto"))
 	genNewest, okGen := newestModTime(filepath.Join(projectDir, "gen"))
 	if okProto && okGen && protoNewest.After(genNewest) {
 		return "is stale (proto sources newer than gen/)", true
 	}
 	return "", false
+}
+
+// staleByDescriptor answers staleness from content when it can: decided is
+// true when gen/forge_descriptor.json carries a source_hash, and stale is
+// whether the protos on disk hash differently.
+//
+// Modification times cannot answer this on a fresh checkout. git writes
+// files in index order, and gen/ sorts before proto/, so every clone stamps
+// the protos a few milliseconds AFTER the generated tree. Every CI job and
+// every new worktree therefore looked stale and ran the whole generate
+// pipeline before building. That needs the codegen toolchain, refuses a
+// forge that is not the project's pin, and fetches embedded postgres, so
+// control-plane's k3d smoke test died on a Maven Central 429 while
+// regenerating a tree that was committed and current. The hash is the same
+// fingerprint loadDescriptor already trusts to refuse a stale descriptor
+// (codegen.DescriptorSourceHash), so the two cannot disagree.
+func staleByDescriptor(projectDir string) (stale, decided bool) {
+	data, err := os.ReadFile(filepath.Join(projectDir, "gen", "forge_descriptor.json"))
+	if err != nil {
+		return false, false
+	}
+	var stamp struct {
+		SourceHash string `json:"source_hash"`
+	}
+	if err := json.Unmarshal(data, &stamp); err != nil || stamp.SourceHash == "" {
+		return false, false
+	}
+	return codegen.DescriptorSourceHash(projectDir) != stamp.SourceHash, true
 }
 
 // missingGoWorkModule returns the first go.work-listed module directory
