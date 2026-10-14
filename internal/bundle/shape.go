@@ -93,7 +93,19 @@ func ProjectShape(in ShapeInput) (release.Shape, error) {
 	if err != nil {
 		return release.Shape{}, err
 	}
-	shape := release.Shape{
+	shape := in.shapeWith(objects)
+	if err := shape.Validate(); err != nil {
+		return release.Shape{}, err
+	}
+	return shape, nil
+}
+
+// shapeWith is the ONE place a ShapeInput's declaration fields become a
+// release.Shape, around objects the caller projected. ProjectShape and Build
+// both call it, so a field added to the shape cannot be recorded by one and
+// left out of the other.
+func (in ShapeInput) shapeWith(objects []release.ShapeObject) release.Shape {
+	return release.Shape{
 		Kind:      in.Kind,
 		Workloads: in.Workloads,
 		Secrets:   in.Secrets,
@@ -108,10 +120,6 @@ func ProjectShape(in ShapeInput) (release.Shape, error) {
 		DeliveryPolicy:      in.DeliveryPolicy,
 		Applier:             in.Applier,
 	}.Canonical()
-	if err := shape.Validate(); err != nil {
-		return release.Shape{}, err
-	}
-	return shape, nil
 }
 
 // projectObjects turns the manifest stream into the shape's objects, through

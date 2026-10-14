@@ -379,6 +379,7 @@ func bundleShapeInputOf(doc envShapeDoc) bundle.ShapeInput {
 		ControlPlaneSecrets: doc.Shape.ControlPlaneSecrets,
 		Alerts:              doc.Shape.Alerts,
 		AlertRoutes:         doc.Shape.AlertRoutes,
+		ObservabilityPolicy: doc.Shape.ObservabilityPolicy,
 		DeliveryPolicy:      doc.Shape.DeliveryPolicy,
 		Applier:             doc.Shape.Applier,
 	}

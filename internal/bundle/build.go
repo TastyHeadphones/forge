@@ -300,21 +300,7 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 	if err != nil {
 		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)
 	}
-	shape := release.Shape{
-		Kind:      in.Shape.Kind,
-		Workloads: in.Shape.Workloads,
-		Secrets:   in.Shape.Secrets,
-		Domains:   in.Shape.Domains,
-		Clusters:  in.Shape.Clusters,
-		Objects:   objects,
-
-		ControlPlaneSecrets: in.Shape.ControlPlaneSecrets,
-		Alerts:              in.Shape.Alerts,
-		AlertRoutes:         in.Shape.AlertRoutes,
-		ObservabilityPolicy: in.Shape.ObservabilityPolicy,
-		DeliveryPolicy:      in.Shape.DeliveryPolicy,
-		Applier:             in.Shape.Applier,
-	}.Canonical()
+	shape := in.Shape.shapeWith(objects)
 	if err := shape.Validate(); err != nil {
 		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)
 	}
