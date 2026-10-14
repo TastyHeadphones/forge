@@ -300,6 +300,20 @@ FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
   forge-managed service with no handler method or only forge's unwired stub.
   Streaming rpcs (`returns (stream X)`) were missing from the rpc list
   altogether, and are listed.
+- **The generated-file merge driver merges only as the forge the project
+  pins.** The driver command in `.git/config` named whichever forge binary
+  first installed it, and a forge that found a usable command left it alone,
+  so a clone kept merging with a forge several pins old: reliant's named
+  `~/.cache/fm-forge-bin/v0.1.45-…6f9811cb/forge`, and a cherry-pick warned
+  that it was not the pinned forge, then merged with it anyway. Now, at merge
+  time, a driver that is not the forge `forge.yaml` pins hands the merge to the
+  pinned forge when one has run in this clone (every forge command run by the
+  pinned forge records its driver command under
+  `forge-merge-driver.<identity>.command`), and otherwise merges as git does
+  with no driver — a plain three-way merge, a normal conflict where the sides
+  overlap — and says why. Any command run by the pinned forge (`forge
+  generate` after a pin bump) points the driver at itself; a forge that is not
+  the pin never replaces a working driver.
 
 - **`forgeconv-no-handler-error-mapping` fires only on sentinels mapped to
   connect errors.** The body-shape signal counted every `errors.Is` /
