@@ -286,6 +286,20 @@ FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
   completion line is followed by the steps that failed as warnings. (The ORM
   failure itself is correct there: reliant's `internal/db` declares `Message`
   and `ModelEndpoint`, which forge's ORM would redeclare.)
+- **`forge project shapes` diffs declared rpcs against handlers.** A handler
+  line carried only the method name (`SendMessage`), so `--grep ChatService`
+  dropped every handler and `--grep Chat` pulled in unrelated methods; and
+  `--kind handler` listed every method on a handler package's `*Service` —
+  helpers, `Name`, `Register` — as a handler (39 for reliant's settings
+  service, which has 33 rpcs). A handler line is now named like the rpc it
+  serves (`SettingsService.GetSettings`), resolved the way `generate` resolves
+  the package's service, and only methods that ARE an rpc of that service are
+  listed; a package no declared service resolves to keeps its exported methods,
+  marked `no declared service`. New: `--service <Name>` keeps one service's
+  rpcs and handlers, and `--unimplemented` lists each declared rpc of a
+  forge-managed service with no handler method or only forge's unwired stub.
+  Streaming rpcs (`returns (stream X)`) were missing from the rpc list
+  altogether, and are listed.
 
 - **`forgeconv-no-handler-error-mapping` fires only on sentinels mapped to
   connect errors.** The body-shape signal counted every `errors.Is` /

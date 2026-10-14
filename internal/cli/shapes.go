@@ -3,6 +3,8 @@ package cli
 import (
 	"bufio"
 	"fmt"
+	"go/ast"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -53,7 +55,7 @@ import (
 //	enum     EstimateStatus                proto/services/roofops/v1/roofops.proto:604  values=5
 //	table    estimates                     db/migrations/00004_create_estimates.up.sql:9
 //	store    EstimateStore                 internal/db/store_gen.go:214  go doc ./internal/db EstimateStore
-//	handler  roofops.RecalculateEstimate   internal/handlers/roofops/rpc_recalculate_estimate.go:24  unwired-stub
+//	handler  RoofopsService.RecalculateEstimate internal/handlers/roofops/rpc_recalculate_estimate.go:24  unwired-stub
 //	hook     useListEstimates              frontends/dashboard/src/hooks/roofops-service-hooks_gen.ts:212
 //	deploy-target FirebaseHosting          forge:kcl/schema.k:1851  on=Frontend  required=project,site,public_dir  …
 
@@ -66,12 +68,12 @@ type shape struct {
 }
 
 var (
-	reProtoRPC     = regexp.MustCompile(`^\s*rpc\s+(\w+)\s*\(\s*([\w.]+)\s*\)\s*returns\s*\(\s*([\w.]+)\s*\)`)
+	reProtoRPC     = regexp.MustCompile(`^\s*rpc\s+(\w+)\s*\(\s*((?:stream\s+)?[\w.]+)\s*\)\s*returns\s*\(\s*((?:stream\s+)?[\w.]+)\s*\)`)
 	reProtoMessage = regexp.MustCompile(`^message\s+(\w+)\s*\{`)
 	reProtoEnum    = regexp.MustCompile(`^enum\s+(\w+)\s*\{`)
 	reProtoService = regexp.MustCompile(`^service\s+(\w+)\s*\{`)
 	reSQLTable     = regexp.MustCompile(`(?i)^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(` + sqlident.Qualified + `)`)
-	reGoMethod     = regexp.MustCompile(`^func\s+\(s\s+\*Service\)\s+(\w+)\s*\(`)
+	reGoMethod     = regexp.MustCompile(`^func\s+\(\s*(?:\w+\s+)?\*Service\s*\)\s+(\w+)\s*\(`)
 	reUnwiredStub  = regexp.MustCompile(`forge:gen unwired-stub symbol=(\S+)`)
 	reTSHook       = regexp.MustCompile(`^export\s+(?:const|function)\s+(use\w+)`)
 	reStoreIface   = regexp.MustCompile(`^type\s+(\w*Store)\s+interface\s*\{`)
@@ -79,8 +81,10 @@ var (
 
 func newShapesCmd() *cobra.Command {
 	var (
-		grepPat string
-		kinds   string
+		grepPat       string
+		kinds         string
+		service       string
+		unimplemented bool
 	)
 	cmd := &cobra.Command{
 		Use:   "shapes",
@@ -104,13 +108,26 @@ Examples:
   forge project shapes --grep Estimate          # one entity across all layers
   forge project shapes --grep 'Invoice|Payment' # SEVERAL entities in one call
   forge project shapes --kind rpc,handler       # what is declared vs implemented
-  forge project shapes --kind deploy-target     # what a workload's deploy= accepts`,
+  forge project shapes --service ChatService    # one service's rpcs and their handlers
+  forge project shapes --unimplemented          # declared rpcs with no handler (or a stub)
+  forge project shapes --kind deploy-target     # what a workload's deploy= accepts
+
+A handler line is named like the rpc it serves (ChatService.SendMessage), so
+rpc and handler lines diff by name. Only methods on a handler package's
+*Service that ARE an rpc of its service are handlers: helpers, Name and
+Register are not listed.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			projectDir, err := os.Getwd()
 			if err != nil {
 				return err
 			}
 			shapes := collectShapes(projectDir)
+			if service != "" {
+				shapes = shapesOfService(shapes, service)
+			}
+			if unimplemented {
+				return printUnimplemented(cmd.OutOrStdout(), shapes)
+			}
 
 			var want map[string]bool
 			if kinds != "" {
@@ -188,17 +205,78 @@ Examples:
 	}
 	cmd.Flags().StringVar(&grepPat, "grep", "", "case-insensitive regex filter over name and detail")
 	cmd.Flags().StringVar(&kinds, "kind", "", "comma-separated kinds: rpc,message,enum,table,store,handler,hook,deploy-target")
+	cmd.Flags().StringVar(&service, "service", "", "only this service's rpcs and handlers (ChatService, or Chat)")
+	cmd.Flags().BoolVar(&unimplemented, "unimplemented", false,
+		"list the declared rpcs of forge-managed services that have no handler method, or only forge's unwired stub")
 	return cmd
+}
+
+// shapesOfService keeps the rpc and handler shapes of one service. A handler
+// is named like the rpc it serves, so both carry the "<Service>." prefix.
+func shapesOfService(shapes []shape, service string) []shape {
+	prefixes := []string{service + "."}
+	if !strings.HasSuffix(service, "Service") {
+		prefixes = append(prefixes, service+"Service.")
+	}
+	var out []shape
+	for _, s := range shapes {
+		if s.Kind != "rpc" && s.Kind != "handler" {
+			continue
+		}
+		for _, p := range prefixes {
+			if strings.HasPrefix(s.Name, p) {
+				out = append(out, s)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// printUnimplemented lists each declared rpc of a forge-managed service whose
+// service has no handler method for it, or only forge's unwired stub — the
+// declared-vs-implemented diff, computed rather than eyeballed.
+func printUnimplemented(w io.Writer, shapes []shape) error {
+	handlers := map[string]shape{}
+	for _, s := range shapes {
+		if s.Kind == "handler" {
+			handlers[s.Name] = s
+		}
+	}
+	n := 0
+	for _, s := range shapes {
+		if s.Kind != "rpc" || strings.HasSuffix(s.Detail, " unmanaged") {
+			continue
+		}
+		loc := fmt.Sprintf("%s:%d", s.File, s.Line)
+		h, ok := handlers[s.Name]
+		switch {
+		case !ok:
+			fmt.Fprintf(w, "%-42s %-58s no handler method\n", s.Name, loc)
+		case strings.Contains(h.Detail, "unwired-stub"):
+			fmt.Fprintf(w, "%-42s %-58s unwired stub at %s:%d\n", s.Name, loc, h.File, h.Line)
+		default:
+			continue
+		}
+		n++
+	}
+	if n == 0 {
+		fmt.Fprintln(w, "every declared rpc of a forge-managed service has a handler")
+		return nil
+	}
+	fmt.Fprintf(w, "%d declared rpc(s) without a handler\n", n)
+	return nil
 }
 
 // collectShapes walks the sources. Every scan is a cheap line scan — the whole
 // point is that this is fast enough to never need caching.
 func collectShapes(projectDir string) []shape {
 	var out []shape
-	out = append(out, scanProtos(filepath.Join(projectDir, "proto"))...)
+	rpcs := scanProtos(filepath.Join(projectDir, "proto"))
+	out = append(out, rpcs...)
 	out = append(out, scanMigrations(filepath.Join(projectDir, "db", "migrations"))...)
 	out = append(out, scanStores(filepath.Join(projectDir, "internal", "db"))...)
-	out = append(out, scanHandlers(filepath.Join(projectDir, "internal", "handlers"))...)
+	out = append(out, scanHandlers(projectDir, rpcs)...)
 	out = append(out, scanHooks(filepath.Join(projectDir, "frontends"))...)
 	out = append(out, scanDeployTargets(projectDir)...)
 
@@ -341,10 +419,41 @@ func scanMigrations(root string) []shape {
 // flags the ones forge stamped as unimplemented. The stub marker is the same
 // one the fan-out work list is derived from, so "declared but not implemented"
 // is answerable from this output alone.
-func scanHandlers(root string) []shape {
+//
+// A handler is named like the rpc it serves — <Service>.<Rpc> — so the two
+// kinds diff by name and filter by service. The handler package's service is
+// resolved the way generate resolves it (codegen.ResolveServiceComponent).
+// Only methods that ARE an rpc of that service are handlers: an unexported
+// helper, Name and Register sit on *Service too, and listing them as handlers
+// made "declared vs implemented" a diff no one could compute. A package no
+// declared service resolves to keeps its exported methods under their bare
+// names, detail "no declared service", so nothing vanishes silently.
+func scanHandlers(projectDir string, rpcs []shape) []shape {
+	declared := map[string]map[string]bool{} // service → its rpc names
+	for _, r := range rpcs {
+		if svc, rpc, ok := strings.Cut(r.Name, "."); ok && r.Kind == "rpc" {
+			if declared[svc] == nil {
+				declared[svc] = map[string]bool{}
+			}
+			declared[svc][rpc] = true
+		}
+	}
+	dirService := map[string]string{} // absolute handler dir → service
+	for svc := range declared {
+		res, err := codegen.ResolveServiceComponent(projectDir, svc)
+		if err != nil || !res.FromDisk {
+			continue
+		}
+		if abs, aerr := filepath.Abs(res.Dir); aerr == nil {
+			if _, taken := dirService[abs]; !taken {
+				dirService[abs] = svc
+			}
+		}
+	}
+
 	var out []shape
 	pending := ""
-	eachLine(root, ".go", func(rel string, n int, line string) {
+	eachLine(filepath.Join(projectDir, "internal", "handlers"), ".go", func(rel string, n int, line string) {
 		if strings.HasSuffix(rel, "_test.go") {
 			return
 		}
@@ -352,13 +461,24 @@ func scanHandlers(root string) []shape {
 			pending = m[1]
 			return
 		}
-		if m := reGoMethod.FindStringSubmatch(line); m != nil {
-			detail := ""
-			if pending != "" {
-				detail = "unwired-stub"
-				pending = ""
-			}
-			out = append(out, shape{"handler", m[1], rel, n, detail})
+		m := reGoMethod.FindStringSubmatch(line)
+		if m == nil {
+			return
+		}
+		detail := ""
+		if pending != "" {
+			detail = "unwired-stub"
+			pending = ""
+		}
+		dir, _ := filepath.Abs(filepath.Dir(rel))
+		svc, known := dirService[dir]
+		switch {
+		case known && declared[svc][m[1]]:
+			out = append(out, shape{"handler", svc + "." + m[1], rel, n, detail})
+		case known:
+			// A helper, Name or Register on the service: not a handler.
+		case ast.IsExported(m[1]):
+			out = append(out, shape{"handler", m[1], rel, n, strings.TrimSpace(detail + " no declared service")})
 		}
 	})
 	return out
