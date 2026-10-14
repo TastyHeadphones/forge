@@ -145,6 +145,8 @@ jobs:
           restore-keys: |
             go-build-test-${{ runner.os }}-${{ hashFiles('go.sum') }}-
             go-build-test-${{ runner.os }}-
+      # pkg/pgtest boots postgres for the DB-backed tests; see the action.
+      - uses: ./.github/actions/embedded-postgres-cache
       # internal/tierguard renders real fixture projects, which drives the
       # generate pipeline's "buf generate (Go stubs)" step. Without buf on
       # PATH those guards fail with `exec: "buf": executable file not found`
@@ -198,6 +200,8 @@ jobs:
           restore-keys: |
             go-build-test-guards-${{ runner.os }}-${{ hashFiles('go.sum') }}-
             go-build-test-guards-${{ runner.os }}-
+      # tierguard's fixture renders open a postgres shadow DB; see the action.
+      - uses: ./.github/actions/embedded-postgres-cache
       # tierguard's fixture renders run the generate pipeline's buf step; it
       # fails without buf rather than reporting an empty inventory as a pass.
       - name: Install buf

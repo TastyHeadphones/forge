@@ -78,6 +78,9 @@ jobs:
           key: corpus-npm-${{ runner.os }}-${{ hashFiles('internal/templates/frontend/nextjs/package.json.tmpl') }}
           restore-keys: corpus-npm-${{ runner.os }}-
 
+      # The corpus provisions one shared embedded postgres; see the action.
+      - uses: ./.github/actions/embedded-postgres-cache
+
       - name: Put $HOME/go/bin on PATH
         run: echo "$HOME/go/bin" >> "$GITHUB_PATH"
 

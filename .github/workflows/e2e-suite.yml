@@ -201,21 +201,9 @@ jobs:
           restore-keys: e2e-npm-${{ runner.os }}-
 
       # pkg/pgtest boots ONE embedded postgres per test process and shares
-      # it (see sharedTestPostgres). The binary is downloaded and extracted
-      # on first use into the user cache dir; caching it saves that on
-      # every subsequent run and removes a network dependency from the
-      # critical path.
-      #
-      # Keyed on go.sum: pgtest takes embedded-postgres's DEFAULT postgres
-      # version, so the binary changes exactly when that module's version in
-      # go.sum does. (This used to hash pkg/go.sum alone. That file went
-      # away with the pkg submodule, which made the hash empty and the key a
-      # constant that never invalidated.)
-      - uses: actions/cache@v6
-        with:
-          path: ~/.cache/forge/embedded-postgres
-          key: e2e-embedded-postgres-${{ runner.os }}-${{ hashFiles('go.sum') }}
-          restore-keys: e2e-embedded-postgres-${{ runner.os }}-
+      # it (see sharedTestPostgres); the action keeps its download off
+      # Maven Central.
+      - uses: ./.github/actions/embedded-postgres-cache
 
       # The tests build the forge binary themselves — the binary under test
       # must come from THIS commit — so this install exists only to provide
