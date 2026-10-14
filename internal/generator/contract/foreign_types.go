@@ -1,6 +1,7 @@
 package contract
 
 import (
+	"go/ast"
 	"go/types"
 	"sort"
 
@@ -41,10 +42,74 @@ func typedInterface(pkg *packages.Package, name string, aliases *importAliases) 
 		return InterfaceDef{}, nil, true, false
 	}
 
+	def = InterfaceDef{Name: name, Qualifier: aliases.useNamed(pkg.Types.Path(), pkg.Types.Name())}
+
+	seenReach := map[string]bool{}
+	note := func(t types.Type) {
+		for _, n := range namedInterfacesIn(t, pkg.Types) {
+			if n != name && !seenReach[n] {
+				seenReach[n] = true
+				reachable = append(reachable, n)
+			}
+		}
+	}
+	def.Methods = typedMethods(pkg, iface, aliases, note)
+	return def, reachable, true, true
+}
+
+// embeddedMethods is the method set an interface embedded from another
+// package contributes to a contract interface: `sweep.StorageStore` inside
+// `type Service interface { sweep.StorageStore; ... }`. imports is
+// contract.go's name → path map; the Resolver must have type-checked the
+// path (NewResolver loads every package contract.go embeds from).
+//
+// It returns nil when the embed cannot be read — the package did not load or
+// type-check, or the name is not an interface. The mock is then missing those
+// methods and its compile-time interface check names the first one, which is
+// the honest outcome: a stand-in that silently compiled would be worse, and a
+// generate that refused would block every other package over one dep.
+func embeddedMethods(sel *ast.SelectorExpr, imports map[string]string, r *Resolver, aliases *importAliases) []MethodDef {
+	alias, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return nil
+	}
+	pkg := r.foreignPackage(imports[alias.Name])
+	if pkg == nil || pkg.Types == nil {
+		return nil
+	}
+	obj, _ := pkg.Types.Scope().Lookup(sel.Sel.Name).(*types.TypeName)
+	if obj == nil {
+		return nil
+	}
+	iface, ok := obj.Type().Underlying().(*types.Interface)
+	if !ok || !typesValid(iface) {
+		return nil
+	}
+	return typedMethods(pkg, iface, aliases, func(types.Type) {})
+}
+
+// dedupeMethodDefs keeps the first method of each name, in order.
+func dedupeMethodDefs(methods []MethodDef) []MethodDef {
+	seen := make(map[string]bool, len(methods))
+	out := methods[:0:0]
+	for _, m := range methods {
+		if seen[m.Name] {
+			continue
+		}
+		seen[m.Name] = true
+		out = append(out, m)
+	}
+	return out
+}
+
+// typedMethods renders iface's complete method set — embeds flattened by
+// go/types — into the consuming package's namespace, registering every
+// package a signature references with aliases. note sees each parameter and
+// result type.
+func typedMethods(pkg *packages.Package, iface *types.Interface, aliases *importAliases, note func(types.Type)) []MethodDef {
 	qualifier := func(p *types.Package) string {
 		return aliases.useNamed(p.Path(), p.Name())
 	}
-	def = InterfaceDef{Name: name, Qualifier: aliases.useNamed(pkg.Types.Path(), pkg.Types.Name())}
 
 	// Declared methods first, in source order — the order the syntax path
 	// always emitted, so switching paths does not reshuffle existing mocks.
@@ -74,16 +139,7 @@ func typedInterface(pkg *packages.Package, name string, aliases *importAliases) 
 		}
 	}
 
-	seenReach := map[string]bool{}
-	note := func(t types.Type) {
-		for _, n := range namedInterfacesIn(t, pkg.Types) {
-			if n != name && !seenReach[n] {
-				seenReach[n] = true
-				reachable = append(reachable, n)
-			}
-		}
-	}
-
+	var methods []MethodDef
 	for _, fn := range funcs {
 		sig, _ := fn.Type().(*types.Signature)
 		if sig == nil {
@@ -109,9 +165,9 @@ func typedInterface(pkg *packages.Package, name string, aliases *importAliases) 
 			note(v.Type())
 			md.Results = append(md.Results, ParamDef{Name: v.Name(), TypeExpr: types.TypeString(v.Type(), qualifier)})
 		}
-		def.Methods = append(def.Methods, md)
+		methods = append(methods, md)
 	}
-	return def, reachable, true, true
+	return methods
 }
 
 // typesValid reports whether every type in iface's method signatures was
