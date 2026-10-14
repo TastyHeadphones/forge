@@ -302,7 +302,7 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 	unpin := pinFile(filepath.Join(projectDir, ".forge", "ports-"+envName+".json"))
 
 	scan := newRenderWriteScan(projectDir, opts.noWriteCheck)
-	activateDevStack(ctx, projectDir, envName, renderDeclaration, inspectBlocks)
+	_, _, probed := activateDevStackRendered(ctx, projectDir, envName, renderDeclaration, inspectBlocks)
 
 	// Report what the render touched no matter how it ends: a render that
 	// fails half-way has still run whatever file.write it reached, and
@@ -313,9 +313,19 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 		reportDeclinedWrites(errOut, kclplugin.SuppressedWrites())
 	}()
 
-	entities, kerr := RenderKCL(ctx, projectDir, envName)
-	if kerr != nil {
-		return fmt.Errorf("render deploy/kcl/%s/: %w", envName, kerr)
+	// The declaration is evaluated ONCE per render. Deciding the purpose
+	// already rendered it when the env runs nowhere on this machine (every
+	// cloud env), in the very render context every later read shares, so
+	// that render IS the declaration; and the ledger selection below reads
+	// these entities rather than rendering them again. Each of those used to
+	// be its own evaluation of the env's KCL: four per `forge env render`,
+	// ~20 CPU-seconds for a large prod env, where two do the work.
+	entities := probed
+	if entities == nil {
+		var kerr error
+		if entities, kerr = RenderKCL(ctx, projectDir, envName); kerr != nil {
+			return fmt.Errorf("render deploy/kcl/%s/: %w", envName, kerr)
+		}
 	}
 
 	namespace := opts.namespace
@@ -332,7 +342,7 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 		digests      map[string]string
 		boundRelease string
 	)
-	ledger, derr := ledgerFor(ctx, projectDir, envName)
+	ledger, derr := ledgerForRendered(ctx, projectDir, envName, entities)
 	if derr == nil {
 		digests, boundRelease, derr = resolveDeployDigests(ctx, projectDir, envName, opts.noDigest, ledger.Bindings, ledger.Releases)
 	}

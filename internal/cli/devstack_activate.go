@@ -55,6 +55,21 @@ import (
 // blocks its keys already hold and never hands out a new one, so it can
 // neither leak a block nor fail at the dev_stack.max_stacks ceiling.
 func activateDevStack(ctx context.Context, projectDir, env string, purpose renderPurpose, claim blockClaim) (devstack.Options, func()) {
+	opts, restore, _ := activateDevStackRendered(ctx, projectDir, env, purpose, claim)
+	return opts, restore
+}
+
+// activateDevStackRendered is activateDevStack, also returning env's
+// declaration when deciding the purpose already rendered it in the render
+// context every later render of this command shares. That is the case for an
+// env that runs nowhere on this machine: the probe renders with the block
+// allocator disarmed and the port store read-only, and that is exactly the
+// context it leaves armed — so the probe's entities ARE what RenderKCL would
+// return next, and a caller can use them instead of evaluating the env's KCL
+// a second time. nil whenever that does not hold (the env runs here and
+// arming changed the context, or the purpose needed no probe, or the probe
+// failed — the caller's own render then reports the error in its own words).
+func activateDevStackRendered(ctx context.Context, projectDir, env string, purpose renderPurpose, claim blockClaim) (devstack.Options, func(), *KCLEntities) {
 	// Every render starts unable to write files. Only a command that goes
 	// on to MATERIALIZE the env re-arms it (armMaterializer), after this.
 	kclplugin.UseFileWriter("")
@@ -85,16 +100,18 @@ func activateDevStack(ctx context.Context, projectDir, env string, purpose rende
 
 	storePath := filepath.Join(projectDir, ".forge", "ports-"+env+".json")
 	lastActivatedRunsHere = true
-	if purpose == renderDeclaration && !envRunsOnThisMachine(ctx, projectDir, env) {
-		lastActivatedRunsHere = false
-		// Nothing about this env runs here, so there is no local port for
-		// allocate_port to protect: it resolves to base, deterministically,
-		// and neither port store is written.
-		kclplugin.UseBlockAllocator(nil)
-		kclplugin.UsePortStoreReadOnly(storePath)
-		fmt.Fprintf(os.Stderr, "[devstack] env %q declares no local cluster or host process: "+
-			"allocate_port resolves to its base port and no port block is claimed\n", env)
-		return opts, func() {}
+	if purpose == renderDeclaration {
+		if runsHere, probed := envRunsOnThisMachine(ctx, projectDir, env); !runsHere {
+			lastActivatedRunsHere = false
+			// Nothing about this env runs here, so there is no local port for
+			// allocate_port to protect: it resolves to base, deterministically,
+			// and neither port store is written.
+			kclplugin.UseBlockAllocator(nil)
+			kclplugin.UsePortStoreReadOnly(storePath)
+			fmt.Fprintf(os.Stderr, "[devstack] env %q declares no local cluster or host process: "+
+				"allocate_port resolves to its base port and no port block is claimed\n", env)
+			return opts, func() {}, probed
+		}
 	}
 
 	if claim == inspectBlocks {
@@ -104,7 +121,7 @@ func activateDevStack(ctx context.Context, projectDir, env string, purpose rende
 		// block registry nor the resolve_port store is written.
 		kclplugin.UseBlockAllocator(inspectBlockAllocator(projectDir, env, os.Stderr))
 		kclplugin.UsePortStoreReadOnly(storePath)
-		return opts, func() {}
+		return opts, func() {}, nil
 	}
 
 	// Arm the parallel-dev-stack ceiling from forge.yaml's dev_stack.max_stacks
@@ -137,7 +154,7 @@ func activateDevStack(ctx context.Context, projectDir, env string, purpose rende
 
 	// Keep resolve_port stable + up==deploy via the per-env store.
 	restore := kclplugin.UsePortStore(storePath)
-	return opts, restore
+	return opts, restore, nil
 }
 
 // armMaterializer lets the KCL fp.write_file builtin write files for the rest
@@ -274,13 +291,19 @@ func inspectBlockAllocator(projectDir, env string, w io.Writer) func(base int, k
 // A probe that fails to render answers false. The real render fails the same
 // way immediately afterwards and reports the error in its own words, and
 // answering false means it does so without having claimed a block first.
-func envRunsOnThisMachine(ctx context.Context, projectDir, env string) bool {
+//
+// When it answers false it also returns the entities it rendered: the context
+// they were rendered in is the one activateDevStack then leaves armed.
+func envRunsOnThisMachine(ctx context.Context, projectDir, env string) (bool, *KCLEntities) {
 	kclplugin.UseBlockAllocator(nil)
 	entities, err := RenderKCL(ctx, projectDir, env)
 	if err != nil {
-		return false
+		return false, nil
 	}
-	return entitiesTargetThisMachine(entities)
+	if entitiesTargetThisMachine(entities) {
+		return true, nil
+	}
+	return false, entities
 }
 
 // entitiesTargetThisMachine reports whether anything the env declares runs on
