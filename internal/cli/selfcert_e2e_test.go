@@ -36,6 +36,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -163,6 +165,27 @@ func runGenerate(t *testing.T, projectDir, forgeBin string, extra ...string) (st
 	return string(out), err
 }
 
+// tier1DriftSummaryRE matches the stomp guard's summary line
+// (tier1DriftSummaryLine): the count, then the drifted paths.
+var tier1DriftSummaryRE = regexp.MustCompile(`(\d+) hand-edited Tier-1 file\(s\): (.+?) — move each edit`)
+
+// assertTier1DriftIsExactly fails unless every stomp-guard summary line in
+// out names exactly the files in want, in order, and at least one does.
+func assertTier1DriftIsExactly(t *testing.T, out string, want ...string) {
+	t.Helper()
+	matches := tier1DriftSummaryRE.FindAllStringSubmatch(out, -1)
+	if len(matches) == 0 {
+		t.Fatalf("no stomp-guard summary line (%q) in the output, so the drift set cannot be checked:\n%s",
+			"N hand-edited Tier-1 file(s): …", out)
+	}
+	for _, m := range matches {
+		if got := strings.Split(m[2], ", "); m[1] != strconv.Itoa(len(want)) || strings.Join(got, "\n") != strings.Join(want, "\n") {
+			t.Errorf("the guard reports %s hand-edited file(s) %q, want exactly %q (manifest-era false positive):\n%s",
+				m[1], got, want, out)
+		}
+	}
+}
+
 // TestE2ESelfCertCloneReproduces is THE kalshi scenario with the nasty
 // twist: one generated file is hand-edited before the commit. The
 // clone-side guard must name exactly that file — using only state that
@@ -195,15 +218,18 @@ func TestE2ESelfCertCloneReproduces(t *testing.T) {
 		t.Fatalf("guard error must name the hand-edited file %s; output:\n%s", editedRel, out)
 	}
 	// No OTHER generated file may be reported as hand-edited drift: the
-	// committed tree minus the one edit is pristine by construction. Each
-	// name below is a file that EXISTS and is stamped — a false-positive
-	// check against a file forge no longer writes proves nothing.
-	for _, mustNotName := range []string{tier1SelfCertGoAlt, "pkg/config/config_gen.go", tier1SelfCertOther} {
-		assertSelfCertifiedE2E(t, clone, mustNotName)
-		if strings.Contains(out, mustNotName) {
-			t.Errorf("guard names pristine file %s as drift (manifest-era false positive):\n%s", mustNotName, out)
-		}
+	// committed tree minus the one edit is pristine by construction. The
+	// guard's own drift list must be exactly the edited file. It is read
+	// from the guard's summary line, not from the whole output: the guard
+	// adjudicates after the emitters have run, so the rollback report that
+	// follows it rightly lists every file the run wrote and reverted,
+	// pristine ones included. Each name below is a file that EXISTS and is
+	// stamped — a false-positive check against a file forge no longer
+	// writes proves nothing.
+	for _, pristine := range []string{tier1SelfCertGoAlt, "pkg/config/config_gen.go", tier1SelfCertOther} {
+		assertSelfCertifiedE2E(t, clone, pristine)
 	}
+	assertTier1DriftIsExactly(t, out, editedRel)
 
 	// Restore the pristine bytes in the clone; generate must now run
 	// clean — a green tree reproduces itself from committed state alone.
