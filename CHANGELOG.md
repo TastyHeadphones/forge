@@ -90,6 +90,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A bundle now seals the env's `observability_policy`, so its digest changes
+  for envs that set one.** The release shape recorded on the ledger carried
+  `observability_policy` (what the env opted out of), but `forge env build`
+  never passed it to `bundle.Build`, so the config blob sealed inside the
+  bundle, and the digest over it, left it out; `delivery_policy` was sealed
+  correctly. An env that declares `forge.Observability` with anything switched
+  off or opted in gets a new bundle digest on its next build, even with no
+  other change (envs that declare none, or opt out of nothing, are unchanged).
+  `ProjectShape` and `Build` now build the shape through one constructor, and
+  `TestBundleSealsEveryShapeField` fails when a shape field is recorded but not
+  sealed. See `forge skill load migrations/v0.1.46`.
 - **`forge db migration new` writes a short header; `--context` writes the
   full one.** Every new migration used to open with the reconstructed schema,
   the whole previous migration and every filename in the directory — 4,658

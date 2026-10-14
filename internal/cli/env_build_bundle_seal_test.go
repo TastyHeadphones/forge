@@ -1,0 +1,115 @@
+package cli
+
+import (
+	"context"
+	"encoding/json"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/reliant-labs/forge/internal/bundle"
+	"github.com/reliant-labs/forge/pkg/release"
+)
+
+// bundleSealExclusions are the release.Shape fields the bundle deliberately
+// does NOT take from the declaration: bundle.Build projects them itself from
+// the manifest stream it packages, so a caller cannot pass them.
+var bundleSealExclusions = map[string]string{
+	"Objects": "projected by bundle.Build from the manifests it packages, never passed in",
+}
+
+// fullyDeclaredShape sets every release.Shape field a declaration can carry to
+// a non-default value. TestBundleSealsEveryShapeField fails when a field is
+// added to release.Shape and left zero here, so a new field cannot be added
+// without deciding whether the bundle seals it.
+func fullyDeclaredShape() release.Shape {
+	replicas := 2
+	policy := release.DefaultDeliveryPolicy()
+	policy.VulnGate.Mode = release.DeliveryEnforce
+	return release.Shape{
+		Kind:      release.EnvPersistent,
+		Workloads: []release.ShapeWorkload{{Name: "api", Runtime: "cluster", Cluster: "prod-ctx", Artifact: "api", Replicas: &replicas}},
+		Secrets:   []release.ShapeSecret{{Name: "DATABASE_URL", Provider: "external", DeclaredBy: []string{"api"}}},
+		Domains:   []string{"api.acme.test"},
+		Clusters:  []string{"prod-ctx"},
+
+		ControlPlaneSecrets: []release.ShapeControlPlaneSecret{{
+			Name: "telemetry", Namespace: "app", Cluster: "prod-ctx", ConnectedCluster: "prod",
+			Kind: release.ControlPlaneSecretTelemetryToken, Keys: []string{"token"},
+		}},
+		Alerts: []release.ShapeAlert{{
+			Alert: "HighErrorRate", Expr: "up == 0", For: "5m",
+			Labels: map[string]string{"severity": "critical"}, Source: release.AlertSourceUser,
+		}},
+		AlertRoutes: []release.ShapeAlertRoute{
+			{Match: map[string]string{"severity": "critical"}, Receiver: "pager"},
+			{Receiver: "default"},
+		},
+		ObservabilityPolicy: &release.ShapeObservabilityPolicy{
+			Enabled: true, Disabled: []string{release.ObsCategoryLogs}, OptIn: []string{release.ObsOptInReplay},
+		},
+		DeliveryPolicy: &policy,
+		Applier:        release.ApplierForge,
+	}
+}
+
+// The release shape recorded on the ledger and the shape sealed in the bundle's
+// config blob must say the same thing. A field that bundleShapeInputOf forgot
+// (observability_policy, once) is recorded but never sealed, so the bundle a
+// reconciler or the control plane reads silently lacks what the env declared.
+func TestBundleSealsEveryShapeField(t *testing.T) {
+	declared := fullyDeclaredShape()
+
+	typ := reflect.TypeOf(declared)
+	val := reflect.ValueOf(declared)
+	for i := 0; i < typ.NumField(); i++ {
+		name := typ.Field(i).Name
+		if _, excluded := bundleSealExclusions[name]; excluded {
+			continue
+		}
+		if val.Field(i).IsZero() {
+			t.Errorf("fullyDeclaredShape leaves Shape.%s zero: set it, or list it in bundleSealExclusions with the reason the bundle does not seal it", name)
+		}
+	}
+
+	built, err := bundle.Build(context.Background(), bundle.BuildInput{
+		Project:    "shop",
+		Env:        "prod",
+		Release:    "v1.0.0",
+		Pins:       release.BundlePins{Images: map[string]string{"api": "sha256:" + rep64('1')}},
+		Provenance: release.Provenance{Commit: rep40('c'), Tree: rep40('a')},
+		Shape: bundleShapeInputOf(envShapeDoc{
+			Project:   "shop",
+			Env:       "prod",
+			Shape:     declared,
+			manifests: bundleTestStream,
+		}),
+		CreatedAt: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("bundle.Build: %v", err)
+	}
+	var doc release.BundleDoc
+	if err := json.Unmarshal(built.ConfigBlob(), &doc); err != nil {
+		t.Fatalf("decode the sealed config blob: %v", err)
+	}
+
+	want := declared.Canonical()
+	sealed := reflect.ValueOf(doc.Shape)
+	wantV := reflect.ValueOf(want)
+	for i := 0; i < typ.NumField(); i++ {
+		name := typ.Field(i).Name
+		if _, excluded := bundleSealExclusions[name]; excluded {
+			continue
+		}
+		w, _ := json.Marshal(wantV.Field(i).Interface())
+		g, _ := json.Marshal(sealed.Field(i).Interface())
+		if string(w) != string(g) {
+			t.Errorf("the bundle does not seal Shape.%s as declared:\n declared %s\n sealed   %s", name, w, g)
+		}
+	}
+	if !strings.Contains(string(built.ConfigBlob()), `"observability_policy"`) {
+		t.Error("the config blob has no observability_policy")
+	}
+}

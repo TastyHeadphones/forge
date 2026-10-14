@@ -1,8 +1,8 @@
 ---
 name: v0.1.46
-description: Upgrade a project to forge v0.1.46. One section per change — (1) host-wide heavy slots: `forge slot run` / `forge slot status` (pkg/hostslot) queue heavy work machine-wide, `forge generate` and `forge lint` take a slot on their own, and the scaffolded Taskfile runs `test` and `test:integration` under a `SLOT` prefix; (2) `forge ci gate` runs checks concurrently (after / mutates_tree / heavy), caches PASS verdicts by tree hash, and unit-tests only the affected packages on a branch — with a wider ci.gate.extra_checks schema (lane, group, after, heavy, mutates_tree, cache, probe, skip_exit_code, env, replaces) for moving a hand-written gate script onto it. Use when Taskfile.yml has a `test` task but no `SLOT:` var, or when several agents or worktrees share one machine and builds and test runs slow each other down. (3) `forge.flux_chart()` is hardened and sized by default (behavior change: per-namespace controller RBAC replaces the chart's cluster-wide Secret read and impersonate-any-ServiceAccount grants, NetworkPolicies narrowed, concurrency and resources raised, a PriorityClass, Pod Security restricted on flux-system) and gains `rbac`, `placement`, `scrape_namespaces`. Use also when deploy/kcl declares `forge.flux_chart(`, or a chart override re-declares Flux's ClusterRoles, NetworkPolicies or controller args.
+description: Upgrade a project to forge v0.1.46. One section per change — (1) host-wide heavy slots: `forge slot run` / `forge slot status` (pkg/hostslot) queue heavy work machine-wide, `forge generate` and `forge lint` take a slot on their own, and the scaffolded Taskfile runs `test` and `test:integration` under a `SLOT` prefix; (2) `forge ci gate` runs checks concurrently (after / mutates_tree / heavy), caches PASS verdicts by tree hash, and unit-tests only the affected packages on a branch — with a wider ci.gate.extra_checks schema (lane, group, after, heavy, mutates_tree, cache, probe, skip_exit_code, env, replaces) for moving a hand-written gate script onto it. Use when Taskfile.yml has a `test` task but no `SLOT:` var, or when several agents or worktrees share one machine and builds and test runs slow each other down. (3) `forge.flux_chart()` is hardened and sized by default (behavior change: per-namespace controller RBAC replaces the chart's cluster-wide Secret read and impersonate-any-ServiceAccount grants, NetworkPolicies narrowed, concurrency and resources raised, a PriorityClass, Pod Security restricted on flux-system) and gains `rbac`, `placement`, `scrape_namespaces`. Use also when deploy/kcl declares `forge.flux_chart(`, or a chart override re-declares Flux's ClusterRoles, NetworkPolicies or controller args. (4) A bundle now seals the env's `observability_policy` (behavior change: the bundle digest of an env that opts out of, or into, any observability category changes on its next build). Use when deploy/kcl declares `forge.Observability` with `enabled = False`, a disabled signal or an opt-in, and a bundle of that env is already recorded.
 version: v0.1.46
-detection: ( test -f Taskfile.yml && grep -qs '^  test:' Taskfile.yml && ! grep -qs 'forge slot run' Taskfile.yml ) || ( grep -qsE 'forge\.flux_chart\(|flux_chart\(' deploy/kcl/*/*.k deploy/kcl/lib/*.k )
+detection: ( test -f Taskfile.yml && grep -qs '^  test:' Taskfile.yml && ! grep -qs 'forge slot run' Taskfile.yml ) || ( grep -qsE 'forge\.flux_chart\(|flux_chart\(' deploy/kcl/*/*.k deploy/kcl/lib/*.k ) || grep -qsE 'forge\.Observability' deploy/kcl/*/*.k
 ---
 
 # Upgrading to v0.1.46
@@ -176,3 +176,23 @@ Use when an env declares `forge.flux_chart(...)`, or carries chart overrides tha
 ### Verify
 
 `forge env render <env> --target flux` shows no `cluster-reconciler-impersonator` ClusterRole, a `flux-tenant-reconciler` ClusterRole whose impersonate rule carries `resourceNames`, one NetworkPolicy (`allow-egress`), and `kustomize-controller` args including `--feature-gates=CancelHealthCheckOnNewRevision=true,DisableConfigWatchers=true`. After deploy: `kubectl auth can-i impersonate serviceaccounts --as=system:serviceaccount:flux-system:kustomize-controller -n default` is `no`, and `kubectl auth can-i get secrets -A --as=system:serviceaccount:flux-system:kustomize-controller` is `no`.
+
+## 4. A bundle seals the env's `observability_policy`
+
+Use when an env declares `forge.Observability` with `enabled = False`, a signal switched off, or an opt-in (session replay), and a bundle of that env has been built before.
+
+### What changed (BEHAVIOR CHANGE)
+
+The release shape that `forge env build` records on the ledger has always carried `observability_policy`. The shape sealed inside the bundle (its config blob, and so its digest) did not: `forge env build` never handed the policy to `bundle.Build`, while `delivery_policy` was handed over. The bundle now seals what the shape declares.
+
+The consequence is a one-time digest change. An env whose policy opts out of anything (or opts in to replay) builds a bundle with a different digest than the same render built by an older forge. Envs that declare no `forge.Observability`, or declare one that opts out of nothing, seal no policy in either version and are unchanged.
+
+### Steps
+
+1. Nothing to edit. Rebuild the env (`forge env build <env>`): the new bundle records under a new digest.
+2. A release already bound to the old digest keeps resolving to it. Replacing the bundle of record for that same release takes `forge env deploy <env> --rerecord-bundle`; otherwise cut a new release.
+3. Anything that stored an affected bundle digest outside the ledger (a pinned OCIRepository digest, a promotion record you compare by hand) needs the new value.
+
+### Verify
+
+`forge env build <env>` then read the config blob of the bundle: `observability_policy` is present when the env opts out of or in to anything, and equals the `observability_policy` of `forge env shape <env> --json`.
