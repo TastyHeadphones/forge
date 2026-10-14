@@ -22,6 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was 72 of the preset's 74 seconds. It now reads export data for every
   service's interfaces in a single load. The preset takes 10 seconds on
   reliant, and its output is byte-identical to the full run's.
+- **The test harness stubs `// forge:optional-dep` interface fields too.**
+  `helpers_gen_test.go` emitted a `Stub<Field>` for every required interface
+  dep and nothing for an optional one. So the one test that exercises an
+  optional dep's non-nil path had to hand-roll its double: reliant's
+  model-endpoint `Router` and `Credentials`, and eight trigger deps. Now an
+  optional field gets its `Stub<Field>`, with the same fail-closed methods, but
+  `NewTest<Svc>` still leaves it nil. A test that says nothing about the field
+  runs the code's nil path. A test of the other path passes
+  `With<Svc>Deps(Deps{Field: &Stub<Field>{…}})`. An optional field forge
+  cannot stub gets no TODO, since nothing requires it.
 - **A migration can declare that it breaks rollback, and a project can require
   every migration to declare either way.** `-- forge:breaks-rollback <why>` is
   the counterpart of `-- forge:backward-compatible`: the previous release

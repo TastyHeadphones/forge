@@ -249,6 +249,7 @@ func newTest{{.FieldName}}Deps(cfg *testConfig) Deps {
 {{- end}}
 {{- $parent := . }}
 {{- range .AutoStubs}}
+{{- if not .Optional}}
 	// Auto-stub {{.FieldName}} ({{.InterfaceQualified}}). Synthesized so
 	// validateDeps accepts NewTest{{$parent.FieldName}} construction without
 	// hand-rolled stubs in the project. A test that reaches this dependency
@@ -257,6 +258,7 @@ func newTest{{.FieldName}}Deps(cfg *testConfig) Deps {
 	if deps.{{.FieldName}} == nil {
 		deps.{{.FieldName}} = &{{.StubType}}{}
 	}
+{{- end}}
 {{- end}}
 {{- range .UnresolvedStubs}}
 	// TODO: stub {{.TypeExpr}} for the {{.FieldName}} field. {{if .Reason}}{{.Reason}}{{else}}forge couldn't
@@ -292,9 +294,17 @@ func newTest{{.FieldName}}Deps(cfg *testConfig) Deps {
 {{- $svc := . }}
 {{- range .AutoStubs}}
 
+{{if .Optional -}}
+// {{.StubType}} stands in for {{.InterfaceQualified}} (Deps.{{.FieldName}}, a
+// forge:optional-dep). NewTest{{$svc.FieldName}} leaves the field nil, so a
+// test that says nothing about it runs the code's nil path; a test of the
+// other path passes one: With{{$svc.FieldName}}Deps(Deps{ {{- .FieldName}}: &{{.StubType}}{...}}).
+// It is the same shape as a forge contract mock:
+{{- else -}}
 // {{.StubType}} stands in for {{.InterfaceQualified}} (Deps.{{.FieldName}}) so
 // NewTest{{$svc.FieldName}} can construct the service even when the field is
 // required by validateDeps. It is the same shape as a forge contract mock:
+{{- end}}
 // program a method by setting its <Method>Func field, and assert calls through
 // the embedded contractkit.Recorder.
 //
