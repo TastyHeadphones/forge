@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // The pre-rollout gate: one-shot Jobs that must COMPLETE before any workload
@@ -71,34 +73,20 @@ import (
 // because the previous Deployment is still serving — which is exactly what
 // aborting at the gate preserves.
 
-// DeployPhaseAnnotation is the Job metadata annotation that places a one-shot
-// Job relative to the workloads in the same apply.
-const DeployPhaseAnnotation = "forge.dev/deploy-phase"
-
+// The phase vocabulary and the classifier live in pkg/release
+// ([release.ClassifyPhase]), because a Flux-applied bundle expresses the same
+// phases as trees and the two appliers must not classify differently.
 const (
+	// DeployPhaseAnnotation is the Job metadata annotation that places a
+	// one-shot Job relative to the workloads in the same apply.
+	DeployPhaseAnnotation = release.AnnotationDeployPhase
 	// DeployPhasePreRollout is applied, and required to COMPLETE, before any
 	// workload in the same apply is applied. The default.
-	DeployPhasePreRollout = "pre-rollout"
+	DeployPhasePreRollout = release.DeployPhasePreRollout
 	// DeployPhasePostRollout is applied with the workloads and awaited after
 	// their rollouts, for a Job that needs this release's workloads running.
-	DeployPhasePostRollout = "post-rollout"
+	DeployPhasePostRollout = release.DeployPhasePostRollout
 )
-
-// rolloutWorkloadKinds are the kinds the gate holds back until every
-// pre-rollout Job has completed: everything that runs the release's code.
-//
-// CronJob is on the list because a CronJob that fires between the apply and
-// the migration runs new code against the old schema just as surely as a
-// Deployment does. A bare Pod is on it for the same reason.
-var rolloutWorkloadKinds = map[string]struct{}{
-	"Deployment":            {},
-	"StatefulSet":           {},
-	"DaemonSet":             {},
-	"ReplicaSet":            {},
-	"ReplicationController": {},
-	"Pod":                   {},
-	"CronJob":               {},
-}
 
 // jobRef names one Job the gate waits on.
 type jobRef struct {
@@ -121,7 +109,7 @@ type rolloutPhases struct {
 	preJobs string
 	// preJobRefs names the Jobs in preJobs, in stream order.
 	preJobRefs []jobRef
-	// workloads is every rolloutWorkloadKinds document plus the post-rollout
+	// workloads is every release.RolloutWorkloadKind document plus the post-rollout
 	// Jobs — everything the gate holds back.
 	workloads string
 }
@@ -163,24 +151,19 @@ func partitionRolloutPhases(stream string) (rolloutPhases, error) {
 			workloads = append(workloads, doc)
 			continue
 		}
-		if m.Kind == "Job" {
-			phase, err := jobDeployPhase(m)
-			if err != nil {
-				return rolloutPhases{}, err
-			}
-			if phase == DeployPhasePreRollout {
-				preJobs = append(preJobs, doc)
-				refs = append(refs, jobRef{Name: m.Metadata.Name, Namespace: m.Metadata.Namespace})
-				continue
-			}
-			workloads = append(workloads, doc)
-			continue
+		phase, err := release.ClassifyPhase(m.Kind, m.Metadata.Name, m.Metadata.Annotations)
+		if err != nil {
+			return rolloutPhases{}, err
 		}
-		if _, held := rolloutWorkloadKinds[m.Kind]; held {
+		switch {
+		case phase == release.PhasePre && m.Kind == "Job":
+			preJobs = append(preJobs, doc)
+			refs = append(refs, jobRef{Name: m.Metadata.Name, Namespace: m.Metadata.Namespace})
+		case phase == release.PhasePre:
+			support = append(support, doc)
+		default:
 			workloads = append(workloads, doc)
-			continue
 		}
-		support = append(support, doc)
 	}
 	return rolloutPhases{
 		support:    strings.Join(support, docDelimiter),
@@ -188,21 +171,6 @@ func partitionRolloutPhases(stream string) (rolloutPhases, error) {
 		preJobRefs: refs,
 		workloads:  strings.Join(workloads, docDelimiter),
 	}, nil
-}
-
-// jobDeployPhase reads one Job's declared phase. Absent means pre-rollout.
-func jobDeployPhase(m parsedDoc) (string, error) {
-	phase, declared := m.Metadata.Annotations[DeployPhaseAnnotation]
-	if !declared {
-		return DeployPhasePreRollout, nil
-	}
-	switch phase {
-	case DeployPhasePreRollout, DeployPhasePostRollout:
-		return phase, nil
-	default:
-		return "", fmt.Errorf("one-shot Job %q declares %s=%q: want %q (the default: completes before any workload is applied) or %q (runs after the workloads roll out); nothing was applied",
-			m.Metadata.Name, DeployPhaseAnnotation, phase, DeployPhasePreRollout, DeployPhasePostRollout)
-	}
 }
 
 // applyPreRolloutGate applies the support objects and the pre-rollout Jobs,

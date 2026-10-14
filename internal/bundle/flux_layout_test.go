@@ -98,6 +98,23 @@ func fluxExtract(t *testing.T, built Bundle, mediaType string) map[string]string
 	return out
 }
 
+// filesUnderCluster is every file below a cluster path, at any depth, keyed by
+// basename: the documents a cluster receives across all its trees.
+func filesUnderCluster(extracted map[string]string, path string) (names []string, bodies map[string]string) {
+	bodies = map[string]string{}
+	for name, body := range extracted {
+		rest, ok := strings.CutPrefix(name, path+"/")
+		if !ok {
+			continue
+		}
+		base := rest[strings.LastIndex(rest, "/")+1:]
+		names = append(names, base)
+		bodies[base] = body
+	}
+	sort.Strings(names)
+	return names, bodies
+}
+
 // filesUnder is kustomize-controller reading Kustomization.spec.path: the
 // files directly under one path, by basename, in the lexicographic order a
 // generated kustomization.yaml lists them.
@@ -136,8 +153,8 @@ func TestFluxExtractRoutesEachClusterToItsOwnPath(t *testing.T) {
 		t.Fatalf("two clusters share the path %s; each would apply the other's objects", prodPath)
 	}
 
-	prodNames, prodBodies := filesUnder(extracted, prodPath)
-	daemonNames, daemonBodies := filesUnder(extracted, daemonPath)
+	prodNames, prodBodies := filesUnderCluster(extracted, prodPath)
+	daemonNames, daemonBodies := filesUnderCluster(extracted, daemonPath)
 
 	// gke-prod gets the five objects addressed to it, plus the shared
 	// Namespace. gke-daemon gets the shared Namespace and nothing else.
@@ -201,12 +218,19 @@ func TestBundleDocPublishesThePathsTheLayerHolds(t *testing.T) {
 		}
 	}
 
+	// A flat cluster is applied from its cluster path; every other cluster is
+	// applied from its trees, which are what the document must publish.
 	claimed := map[string]int{}
 	for _, tree := range built.Doc.ClusterPaths {
 		if tree.Path != release.BundleClusterPath(tree.Cluster) {
 			t.Errorf("cluster %q claims path %q, but the layout puts it at %q",
 				tree.Cluster, tree.Path, release.BundleClusterPath(tree.Cluster))
 		}
+		if release.FlatCluster(tree.Cluster) {
+			claimed[tree.Path] = tree.Documents
+		}
+	}
+	for _, tree := range built.Doc.Trees {
 		claimed[tree.Path] = tree.Documents
 	}
 

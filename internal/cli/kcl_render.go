@@ -47,6 +47,7 @@ import (
 	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/internal/secrets"
 	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // KCLEntities is the typed view of the JSON contract the KCL deploy module
@@ -86,6 +87,11 @@ type KCLEntities struct {
 	// [Applier] helpers (DirectApplyAllowed, envConvergedByHub) rather than
 	// comparing strings.
 	Applier string `json:"applier,omitempty"`
+
+	// DeliveryUnits are the units the env's bundle is split into, in
+	// declaration order (Bundle.delivery_units). Empty: everything is in the
+	// default unit.
+	DeliveryUnits []release.DeliveryUnit
 
 	// Clusters are the k3d clusters forge ensures exist at the head of
 	// `forge env up` before any workload deploys. Empty for an env that
@@ -689,6 +695,9 @@ type WorkloadEntity struct {
 	// Spec is the runtime-independent declaration, decoded STRICTLY into
 	// forge's wire type — the same bytes a hosted Workload CR carries.
 	Spec deployv1alpha1.WorkloadSpec
+	// DeliveryUnit is the delivery unit the workload's objects belong to ("" =
+	// the default unit). Authoring-only: it never reaches the wire spec.
+	DeliveryUnit string
 }
 
 // Runtime discriminators (RuntimeEntity.Type).
@@ -1238,6 +1247,7 @@ type kclRenderRaw struct {
 	ImageTag            string                     `json:"image_tag,omitempty"`
 	Lifecycle           string                     `json:"lifecycle,omitempty"`
 	Applier             string                     `json:"applier,omitempty"`
+	DeliveryUnits       []deliveryUnitRaw          `json:"delivery_units,omitempty"`
 	Clusters            []ClusterEntity            `json:"clusters,omitempty"`
 	ClusterTarget       *ClusterTargetEntity       `json:"cluster_target,omitempty"`
 	KubeconfigSecrets   []KubeconfigSecretEntity   `json:"kubeconfig_secrets,omitempty"`
@@ -1272,6 +1282,14 @@ type namedRaw struct {
 	Name string `json:"name"`
 }
 
+// deliveryUnitRaw is one `output.delivery_units[]` entry. After is a pointer-ish
+// slice on purpose: null (unset) means "after the default unit", an empty list
+// means "waits for nothing", and the two must not be conflated.
+type deliveryUnitRaw struct {
+	Name  string    `json:"name"`
+	After *[]string `json:"after"`
+}
+
 // kclWorkloadRaw is one `output.workloads[]` entry before dispatch.
 type kclWorkloadRaw struct {
 	Name  string `json:"name"`
@@ -1284,6 +1302,8 @@ type kclWorkloadRaw struct {
 	FlowChecks []FlowCheckEntity `json:"flow_checks"`
 	Runtime    json.RawMessage   `json:"runtime"`
 	Spec       json.RawMessage   `json:"spec"`
+	// DeliveryUnit is the unit the workload's objects are delivered in.
+	DeliveryUnit string `json:"delivery_unit,omitempty"`
 }
 
 // rawManifest is a minimal view of one rendered k8s object — just enough
@@ -1522,6 +1542,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		ImageTag:             raw.ImageTag,
 		Lifecycle:            raw.Lifecycle,
 		Applier:              raw.Applier,
+		DeliveryUnits:        deliveryUnitsOf(raw.DeliveryUnits),
 		Clusters:             raw.Clusters,
 		ClusterTarget:        raw.ClusterTarget,
 		KubeconfigSecrets:    raw.KubeconfigSecrets,
@@ -1595,7 +1616,7 @@ func decodeWorkload(w kclWorkloadRaw) (WorkloadEntity, error) {
 	if w.Kind != "" && w.Kind != kind {
 		return WorkloadEntity{}, fmt.Errorf("workload %q: kind %q disagrees with spec.kind %q", w.Name, w.Kind, kind)
 	}
-	return WorkloadEntity{Name: w.Name, Kind: kind, Image: w.Image, BuildImage: w.BuildImage, Build: build, Runtime: rt, FlowChecks: w.FlowChecks, Spec: spec}, nil
+	return WorkloadEntity{Name: w.Name, Kind: kind, Image: w.Image, BuildImage: w.BuildImage, Build: build, Runtime: rt, FlowChecks: w.FlowChecks, Spec: spec, DeliveryUnit: w.DeliveryUnit}, nil
 }
 
 // manifestNamespace returns the namespace that dominates the rendered
@@ -1960,4 +1981,21 @@ func (e *KCLEntities) HasHosted() bool {
 // published to the control plane as a StaticSite.
 func frontendIsHosted(f FrontendEntity) bool {
 	return f.Runtime.Type == FrontendRuntimeHosted
+}
+
+// deliveryUnitsOf converts the rendered declarations to the release type,
+// keeping "unset" (nil After) distinct from "after nothing" (empty After).
+func deliveryUnitsOf(raw []deliveryUnitRaw) []release.DeliveryUnit {
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make([]release.DeliveryUnit, 0, len(raw))
+	for _, u := range raw {
+		unit := release.DeliveryUnit{Name: u.Name}
+		if u.After != nil {
+			unit.After = append([]string{}, *u.After...)
+		}
+		out = append(out, unit)
+	}
+	return out
 }

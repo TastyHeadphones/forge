@@ -23,6 +23,10 @@ type ShapeDiff struct {
 	Added   []ShapeObject  `json:"added,omitempty"`
 	Removed []ShapeObject  `json:"removed,omitempty"`
 	Changed []ObjectChange `json:"changed,omitempty"`
+	// Moved are objects present on both sides, in the same cluster, whose
+	// delivery tree differs. Independent of Changed: a move can leave the
+	// object's bytes untouched.
+	Moved []ObjectMove `json:"moved,omitempty"`
 
 	WorkloadsAdded   []string        `json:"workloads_added,omitempty"`
 	WorkloadsRemoved []string        `json:"workloads_removed,omitempty"`
@@ -33,6 +37,15 @@ type ShapeDiff struct {
 	DomainsRemoved   []string        `json:"domains_removed,omitempty"`
 	ClustersAdded    []string        `json:"clusters_added,omitempty"`
 	ClustersRemoved  []string        `json:"clusters_removed,omitempty"`
+}
+
+// ObjectMove is one object changing delivery tree between two shapes.
+// From and To are "<unit>/<phase>"; "" is the v1 flat layout, so a move from ""
+// is the layout migration.
+type ObjectMove struct {
+	Key  ObjectKey `json:"key"`
+	From string    `json:"from"`
+	To   string    `json:"to"`
 }
 
 // KindChange is a disagreement about an env's kind.
@@ -73,7 +86,7 @@ type RuntimeChange struct {
 // Empty reports whether nothing differs. An unknown live side is never empty.
 func (d ShapeDiff) Empty() bool {
 	return !d.LiveUnknown && d.KindChanged == nil &&
-		len(d.Added) == 0 && len(d.Removed) == 0 && len(d.Changed) == 0 &&
+		len(d.Added) == 0 && len(d.Removed) == 0 && len(d.Changed) == 0 && len(d.Moved) == 0 &&
 		len(d.WorkloadsAdded) == 0 && len(d.WorkloadsRemoved) == 0 && len(d.RuntimeChanges) == 0 &&
 		len(d.SecretsAdded) == 0 && len(d.SecretsRemoved) == 0 &&
 		len(d.DomainsAdded) == 0 && len(d.DomainsRemoved) == 0 &&
@@ -115,6 +128,9 @@ func DiffShapes(live *Shape, candidate Shape) ShapeDiff {
 			d.Added = append(d.Added, o)
 		case lo.Hash != o.Hash:
 			d.Changed = append(d.Changed, objectChange(lo, o))
+		}
+		if ok && lo.Tree != o.Tree {
+			d.Moved = append(d.Moved, ObjectMove{Key: o.Key(), From: lo.Tree, To: o.Tree})
 		}
 	}
 	for _, o := range l.Objects {
