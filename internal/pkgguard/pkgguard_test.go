@@ -5,7 +5,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -189,13 +188,18 @@ func (s step) workingDir() string {
 	return wd
 }
 
-// repoRoot finds the repository root from this test's own compiled-in source
-// path, so it is correct under `go test ./...` from any directory.
+// repoRoot is two levels above this package's source directory, which is the
+// working directory `go test` runs it in whatever directory it was invoked
+// from.
+//
+// Not runtime.Caller: under -trimpath (the workspace image's GOFLAGS default)
+// that reports "github.com/reliant-labs/forge/internal/...", a module-relative
+// path that is not a file on disk. internal/trimpathguard holds the tree to it.
 func repoRoot(t *testing.T) string {
 	t.Helper()
-	_, self, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller failed — cannot locate the repository root")
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolve the repository root: %v", err)
 	}
-	return filepath.Dir(filepath.Dir(filepath.Dir(self)))
+	return root
 }

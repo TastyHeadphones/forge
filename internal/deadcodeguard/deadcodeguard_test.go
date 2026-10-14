@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -261,8 +260,7 @@ func TestRulesFireOnPlantedDefects(t *testing.T) {
 	if testing.Short() {
 		t.Skip("type-checks the testdata fixture module with go/packages; runs in task test")
 	}
-	_, self, _, _ := runtime.Caller(0)
-	fixture := filepath.Join(filepath.Dir(self), "testdata", "fixture")
+	fixture := fixtureDir(t)
 
 	got, err := ScanStandalone(fixture, "deadcodeguardfixture/internal/")
 	if err != nil {
@@ -312,8 +310,7 @@ func TestExemptionsAreLoadBearing(t *testing.T) {
 	if testing.Short() {
 		t.Skip("type-checks the testdata fixture module with go/packages; runs in task test")
 	}
-	_, self, _, _ := runtime.Caller(0)
-	fixture := filepath.Join(filepath.Dir(self), "testdata", "fixture")
+	fixture := fixtureDir(t)
 	got, err := ScanStandalone(fixture, "deadcodeguardfixture/internal/")
 	if err != nil {
 		t.Fatalf("scan fixture: %v", err)
@@ -360,15 +357,30 @@ func TestExemptionsAreLoadBearing(t *testing.T) {
 // Plumbing
 // ─────────────────────────────────────────────────────────────────────────────
 
-// repoRoot finds the repository root from this test's own compiled-in source
-// path, so it is correct under `go test ./...` from any directory.
+// fixtureDir is testdata/fixture as an absolute path, resolved against the
+// package directory `go test` runs in (not runtime.Caller; see repoRoot).
+func fixtureDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.Abs(filepath.Join("testdata", "fixture"))
+	if err != nil {
+		t.Fatalf("resolve testdata/fixture: %v", err)
+	}
+	return dir
+}
+
+// repoRoot walks up from the working directory, which `go test` sets to this
+// package's source directory whatever directory it was invoked from.
+//
+// Not runtime.Caller: under -trimpath (the workspace image's GOFLAGS default)
+// that reports "github.com/reliant-labs/forge/internal/...", a module-relative
+// path that is not a file on disk. internal/trimpathguard holds the tree to it.
 func repoRoot(t *testing.T) string {
 	t.Helper()
-	_, self, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("cannot locate this test's source path")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
 	}
-	dir := filepath.Dir(self)
+	dir := wd
 	for {
 		b, err := os.ReadFile(filepath.Join(dir, "go.mod"))
 		if err == nil && bytes.Contains(b, []byte("module github.com/reliant-labs/forge\n")) {
@@ -376,7 +388,7 @@ func repoRoot(t *testing.T) string {
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			t.Fatalf("no go.mod declaring module github.com/reliant-labs/forge found above %s", filepath.Dir(self))
+			t.Fatalf("no go.mod declaring module github.com/reliant-labs/forge found above %s", wd)
 		}
 		dir = parent
 	}

@@ -8,7 +8,7 @@
       "mode": "debug",
       "program": "${workspaceFolder}/cmd/{{.Name}}",
       "args": [],
-      "buildFlags": "-gcflags='all=-N -l'"
+      "buildFlags": "-gcflags='all=-N -l' -trimpath=false"
     },
     {
       "name": "Debug Current Test",
@@ -16,7 +16,7 @@
       "request": "launch",
       "mode": "test",
       "program": "${fileDirname}",
-      "buildFlags": "-gcflags='all=-N -l'"
+      "buildFlags": "-gcflags='all=-N -l' -trimpath=false"
     }
   ]
 }
