@@ -71,6 +71,7 @@ package contractcheck
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -90,10 +91,15 @@ import (
 )
 
 // goListTimeout caps a single `go list` lookup. The command reads the
-// module graph and touches no network (GOPROXY=off), so it returns in
-// milliseconds; the bound exists so a wedged toolchain fails the lookup
-// instead of hanging the linter.
-const goListTimeout = 20 * time.Second
+// module graph and touches no network (GOPROXY=off), so on an idle machine
+// it returns in well under a second; the bound exists so a wedged toolchain
+// fails the lookup instead of hanging the linter. It is a hang guard, not a
+// latency budget: on a shared 16-core box at load ~1500 one lookup of
+// sigs.k8s.io/controller-runtime/pkg/client from control-plane took 9-15s
+// alone, and the old 20s bound expired under `forge lint`'s concurrent
+// lanes. A lookup that does time out fails the rule (see
+// [depsLinter.externalPackageDir]); it never turns into a finding.
+const goListTimeout = 2 * time.Minute
 
 // lintDepsAreInterfaces walks rootDir/internal/ for packages declaring
 // a `type Deps struct`, and fires on every concrete-typed field that
@@ -151,6 +157,10 @@ func lintDepsAreInterfaces(rootDir string) (forgeconv.Result, error) {
 		}
 		result.Findings = append(result.Findings, findings...)
 	}
+	if lin.resolveErr != nil {
+		return forgeconv.Result{}, fmt.Errorf("could not read every Deps field's type, so no findings rather than judge an unread type concrete: %w",
+			lin.resolveErr)
+	}
 
 	sort.SliceStable(result.Findings, func(i, j int) bool {
 		if result.Findings[i].File != result.Findings[j].File {
@@ -171,6 +181,11 @@ func lintDepsAreInterfaces(rootDir string) (forgeconv.Result, error) {
 type depsLinter struct {
 	rootDir    string
 	modulePath string
+	// resolveErr is the first `go list` lookup that FAILED, as opposed to
+	// one that answered "no such package". It fails the whole rule: every
+	// unresolvable selector is judged concrete, so a lookup that merely
+	// timed out would otherwise report correct code as an error.
+	resolveErr error
 	// declCache memoizes directory → the type facts parsed out of it
 	// (interfaces, declared names, method counts).
 	declCache map[string]typeDecls
@@ -1431,6 +1446,14 @@ func (l *depsLinter) packageDir(importPath string) string {
 // resolves to "", which falls back to the conservative "not an interface"
 // answer rather than reaching for the network from inside a linter. -e
 // keeps go list from failing the whole invocation over one bad path.
+//
+// Because of -e, "no such package" is an empty Dir with exit 0. A non-nil
+// error therefore means the LOOKUP failed — the timeout, a missing or
+// broken go command — and the answer is unknown, not "concrete". That is
+// recorded in resolveErr and fails the rule. It used to return "" like a
+// missing package, so a `go list` that timed out on a loaded machine
+// reported every `client.Client` Deps field as a concrete type, at error
+// severity, and a rerun of the same tree passed.
 func (l *depsLinter) externalPackageDir(importPath string) string {
 	if got, ok := l.dirCache[importPath]; ok {
 		return got
@@ -1445,6 +1468,20 @@ func (l *depsLinter) externalPackageDir(importPath string) string {
 	cmd.Env = goexec.Env("GOPROXY=off")
 	out, err := cmd.Output()
 	if err != nil {
+		if l.resolveErr == nil {
+			var stderr string
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				stderr = strings.TrimSpace(string(exitErr.Stderr))
+			}
+			if ctx.Err() != nil {
+				err = fmt.Errorf("%w after %s (%v)", ctx.Err(), goListTimeout, err)
+			}
+			l.resolveErr = fmt.Errorf("go list %s: %w", importPath, err)
+			if stderr != "" {
+				l.resolveErr = fmt.Errorf("%w\n%s", l.resolveErr, stderr)
+			}
+		}
 		return ""
 	}
 	dir := strings.TrimSpace(string(out))
