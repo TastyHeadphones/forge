@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"runtime"
 	"strings"
 	"testing"
@@ -54,7 +55,7 @@ func TestSlotRun_WaitsForTheHolder(t *testing.T) {
 		t.Skip("uses sh")
 	}
 	slotEnv(t, "1")
-	held, err := hostslot.Acquire(context.Background(), hostslot.Heavy, hostslot.Options{Label: "the other job"})
+	held, err := hostslot.Acquire(context.Background(), hostslot.Heavy, hostslot.Options{Label: "the other job", Env: os.Environ()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,12 +77,12 @@ func TestSlotRun_WaitsForTheHolder(t *testing.T) {
 
 func TestSlotStatus_Renders(t *testing.T) {
 	slotEnv(t, "2")
-	held, err := hostslot.Acquire(context.Background(), hostslot.Heavy, hostslot.Options{Label: "go test ./..."})
+	held, err := hostslot.Acquire(context.Background(), hostslot.Heavy, hostslot.Options{Label: "go test ./...", Env: os.Environ()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = held.Release() }()
-	rep, err := hostslot.Status(hostslot.Heavy, hostslot.Options{})
+	rep, err := hostslot.Status(hostslot.Heavy, hostslot.Options{Env: os.Environ()})
 	if err != nil {
 		t.Fatal(err)
 	}

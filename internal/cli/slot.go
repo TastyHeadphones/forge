@@ -86,6 +86,7 @@ func runInSlot(ctx context.Context, class string, slots int, argv []string, stdi
 		Out:     stderr,
 		Label:   strings.Join(argv, " "),
 		Subtree: true,
+		Env:     os.Environ(),
 	})
 	interrupted := waitCtx.Err() != nil && ctx.Err() == nil
 	stop()
@@ -157,7 +158,7 @@ func newSlotStatusCmd() *cobra.Command {
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			rep, err := hostslot.Status(class, hostslot.Options{})
+			rep, err := hostslot.Status(class, hostslot.Options{Env: os.Environ()})
 			if err != nil {
 				return err
 			}

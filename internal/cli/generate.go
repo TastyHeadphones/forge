@@ -51,6 +51,21 @@ func withGenerateLock(projectDir string, fn func() error) error {
 	return fn()
 }
 
+// generateInSlot runs fn holding a host heavy slot (pkg/hostslot): generate is
+// heavy (buf, the schema projection's postgres, a validating compile of every
+// package). The slot is taken BEFORE the project lock: a run holding the
+// project lock must never wait for a slot, or a slot holder waiting for that
+// lock (a gate's verify-generated) deadlocks with it. --plan does no work and
+// takes none; --watch holds it for the first generate only, not the session.
+func generateInSlot(cmd *cobra.Command, fn func() error) error {
+	release, err := cmdutil.HoldHeavySlot(cmd.Context(), cmd.ErrOrStderr())
+	if err != nil {
+		return err
+	}
+	defer release()
+	return fn()
+}
+
 func newGenerateCmd() *cobra.Command {
 	var (
 		watch           bool
@@ -113,20 +128,8 @@ Additional maintainer/debug flags exist (pipeline narrowing, drift
 forensics, parallel-lane and migration escape hatches); run
 'forge generate --help-dev' to list them.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Generate is heavy (buf, the schema projection's postgres,
-			// a validating compile of every package), so it takes a host
-			// heavy slot (pkg/hostslot) BEFORE the project lock: a run
-			// holding the project lock must never wait for a slot, or a
-			// slot holder waiting for that lock (a gate's verify-generated)
-			// deadlocks with it. --plan does no work and takes none; --watch
-			// holds it for the first generate only, not the whole session.
 			if checkOnly {
-				release, err := cmdutil.HoldHeavySlot(cmd.Context(), cmd.ErrOrStderr())
-				if err != nil {
-					return err
-				}
-				defer release()
-				return runGenerateCheck()
+				return generateInSlot(cmd, runGenerateCheck)
 			}
 			if planOnly {
 				return runGeneratePlan(".", pipelineFlags{
@@ -141,13 +144,13 @@ forensics, parallel-lane and migration escape hatches); run
 					Steps:           steps,
 				})
 			}
+			// The explain scans run inside the lock too: a concurrent run
+			// finishing between the pre-scan and this run's pipeline would
+			// otherwise be labeled as this run's rewrites.
 			releaseSlot, err := cmdutil.HoldHeavySlot(cmd.Context(), cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
-			// The explain scans run inside the lock too: a concurrent run
-			// finishing between the pre-scan and this run's pipeline would
-			// otherwise be labeled as this run's rewrites.
 			err = withGenerateLock(".", func() error {
 				// Capture pre-pipeline body hashes (from the embedded
 				// markers) so --explain can diff against post-pipeline
@@ -194,7 +197,7 @@ forensics, parallel-lane and migration escape hatches); run
 				}
 				return pipeErr
 			})
-			releaseSlot()
+			releaseSlot() // see generateInSlot
 			if err != nil {
 				return err
 			}

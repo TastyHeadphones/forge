@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -248,24 +249,19 @@ func TestAcquire_RejectsBadClass(t *testing.T) {
 
 // ---- multi-process properties ------------------------------------------------
 
-const (
-	helperModeEnv = "HOSTSLOT_HELPER_MODE"
-	helperDirEnv  = "HOSTSLOT_HELPER_DIR"
-)
-
-// TestSlotHelperProcess is not a test. Re-exec'd with HOSTSLOT_HELPER_MODE
-// set it plays one process:
+// TestSlotHelperProcess is not a test. Re-exec'd with `-- <mode> <dir>` after
+// the test flags (flag.Args) it plays one process:
 //
 //	hold     take the slot, write "held", then sleep until killed
 //	exit     take the slot, write "held", exit WITHOUT releasing
 //	acquire  try to take a slot within 2s; exit 0 if Acquire returned
 //	         re-entrant, 10 if it took a real slot, 11 if it timed out
 func TestSlotHelperProcess(t *testing.T) {
-	mode := os.Getenv(helperModeEnv)
-	if mode == "" {
+	args := flag.Args()
+	if len(args) != 2 {
 		return
 	}
-	dir := os.Getenv(helperDirEnv)
+	mode, dir := args[0], args[1]
 	// A scrubbed environment: whatever this process knows about its
 	// parent's slot, it does not know through FORGE_SLOT_HELD.
 	opt := Options{Dir: dir, Slots: 1, Poll: 5 * time.Millisecond, Env: []string{}}
@@ -299,8 +295,10 @@ func TestSlotHelperProcess(t *testing.T) {
 
 func helper(t *testing.T, mode, dir string) *exec.Cmd {
 	t.Helper()
-	cmd := exec.Command(os.Args[0], "-test.run=^TestSlotHelperProcess$")
-	cmd.Env = []string{helperModeEnv + "=" + mode, helperDirEnv + "=" + dir, "PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME")}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSlotHelperProcess$", "--", mode, dir)
+	// An empty environment: whatever the child knows about its parent's
+	// slot, it does not know through FORGE_SLOT_HELD.
+	cmd.Env = []string{}
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	return cmd

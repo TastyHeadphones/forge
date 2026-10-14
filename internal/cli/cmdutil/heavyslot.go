@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/reliant-labs/forge/pkg/hostslot"
 )
@@ -20,7 +21,7 @@ func HoldHeavySlot(ctx context.Context, stderr io.Writer) (release func(), err e
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	s, err := hostslot.Acquire(ctx, hostslot.Heavy, hostslot.Options{Out: stderr})
+	s, err := hostslot.Acquire(ctx, hostslot.Heavy, hostslot.Options{Out: stderr, Env: os.Environ()})
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, err

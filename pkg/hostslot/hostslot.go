@@ -102,7 +102,10 @@ type Options struct {
 	// ±50%. Zero is 500ms.
 	Poll time.Duration
 	// Env is the environment read for FORGE_SLOT_HELD, FORGE_SLOTS_DIR and
-	// FORGE_<CLASS>_SLOTS. Nil is os.Environ().
+	// FORGE_<CLASS>_SLOTS — normally os.Environ(). The package reads no
+	// ambient variable itself, so a nil Env means none is set; in
+	// particular, a caller that leaves it nil cannot see the slot its parent
+	// passed it and will queue for one of its own.
 	Env []string
 }
 
@@ -440,9 +443,6 @@ func newNonce() (string, error) {
 }
 
 func lookupEnv(env []string, key string) string {
-	if env == nil {
-		return os.Getenv(key)
-	}
 	val := ""
 	for _, kv := range env {
 		if k, v, ok := strings.Cut(kv, "="); ok && k == key {

@@ -104,8 +104,8 @@ func SlotsEnv(class string) string {
 	return "FORGE_" + strings.ToUpper(strings.ReplaceAll(class, "-", "_")) + "_SLOTS"
 }
 
-// CapacityFor resolves a class's capacity: SlotsEnv(class) in env when set,
-// otherwise DefaultSlots of this machine. env nil means os.Environ().
+// CapacityFor resolves a class's capacity: SlotsEnv(class) in env (normally
+// os.Environ()) when set, otherwise DefaultSlots of this machine.
 func CapacityFor(class string, env []string) (Capacity, error) {
 	if err := validClass(class); err != nil {
 		return Capacity{}, err
