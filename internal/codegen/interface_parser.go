@@ -226,7 +226,7 @@ func ParseLocalInterfaces(dir string) (map[string]LocalInterface, error) {
 		return methods
 	}
 
-	resolver := newEmbedResolver(dir, sortedPathSet(foreignPaths))
+	resolver := newTypesResolver(dir, sortedPathSet(foreignPaths))
 	for _, e := range entries2 {
 		needed := map[string]string{}
 		var pending []foreignEmbed

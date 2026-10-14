@@ -642,6 +642,37 @@ var stepPresetAllowlist = map[string]map[string]bool{
 		"goimports on generated Go":  true,
 		"rehash tracked files":       true,
 	},
+	// The "harness" step preset regenerates the per-component test
+	// harness — each helpers_gen_test.go (NewTest<Svc>, With<Svc>Deps, the
+	// Stub<Field> doubles) — and nothing else: the inner loop after a Deps
+	// edit, where the next command is `go test` on that package and a full
+	// run spends minutes re-deriving protos, frontends and deploy config
+	// that the edit cannot have changed.
+	//
+	// It is sound for that edit because the harness is a function of the
+	// component's own Go source (its Deps struct and the interfaces it
+	// names, read fresh from disk), the service list (read from the
+	// descriptor a full run left, which a Deps edit does not move), and
+	// the internal package set (walked fresh). The prereqs are the ones the
+	// "mocks" preset runs, for the same reasons. A PROTO or migration edit
+	// is not this preset's: those move the descriptor and the ORM, and
+	// need the full run.
+	//
+	// Like "mocks", it skips the Tier-1 stomp guard: these files sit behind
+	// a "DO NOT EDIT" banner and the writer still refuses to overwrite a
+	// hand-edited one without --force, so unrelated drift elsewhere in the
+	// tree has nothing to protect here. go mod tidy and the validate build
+	// are left to the `go test` the user runs next.
+	harnessStepPreset: {
+		"load project config":          true,
+		"load checksums":               true,
+		"detect proto directories":     true,
+		"ensure gen/go.mod":            true,
+		"parse services + module path": true,
+		"per-service test helpers":     true,
+		"goimports on generated Go":    true,
+		"rehash tracked files":         true,
+	},
 	// The "env-config" step preset writes what every env's KCL imports
 	// from generate — config_gen.k, frontend_config_gen.k and each env's
 	// config.k instance — and nothing else, so an env renders. It is what
@@ -668,6 +699,10 @@ var stepPresetAllowlist = map[string]map[string]bool{
 // envConfigStepPreset names the step preset that writes the env config
 // modules (see stepPresetAllowlist).
 const envConfigStepPreset = "env-config"
+
+// harnessStepPreset names the step preset that regenerates only the
+// per-component test harness (see stepPresetAllowlist).
+const harnessStepPreset = "harness"
 
 // templatesOnlyStepAllow is the set of step.Name values that run when
 // pipelineFlags.TemplatesOnly is set. The list is the "template-driven"

@@ -290,6 +290,41 @@ func TestMocksStepPresetRunsMockStep(t *testing.T) {
 	}
 }
 
+// TestHarnessStepPresetShape pins the `harness` preset: it runs the
+// harness emitter and the prereqs it reads (the service list and module
+// path), and none of the emitters a Deps edit cannot have moved — nor the
+// Tier-1 stomp guard, whose reason to skip is the mocks preset's. That it
+// writes the bytes a full run writes is TestE2EGenerateStepsHarness.
+func TestHarnessStepPresetShape(t *testing.T) {
+	allow := stepPresetAllowlist[harnessStepPreset]
+	if allow == nil {
+		t.Fatalf("stepPresetAllowlist is missing the %s entry", harnessStepPreset)
+	}
+	for _, step := range []string{"per-service test helpers", "parse services + module path", "load checksums"} {
+		if !allow[step] {
+			t.Errorf("harness preset must include %q", step)
+		}
+	}
+	for _, step := range []string{
+		"check Tier-1 file-stomp guard",
+		"buf generate (Go stubs)",
+		"descriptor extraction",
+		"internal/app composition (hybrid DI)",
+		"service mocks",
+		"internal package contracts",
+		"CRUD handlers",
+		"frontend hooks",
+		"regenerate infra files",
+		"per-env deploy config",
+		"cleanup stale codegen",
+		"go build (validate generated code)",
+	} {
+		if allow[step] {
+			t.Errorf("harness preset must NOT include %q — it regenerates the test harness and nothing a Deps edit cannot move", step)
+		}
+	}
+}
+
 // TestMocksStepPresetExcludesUnrelatedHeavyEmitters keeps the preset's
 // surface area tight. The point is a fast preset-scoped regen — if a
 // future refactor drags in the full bootstrap/CI/frontend emitter set,

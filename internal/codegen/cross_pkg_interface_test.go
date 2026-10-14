@@ -13,6 +13,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -742,5 +743,68 @@ func TestMergeExtraImports(t *testing.T) {
 	}
 	if !sawLocal {
 		t.Error("mergeExtraImports dropped a local-interface stub's signature import")
+	}
+}
+
+// TestTypesResolver_OneLoadForEveryService pins the batching the harness
+// step depends on to be cheap: GenerateBootstrapTesting resolves every
+// service's cross-package Deps interfaces through one typesResolver, which
+// loads all of them in ONE go/packages call. The step used to type-check
+// each field's package from source, separately — 72s of reliant's 74s
+// `generate --steps harness`. The stubs must be exactly the ones a
+// per-directory resolution produces.
+func TestTypesResolver_OneLoadForEveryService(t *testing.T) {
+	if testing.Short() {
+		t.Skip("type-checks fixture modules via the go toolchain; runs in task test")
+	}
+	billingDir := writeTestModule(t, nil)
+	root := filepath.Dir(filepath.Dir(filepath.Dir(billingDir)))
+	for rel, src := range map[string]string{
+		"internal/audit/audit.go": `package audit
+
+// Log records what a handler did.
+type Log interface {
+	Record(action string) error
+}
+`,
+		"internal/handlers/invoice/service.go": `package invoice
+
+import (
+	"example.com/proj/internal/audit"
+	"example.com/proj/internal/repo"
+)
+
+// Deps is the invoice service's dependency graph.
+type Deps struct {
+	Repo  repo.Repository
+	Audit audit.Log
+}
+`,
+	} {
+		full := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	invoiceDir := filepath.Join(root, "internal", "handlers", "invoice")
+	dirs := []string{billingDir, invoiceDir}
+
+	if got, want := depsSelectorImports(dirs), []string{"example.com/proj/internal/audit", "example.com/proj/internal/repo"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("depsSelectorImports = %v, want %v", got, want)
+	}
+	shared := newTypesResolver(root, depsSelectorImports(dirs))
+	for _, dir := range dirs {
+		got, gotUnresolved := computeAutoStubsWith(dir, shared)
+		want, wantUnresolved := computeAutoStubs(dir, "")
+		if len(got) == 0 || !reflect.DeepEqual(got, want) || !reflect.DeepEqual(gotUnresolved, wantUnresolved) {
+			t.Errorf("%s: shared resolver stubs = %+v (unresolved %v), per-directory = %+v (unresolved %v)",
+				filepath.Base(dir), got, gotUnresolved, want, wantUnresolved)
+		}
+	}
+	if shared.loads != 1 {
+		t.Errorf("shared resolver ran %d go/packages loads for two services' Deps, want 1", shared.loads)
 	}
 }

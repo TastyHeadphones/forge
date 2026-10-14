@@ -689,16 +689,27 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 	// scaffolded, observability and hot reload switched on), so generate
 	// was not idempotent.
 
-	var testSvcs []BootstrapTestServiceData
-	anyServiceHasDB := false
-	for _, svc := range services {
-		// Disk-first: same handler-dir + package-clause resolution as
-		// GenerateBootstrap so testing.go's import lines / aliases can
-		// never disagree with bootstrap.go's (see disk_resolver.go).
+	// Disk-first: same handler-dir + package-clause resolution as
+	// GenerateBootstrap so testing.go's import lines / aliases can never
+	// disagree with bootstrap.go's (see disk_resolver.go). Resolved up front
+	// so every cross-package interface the services' Deps name is
+	// type-checked in one load (typesResolver), not one per field.
+	resolved := make([]ResolvedComponent, len(services))
+	handlerDirs := make([]string, len(services))
+	for i, svc := range services {
 		res, resErr := ResolveServiceComponent(projectDir, svc.Name)
 		if resErr != nil {
 			return resErr
 		}
+		resolved[i] = res
+		handlerDirs[i] = res.Dir
+	}
+	depsTypes := newTypesResolver(projectDir, depsSelectorImports(handlerDirs))
+
+	var testSvcs []BootstrapTestServiceData
+	anyServiceHasDB := false
+	for i, svc := range services {
+		res := resolved[i]
 		pkg := res.PackageName
 		handlerDir := res.Dir
 		fallible, _ := DetectFallibleConstructor(handlerDir)
@@ -718,7 +729,7 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 		// unresolvedStubs surfaces selector types we couldn't resolve
 		// (package failed to load, alias not in imports, type isn't
 		// an interface) so the template can emit a TODO comment.
-		autoStubs, unresolvedStubs := computeAutoStubs(handlerDir, pkg)
+		autoStubs, unresolvedStubs := computeAutoStubsWith(handlerDir, depsTypes)
 		// Func-typed required deps: fill Clock/IDGen with real defaults
 		// (time.Now / ulid), TODO the rest — the harness half of the
 		// Clock/IDGen fix. A func value can't be interface-auto-stubbed.
@@ -1522,6 +1533,13 @@ var bareDepsFieldNames = map[string]bool{
 // either overrides the field via With<Svc>Deps or hand-rolls a
 // stub — both are existing escape valves.
 func computeAutoStubs(handlerDir, _ string) ([]DepsAutoStub, []UnresolvedAutoStub) {
+	return computeAutoStubsWith(handlerDir, newTypesResolver(handlerDir, nil))
+}
+
+// computeAutoStubsWith is computeAutoStubs reading cross-package
+// interfaces through resolver, which GenerateBootstrapTesting shares
+// across every service so their packages load together.
+func computeAutoStubsWith(handlerDir string, resolver *typesResolver) ([]DepsAutoStub, []UnresolvedAutoStub) {
 	fields, err := ParseServiceDeps(handlerDir)
 	if err != nil || len(fields) == 0 {
 		return nil, nil
@@ -1573,7 +1591,7 @@ func computeAutoStubs(handlerDir, _ string) ([]DepsAutoStub, []UnresolvedAutoStu
 		if dot := strings.IndexByte(t, '.'); dot > 0 && !strings.ContainsAny(t, "*[]<>(){}") {
 			pkgAlias := t[:dot]
 			typeName := t[dot+1:]
-			res, ok := ResolveCrossPkgInterface(handlerDir, pkgAlias, typeName)
+			res, ok := resolveCrossPkgInterface(handlerDir, pkgAlias, typeName, resolver)
 			if !ok {
 				// Soft-fail: record the selector so the template can
 				// surface a TODO comment. The field still stays nil

@@ -383,12 +383,10 @@ func (m *DepsAssignabilityMatcher) loadUniverseLocked(roleRoot, pkgDir string) *
 	appDir := filepath.Join(absProject, "pkg", "app")
 	compDir := filepath.Join(absProject, roleRoot, filepath.FromSlash(pkgDir))
 
-	// Note we reuse the exact Mode shape from ResolveCrossPkgInterface
-	// (NeedName|NeedTypes|NeedTypesInfo|NeedDeps|NeedImports|NeedSyntax) —
-	// that combination has already been battle-tested against forge's
-	// workspace setup. NeedFiles is added so each returned package can
-	// be matched back to its on-disk directory (the loader does not
-	// guarantee result order). cfg.Dir = the project root, so module
+	// Mode NeedName|NeedTypes|NeedTypesInfo|NeedDeps|NeedImports|NeedSyntax
+	// has been battle-tested against forge's workspace setup. NeedFiles is
+	// added so each returned package can be matched back to its on-disk
+	// directory (the loader does not guarantee result order). cfg.Dir = the project root, so module
 	// resolution honors the project's go.mod / go.work; patterns are
 	// "./"-relative and always slash-separated (go list syntax).
 	cfg := &packages.Config{
