@@ -66,6 +66,13 @@ func generateInSlot(cmd *cobra.Command, fn func() error) error {
 	return fn()
 }
 
+// generateLockedInSlot runs fn under the project's generate lock inside a heavy
+// slot — slot first, then lock (see generateInSlot) — and releases both when
+// fn returns, so `--watch` holds neither for its session.
+func generateLockedInSlot(cmd *cobra.Command, fn func() error) error {
+	return generateInSlot(cmd, func() error { return withGenerateLock(".", fn) })
+}
+
 func newGenerateCmd() *cobra.Command {
 	var (
 		watch           bool
@@ -147,11 +154,7 @@ forensics, parallel-lane and migration escape hatches); run
 			// The explain scans run inside the lock too: a concurrent run
 			// finishing between the pre-scan and this run's pipeline would
 			// otherwise be labeled as this run's rewrites.
-			releaseSlot, err := cmdutil.HoldHeavySlot(cmd.Context(), cmd.ErrOrStderr())
-			if err != nil {
-				return err
-			}
-			err = withGenerateLock(".", func() error {
+			err := generateLockedInSlot(cmd, func() error {
 				// Capture pre-pipeline body hashes (from the embedded
 				// markers) so --explain can diff against post-pipeline
 				// state to label rewritten vs idempotent.
@@ -197,7 +200,6 @@ forensics, parallel-lane and migration escape hatches); run
 				}
 				return pipeErr
 			})
-			releaseSlot() // see generateInSlot
 			if err != nil {
 				return err
 			}
