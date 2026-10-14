@@ -7,8 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Bundle layout v2: one tree per cluster × delivery unit × phase.** A bundle
+  used to publish one flat tree per cluster, so a Flux Kustomization per cluster
+  applied the whole env in a single batch and could not express what direct apply
+  guarantees (a pre-rollout Job completes before any workload changes; the daemon
+  cluster before the hub). Every cluster that is not the unclustered (`_`) or
+  hosted tree is now laid out as
+  `manifests/<cluster>/<unit>/<phase>/<NNN>-<kind>-<name>.yaml` (phase `pre`,
+  `rollout` or `post`), and the bundle document carries `trees`: each with its
+  `depends_on`, a 90 s per-attempt timeout, a 15 s retry interval and the objects
+  its health is judged on. Declare units with `Bundle.delivery_units` (a list of
+  `forge.DeliveryUnit {name, after}`) and place a workload or a `forge.Manifests`
+  group with `delivery_unit`; an env that declares none puts everything in `base`.
+  The phase comes from one classifier (`release.ClassifyPhase`) that the
+  pre-rollout gate of `forge env deploy` now also uses, so the two cannot drift.
+- **`tree_moved` plan finding.** An object whose tree changes between releases is
+  deleted by the Kustomization it leaves and created by the one it joins, with
+  nothing ordering the two. A move between trees is a **stop** finding that needs
+  `--acknowledge-destructive tree_moved`; the one-time move from the flat layout
+  is a single warning per cluster.
+
 ### Changed
 
+- **Each object's tree (`<unit>/<phase>`) is part of the bundle's config digest**,
+  so a release that re-homes an object has a different digest even when its bytes
+  are unchanged. Bundles built before this release have a different layout and so
+  a different digest; this is the one-time migration above.
 - **BEHAVIOR CHANGE: a re-apply of a `forge.HelmChart` now deletes the objects
   the chart stopped rendering.** forge applies a chart with `kubectl apply`,
   which never deletes, so an object a chart version dropped (the Flux chart's

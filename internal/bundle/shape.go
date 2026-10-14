@@ -261,6 +261,11 @@ type docMeta struct {
 	namespace  string
 	name       string
 	workload   string
+	// unit is the delivery unit label, "" when undeclared.
+	unit string
+	// annotations are the metadata annotations, which carry the deploy
+	// phase of a Job.
+	annotations map[string]string
 }
 
 // forgeWorkloadLabel is forge's routing key — the deploy group an object
@@ -281,12 +286,20 @@ func readMeta(body any) docMeta {
 	if workload == "" {
 		workload = stringAt(labels, appNameLabel)
 	}
+	annotations := map[string]string{}
+	for k, v := range mapAt(metadata, "annotations") {
+		if str, ok := v.(string); ok {
+			annotations[k] = str
+		}
+	}
 	return docMeta{
-		apiVersion: stringAt(doc, "apiVersion"),
-		kind:       stringAt(doc, "kind"),
-		namespace:  stringAt(metadata, "namespace"),
-		name:       stringAt(metadata, "name"),
-		workload:   workload,
+		apiVersion:  stringAt(doc, "apiVersion"),
+		kind:        stringAt(doc, "kind"),
+		namespace:   stringAt(metadata, "namespace"),
+		name:        stringAt(metadata, "name"),
+		workload:    workload,
+		unit:        stringAt(labels, release.LabelDeliveryUnit),
+		annotations: annotations,
 	}
 }
 

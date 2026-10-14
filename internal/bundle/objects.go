@@ -25,6 +25,7 @@ import (
 	"reflect"
 	"sort"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -68,7 +69,7 @@ func Objects(f Fetched) (map[release.ObjectKey]any, error) {
 		if h.Size > MaxFileBytes {
 			return nil, fmt.Errorf("%w: bundle %s entry %s is %d bytes", ErrUnsafeArchive, f.Digest, h.Name, h.Size)
 		}
-		cluster, ok := clusterOf[path.Dir(path.Clean(h.Name))]
+		cluster, ok := clusterOfEntry(clusterOf, h.Name)
 		if !ok {
 			continue
 		}
@@ -192,4 +193,17 @@ func joinField(at, key string) string {
 		return key
 	}
 	return at + "." + key
+}
+
+// clusterOfEntry is the cluster a manifest file belongs to: the cluster path
+// is the first two segments of every entry, in both the flat layout
+// (manifests/<cluster>/<file>) and the tree layout
+// (manifests/<cluster>/<unit>/<phase>/<file>).
+func clusterOfEntry(clusterOf map[string]string, name string) (string, bool) {
+	segs := strings.SplitN(path.Clean(name), "/", 3)
+	if len(segs) < 3 {
+		return "", false
+	}
+	cluster, ok := clusterOf[segs[0]+"/"+segs[1]]
+	return cluster, ok
 }

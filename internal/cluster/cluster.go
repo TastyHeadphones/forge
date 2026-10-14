@@ -1438,6 +1438,17 @@ type workloadGroup struct {
 	records []deployv1alpha1.Workload
 }
 
+// unitOf is the delivery unit a rendered object inherits: that of the group
+// record whose name is the object's app.kubernetes.io/name, "" when none.
+func (g *workloadGroup) unitOf(app string) string {
+	for _, r := range g.records {
+		if r.Name == app {
+			return r.Labels[release.LabelDeliveryUnit]
+		}
+	}
+	return ""
+}
+
 // expandTierDeclarations replaces every forge.dev record in the stream with
 // the Kubernetes objects pkg/deploy produces for it.
 //
@@ -1519,6 +1530,14 @@ func expandTierDeclarations(items []any, network *deploy.EnvNetworkPolicy, pullS
 					labels = map[string]string{}
 				}
 				labels[ClusterRoutingLabel] = key.cluster
+				o.SetLabels(labels)
+			}
+			// The delivery unit of the workload that rendered the object. An
+			// object no workload owns (the env's NetworkPolicies) stays in
+			// the default unit.
+			if unit := g.unitOf(o.GetLabels()[deploy.LabelName]); unit != "" {
+				labels := o.GetLabels()
+				labels[release.LabelDeliveryUnit] = unit
 				o.SetLabels(labels)
 			}
 			rendered[key] = append(rendered[key], o.Object)

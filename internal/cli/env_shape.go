@@ -99,6 +99,8 @@ type envShapeDoc struct {
 	// document so a deploy knows what to sync.
 	syncedSecrets []release.BundleSecretRef
 	images        map[string]string
+	// units are the env's declared delivery units, for the bundle's trees.
+	units []release.DeliveryUnit
 	// hostedPlaceholder is true when the hosted records were planned over
 	// PLACEHOLDER digests because no release pins them yet. Fine for a shape
 	// a human reads; a bundle must never seal it.
@@ -358,6 +360,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		Provenance:        captureBuildProvenance(ctx, projectDir).ForHosted(),
 		manifests:         stream,
 		syncedSecrets:     syncedSecrets,
+		units:             entities.DeliveryUnits,
 		images:            digests,
 		hostedPlaceholder: placeholder,
 	}, nil

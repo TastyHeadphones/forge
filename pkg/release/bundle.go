@@ -174,6 +174,14 @@ type BundleDoc struct {
 	// So it is written from the tar entries themselves, after they are
 	// written, and a reader can trust it the way it trusts the digest.
 	ClusterPaths []BundleClusterTree `json:"cluster_paths,omitempty"`
+	// Trees is the v2 layout: one entry per cluster × delivery unit × phase,
+	// for every cluster that is not [FlatCluster]. Each carries its
+	// dependsOn, its per-attempt timeout and what its health is judged on,
+	// so a reconciler builds one Kustomization per entry without deriving
+	// anything. A cluster listed here has a [BundleClusterTree] too (its
+	// Documents is the sum of its trees'); a flat cluster has no entry.
+	// Sorted by Path.
+	Trees []BundleTree `json:"trees,omitempty"`
 	// Secrets names the Secret objects the env requires in each cluster.
 	// NAMES ONLY: a Secret never rides the manifest layer, not even
 	// redacted, so the reconciler neither writes nor prunes one. `forge env
@@ -240,6 +248,9 @@ func (d BundleDoc) Validate() error {
 		return fmt.Errorf("bundle: %w", err)
 	}
 	if err := validateClusterPaths(d.ClusterPaths); err != nil {
+		return fmt.Errorf("bundle: %w", err)
+	}
+	if err := validateTrees(d.ClusterPaths, d.Trees); err != nil {
 		return fmt.Errorf("bundle: %w", err)
 	}
 	for _, sec := range d.Secrets {
@@ -608,6 +619,12 @@ type ShapeObject struct {
 	// declared database's objects. The well-known stateful kinds
 	// ([statefulKinds]) are recognised without it.
 	Stateful bool `json:"stateful,omitempty"`
+	// Tree is the object's place in a v2 bundle, "<unit>/<phase>", or ""
+	// for an object on a flat cluster. An object whose Tree changes between
+	// releases is MOVING between Kustomizations: the one it leaves prunes
+	// it, the one it joins creates it. The plan stops on that
+	// ([FindingTreeMoved]).
+	Tree string `json:"tree,omitempty"`
 	// Identity carries the attributes that give an object an EXTERNAL
 	// identity, which a deploy can silently replace: a Service's type and
 	// load balancer, an Ingress's static IP. Keys are closed

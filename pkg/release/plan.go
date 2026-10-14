@@ -91,7 +91,11 @@ const (
 	FindingSecretNeeded     = "secret_needed"
 	FindingStatefulDeletion = "stateful_deletion"
 	FindingLBIdentityChange = "lb_identity_change"
-	FindingDrift            = "drift"
+	// FindingTreeMoved: an object changes delivery tree between releases.
+	// Under a pruning reconciler that is a delete in the tree it leaves and a
+	// create in the one it joins, with the object's data in between.
+	FindingTreeMoved = "tree_moved"
+	FindingDrift     = "drift"
 	// FindingUnknown: a section could not be computed (no recorded live
 	// config, drift not observable, secret presence not readable). It is a
 	// WARN, never silence: a blank section must not read as "nothing
@@ -103,7 +107,7 @@ const (
 var FindingCodes = []string{
 	FindingObjectAdded, FindingObjectChanged, FindingObjectRemoved,
 	FindingImageChanged, FindingConfigChanged, FindingSecretNeeded,
-	FindingStatefulDeletion, FindingLBIdentityChange, FindingDrift, FindingUnknown,
+	FindingStatefulDeletion, FindingLBIdentityChange, FindingTreeMoved, FindingDrift, FindingUnknown,
 }
 
 // Plan sections, in display order (§8.6).
@@ -111,6 +115,7 @@ const (
 	SectionObjects  = "objects"
 	SectionStateful = "stateful_deletions"
 	SectionLB       = "lb_identity"
+	SectionTrees    = "tree_moves"
 	SectionImages   = "images"
 	SectionConfig   = "config"
 	SectionSecrets  = "secrets"
@@ -118,7 +123,7 @@ const (
 )
 
 // PlanSections is the closed set, in display order.
-var PlanSections = []string{SectionStateful, SectionLB, SectionObjects, SectionImages, SectionConfig, SectionSecrets, SectionDrift}
+var PlanSections = []string{SectionStateful, SectionLB, SectionTrees, SectionObjects, SectionImages, SectionConfig, SectionSecrets, SectionDrift}
 
 // Plan is one reviewed deploy. Field names match controlplane.v1.DeployPlan.
 type Plan struct {
@@ -301,6 +306,26 @@ func BuildPlan(in PlanInput) (Plan, error) {
 		default:
 			add(FindingObjectRemoved, ClassWarn, SectionObjects, o.Key().String(), "")
 		}
+	}
+	// A move between two trees is a delete and a create nothing orders: stop.
+	// A move into or out of the flat layout is the one-time layout migration,
+	// which happens to every object of a cluster at once and to every env on
+	// the release that first records trees. It is reported once per cluster,
+	// as a warn: a direct-apply env is unaffected by it, and a Flux env
+	// adopts the new trees (suspended, prune off) before its first promotion.
+	layout := map[string]int{}
+	var layoutDetail = map[string]string{}
+	for _, m := range diff.Moved {
+		if m.From == "" || m.To == "" {
+			layout[m.Key.Cluster]++
+			layoutDetail[m.Key.Cluster] = treeMoveDetail(m)
+			continue
+		}
+		add(FindingTreeMoved, ClassStop, SectionTrees, m.Key.String(), treeMoveDetail(m))
+	}
+	for _, cluster := range sortedStrings(mapKeys(layout)) {
+		add(FindingTreeMoved, ClassWarn, SectionTrees, cluster,
+			fmt.Sprintf("%d object(s) change layout between the flat cluster tree and per-unit trees; e.g. %s", layout[cluster], layoutDetail[cluster]))
 	}
 	for _, c := range diff.Changed {
 		subject := c.Candidate.Key().String()
@@ -534,4 +559,26 @@ func shortDigest(d string) string {
 		d = d[:12]
 	}
 	return d
+}
+
+// treeMoveDetail explains one move. A pruning Kustomization deletes what its
+// path no longer carries and the one the object joins creates it, so the move
+// is a delete and a create, in an order nothing guarantees.
+func treeMoveDetail(m ObjectMove) string {
+	from, to := m.From, m.To
+	switch {
+	case from == "":
+		return fmt.Sprintf("%s %q moves from the flat cluster tree into %s: the layout is migrating to per-unit trees; every object of the cluster moves at once, so acknowledge it once and adopt the new trees first (suspend, prune off)", m.Key.Kind, m.Key.Name, to)
+	case to == "":
+		return fmt.Sprintf("%s %q moves from %s back into the flat cluster tree", m.Key.Kind, m.Key.Name, from)
+	}
+	return fmt.Sprintf("%s %q moves from %s to %s: the tree it leaves prunes it and the tree it joins creates it. Adopt it into the new tree first (suspend, prune off), or accept the delete and re-create", m.Key.Kind, m.Key.Name, from, to)
+}
+
+func mapKeys(m map[string]int) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
