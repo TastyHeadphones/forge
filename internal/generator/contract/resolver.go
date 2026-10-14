@@ -48,8 +48,9 @@ type Resolver struct {
 }
 
 // NewResolver resolves, for every contract.go in contractPaths, the names of
-// the packages its files import unaliased and the types of the in-module
-// packages its Deps struct names. Contracts are grouped by module so a
+// the packages its files import unaliased, the types of the in-module
+// packages its Deps struct names, and the types of the packages its
+// interfaces embed from. Contracts are grouped by module so a
 // multi-module caller still gets one load per module.
 func NewResolver(contractPaths ...string) *Resolver {
 	r := &Resolver{names: map[string]string{}, pkgs: map[string]*packages.Package{}}
@@ -57,6 +58,7 @@ func NewResolver(contractPaths ...string) *Resolver {
 	type moduleWork struct {
 		modulePath string
 		dirs       []string        // contract package directories
+		contracts  []string        // the contract.go files themselves
 		names      map[string]bool // import paths whose package name we need
 		foreign    map[string]bool // in-module packages to type-check
 	}
@@ -77,6 +79,7 @@ func NewResolver(contractPaths ...string) *Resolver {
 			roots = append(roots, moduleRoot)
 		}
 		w.dirs = append(w.dirs, dir)
+		w.contracts = append(w.contracts, contractPath)
 	}
 
 	// need records the name of every package dir's files import
@@ -122,9 +125,49 @@ func NewResolver(contractPaths ...string) *Resolver {
 			}
 		}
 		r.loadNames(root, sortedKeys(w.names))
+		// Interfaces a contract EMBEDS from another package are typed
+		// too, from any module or the standard library (`io.Closer`):
+		// their methods are part of the contract's method set. Read
+		// after loadNames, so an unaliased import resolves by its
+		// declared name. One load keeps go/types identity across all.
+		for _, contractPath := range w.contracts {
+			for _, path := range embeddedImportPaths(fset, contractPath, r) {
+				w.foreign[path] = true
+			}
+		}
 		r.loadTypes(root, sortedKeys(w.foreign))
 	}
 	return r
+}
+
+// embeddedImportPaths returns the import paths of every package an interface
+// declared in contractPath embeds an interface from.
+func embeddedImportPaths(fset *token.FileSet, contractPath string, r *Resolver) []string {
+	file, err := parser.ParseFile(fset, contractPath, nil, parser.SkipObjectResolution)
+	if err != nil {
+		return nil
+	}
+	imports := importRefs(file, r)
+	seen := map[string]bool{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		it, ok := n.(*ast.InterfaceType)
+		if !ok || it.Methods == nil {
+			return true
+		}
+		for _, field := range it.Methods.List {
+			sel, ok := field.Type.(*ast.SelectorExpr)
+			if !ok {
+				continue
+			}
+			if id, ok := sel.X.(*ast.Ident); ok {
+				if ref, ok := imports[id.Name]; ok {
+					seen[ref.path] = true
+				}
+			}
+		}
+		return true
+	})
+	return sortedKeys(seen)
 }
 
 // packageClause returns the package name the non-test Go files in dir
@@ -168,7 +211,8 @@ func (r *Resolver) loadNames(dir string, paths []string) {
 }
 
 // loadTypes type-checks the in-module packages that declare Deps-named
-// interfaces, in ONE load so go/types identity holds across them. Packages
+// interfaces, and every package a contract interface embeds from, in ONE
+// load so go/types identity holds across them. Packages
 // that fail to load keep whatever partial types go/packages produced; the
 // renderer checks each interface for invalid types before trusting it.
 func (r *Resolver) loadTypes(dir string, paths []string) {

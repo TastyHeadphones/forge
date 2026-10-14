@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A Flux-safe bundle.** Flux re-applies a bundle on every interval and prunes
+  what it stops carrying, so some objects that are harmless under `kubectl apply`
+  are wrong under it. The bundle build now refuses, and `forge lint` (`flux-safe`)
+  reports, a Job with `ttlSecondsAfterFinished` (the TTL controller deletes the
+  finished Job and the next reconcile re-runs it: control-plane's temporal-schema,
+  temporal-namespace and openbao-bootstrap), a Job whose name carries no hash of
+  its spec (its immutable spec wedges every reconcile after the first change), and
+  the force annotation on a kind that holds data. These are errors for an env a
+  reconciler may apply and warnings for one forge applies itself, so an env that
+  builds today keeps building.
+- **The build states what the cluster would have defaulted.** A Deployment's
+  `strategy` (`RollingUpdate`, 25%/25%) and `progressDeadlineSeconds` (600) are
+  now rendered explicitly, by forge's renderer and for a Deployment written by
+  hand in `forge.Manifests`, and a `StorageClass`, `RuntimeClass`,
+  `PriorityClass` or RoleBinding carries the Flux force annotation
+  (`kustomize.toolkit.fluxcd.io/force: enabled`), so a reconciler can recreate
+  it on an immutable-field change as direct apply already does. Values you wrote are never overridden. These change
+  every Deployment's rendered bytes (and so its object hash) once.
+- **Each tree records `budget_seconds`**, the whole-rollout allowance the control
+  plane enforces in place of Flux's short per-attempt wait: the largest
+  `progressDeadlineSeconds` (rollout) or `activeDeadlineSeconds` (Jobs) among the
+  objects the tree is judged on, plus 120 s.
+
+### Added
+
+- **Bundle layout v2: one tree per cluster × delivery unit × phase.** A bundle
+  used to publish one flat tree per cluster, so a Flux Kustomization per cluster
+  applied the whole env in a single batch and could not express what direct apply
+  guarantees (a pre-rollout Job completes before any workload changes; the daemon
+  cluster before the hub). Every cluster that is not the unclustered (`_`) or
+  hosted tree is now laid out as
+  `manifests/<cluster>/<unit>/<phase>/<NNN>-<kind>-<name>.yaml` (phase `pre`,
+  `rollout` or `post`), and the bundle document carries `trees`: each with its
+  `depends_on`, a 90 s per-attempt timeout, a 15 s retry interval and the objects
+  its health is judged on. Declare units with `Bundle.delivery_units` (a list of
+  `forge.DeliveryUnit {name, after}`) and place a workload or a `forge.Manifests`
+  group with `delivery_unit`; an env that declares none puts everything in `base`.
+  The phase comes from one classifier (`release.ClassifyPhase`) that the
+  pre-rollout gate of `forge env deploy` now also uses, so the two cannot drift.
+- **`tree_moved` plan finding.** An object whose tree changes between releases is
+  deleted by the Kustomization it leaves and created by the one it joins, with
+  nothing ordering the two. A move between trees is a **stop** finding that needs
+  `--acknowledge-destructive tree_moved`; the one-time move from the flat layout
+  is a single warning per cluster.
+
 ### Changed
 
 - **BEHAVIOR CHANGE: `forge.flux_chart()` is hardened and sized by default (F8).**
@@ -30,6 +77,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   apply fail `Forbidden`. See `migrations/v0.1.46` and
   `docs/runbooks/flux-patch-and-upgrade.md`.
 
+- **Each object's tree (`<unit>/<phase>`) is part of the bundle's config digest**,
+  so a release that re-homes an object has a different digest even when its bytes
+  are unchanged. Bundles built before this release have a different layout and so
+  a different digest; this is the one-time migration above.
 - **BEHAVIOR CHANGE: a re-apply of a `forge.HelmChart` now deletes the objects
   the chart stopped rendering.** forge applies a chart with `kubectl apply`,
   which never deletes, so an object a chart version dropped (the Flux chart's
@@ -148,6 +199,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (seconds) unit joins the display units.
 
 ### Fixed
+
+- **An interface that embeds another package's interface keeps its embedded
+  methods in every generated double.** The handler test harness, the contract
+  mock (`mock_gen.go`) and the observe decorator (`middleware_gen.go`) read
+  interfaces from syntax and skipped every `pkg.Iface` embed, so a stub or
+  mock had none of its methods and did not compile. reliant's
+  `inbox.Repository` embeds `worktreesweep.StorageStore` (which embeds
+  `worktreesweep.Store`), and `forge generate` failed its validate with
+  `*StubRepo does not implement Repository (missing method
+  AdoptWorktreeDaemon)`; a contract `Service` embedding `io.Closer` produced a
+  mock failing its own `var _ Service` check. A cross-package embed is now
+  read from the type-checked package, so its embeds at any depth come with it;
+  the predeclared `error` contributes `Error() string`, and a method reached
+  through two embeds is declared once. The harness imports the packages the
+  embedded signatures name under the embedding file's own aliases. When an
+  embed cannot be read (its package does not type-check, or it has an
+  unexported method), the harness no longer emits a stub that cannot compile:
+  the Deps field is left to the test, with a TODO naming the embed.
+- **A package directive means the same thing whichever file declares it.**
+  `forge lint` read a package's `//forge:exclude-contract` (and
+  `//forge:not-a-component`) from the first reasoned marker by file name and
+  honoured only the `forge:lint-disable` allowances above that one marker, so
+  the package's answer depended on file order: when reliant moved
+  `approval.go`, which held the outbound-io allowance, out of
+  `internal/grpc/services`, `connection.go`'s marker became the declaration
+  and the package was refused although nothing about it had changed. A
+  directive now applies to the whole package from any file, and a package
+  that repeats one must repeat it identically (reason and allowances). Two
+  declarations that disagree — different reasons, a bare marker beside a
+  reasoned one, an allowance on one and not the other — are refused by the
+  new `forge-exclude-contract-conflict` / `forge-not-a-component-conflict`,
+  naming both `file:line`s. **Upgrading:** a package whose markers disagree
+  now fails `forge lint`; keep one declaration, in the package's `doc.go`,
+  which the docs and remediation text now recommend.
 
 - **A release commit's E2E Scaffold waits out the proxy's negative cache.**
   `release-forge.sh` checks that the version was never published by asking

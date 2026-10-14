@@ -3990,10 +3990,49 @@ schema Manifests:
     name?: str
     cluster?: str
     namespace?: str
+    # The delivery unit these objects belong to (see forge.DeliveryUnit).
+    # Unset: `base`. Every object of the group is stamped with it.
+    delivery_unit?: str
     objects: [any] = []
 
     check:
         not name or regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "Manifests.name '${name}' must be an RFC-1123 label (it is a --target)"
+        not delivery_unit or regex.match(delivery_unit, r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$"), "Manifests.delivery_unit '${delivery_unit}' must be letters, digits, '.', '_' and '-' (it is a path segment in the bundle)"
+
+schema DeliveryUnit:
+    """A delivery unit: a named slice of an env that a Flux-applied bundle
+    delivers as its own trees (cluster × unit × phase), in a declared order.
+
+        delivery_units = [
+            forge.DeliveryUnit {name = "reliant", after = []}
+            forge.DeliveryUnit {name = "daemon-substrate", after = ["reliant"]}
+            forge.DeliveryUnit {name = "infra", after = ["daemon-substrate"]}
+            forge.DeliveryUnit {name = "control-plane", after = ["infra"]}
+            forge.DeliveryUnit {name = "hub-base", after = ["control-plane"]}
+        ]
+
+    A workload or a forge.Manifests group joins one with `delivery_unit`;
+    everything else is in the default unit, `base`.
+
+    ORDER IS DECLARED, NEVER INFERRED. `after` names the units whose last tree
+    must be Ready, on every cluster it has trees, before this unit's first
+    tree applies. That is how "the daemon cluster before the hub" is stated:
+    as a dependency between units, not as a property of a cluster name.
+
+    `after` unset means "after `base`" (and `base` is after nothing). Declare
+    `after = []` for a unit that waits for nothing, and name `base` explicitly
+    if you also want other waits kept. Within a unit and cluster the phases
+    always chain pre → rollout → post.
+
+    Direct apply ignores units: it applies the env in forge's own order. They
+    exist for the bundle a reconciler applies.
+    """
+    name: str
+    after?: [str]
+
+    check:
+        regex.match(name, r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$"), "DeliveryUnit.name '${name}' must be letters, digits, '.', '_' and '-' (it is a path segment in the bundle)"
+        not after or name not in after, "DeliveryUnit '${name}' cannot be after itself"
 
 schema Generated:
     """A source of Kubernetes YAML forge RUNS at render time: kustomize,
@@ -4187,6 +4226,9 @@ schema Bundle:
     # ClusterIssuers, a vendored chart's output, a DaemonSet. The ONE home
     # for raw objects; see forge.Manifests.
     manifests: [Manifests] = []
+    # The delivery units this env's bundle is split into, and their order.
+    # See forge.DeliveryUnit. Empty: every object is in `base`.
+    delivery_units: [DeliveryUnit] = []
     # Kubernetes YAML emitted by a command at render time (kustomize,
     # jsonnet, any tool); shipped in the bundle. See forge.Generated.
     generated: [Generated] = []

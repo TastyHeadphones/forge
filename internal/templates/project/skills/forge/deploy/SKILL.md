@@ -281,6 +281,10 @@ further — `before = [fw.BEFORE_ALL]` runs it as an initContainer on every
 workload, so no new pod serves against an old schema. A job needing this
 release's workloads running declares `deployPhase = "post-rollout"`.
 
+### Delivery units: how a Flux-applied bundle is ordered
+
+A bundle a reconciler applies states its order as trees per cluster × unit × phase. Declare units with `Bundle.delivery_units`, place objects with `delivery_unit`: `deploy/delivery-units`.
+
 ### Frontends bind a runtime too
 
 A `forge.Frontend` states where it runs per env, like a workload — there is

@@ -37,6 +37,9 @@ type parsedDoc struct {
 	// body is the decoded document AFTER secret redaction.
 	body any
 	meta docMeta
+	// phase is where the object sits relative to the release's workloads,
+	// from the SAME classifier forge's direct apply uses.
+	phase release.Phase
 	// clusters are the clusters the deploy layer routes this document to,
 	// read off the stream's `# cluster:` header. Empty means the document
 	// is attributed to no cluster.
@@ -64,10 +67,15 @@ func parseStream(stream string) ([]parsedDoc, error) {
 		if meta.kind == "" || meta.name == "" {
 			return nil, fmt.Errorf("manifest document %d has no kind or metadata.name", i+1)
 		}
+		phase, err := release.ClassifyPhase(meta.kind, meta.name, meta.annotations)
+		if err != nil {
+			return nil, fmt.Errorf("manifest document %d: %w", i+1, err)
+		}
 		out = append(out, parsedDoc{
 			index:    len(out),
 			body:     body,
 			meta:     meta,
+			phase:    phase,
 			clusters: doc.clusters,
 			rendered: doc.yaml,
 		})
@@ -82,6 +90,23 @@ func parseStream(stream string) ([]parsedDoc, error) {
 // to every cluster the env deploys to, and drift is a per-cluster fact — the
 // same Namespace can be correct on one cluster and missing from another. A
 // shape that named it once could not say which.
+// docUnit is the delivery unit an object belongs to.
+func docUnit(doc parsedDoc) string {
+	if doc.meta.unit != "" {
+		return doc.meta.unit
+	}
+	return release.DefaultDeliveryUnit
+}
+
+// treeLabel is "<unit>/<phase>" for a document on a v2 cluster, "" on a flat
+// one.
+func treeLabel(doc parsedDoc, cluster string) string {
+	if release.FlatCluster(cluster) {
+		return ""
+	}
+	return docUnit(doc) + "/" + string(doc.phase)
+}
+
 func shapeObjects(docs []parsedDoc, images map[string]string, statefulWorkloads []string) ([]release.ShapeObject, error) {
 	stateful := map[string]bool{}
 	for _, name := range statefulWorkloads {
@@ -115,6 +140,7 @@ func shapeObjects(docs []parsedDoc, images map[string]string, statefulWorkloads 
 		for _, c := range doc.clusters {
 			perCluster := obj
 			perCluster.Cluster = c
+			perCluster.Tree = treeLabel(doc, c)
 			out = append(out, perCluster)
 		}
 	}

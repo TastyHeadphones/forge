@@ -143,25 +143,47 @@ func ResolveCrossPkgInterface(handlerDir, pkgAlias, typeName string) (CrossPkgIn
 		importPath: loaded.Types.Name(),
 	}
 
-	// Render each method. types.NewMethodSet on the interface returns
-	// the COMPLETE method set including embedded interfaces (Go's
-	// types package handles the flattening), which is exactly what
-	// we need — the resolve() recursion in ParseLocalInterfaces is
-	// unnecessary here.
-	//
-	// We iterate iface.NumMethods()/Method(i) instead of NewMethodSet
-	// because for an interface type, Method(i) returns the declared
-	// methods in source order, while NewMethodSet sorts
-	// alphabetically. Source order matches what users expect from
-	// the generated stub and matches the existing local-interface
-	// path's behavior.
+	methods, ok := typedInterfaceMethods(iface, makeQualifier(needed))
+	if !ok {
+		return CrossPkgInterfaceResult{}, false
+	}
+
+	return CrossPkgInterfaceResult{
+		PackagePath:   importPath,
+		PackageName:   loaded.Types.Name(),
+		Methods:       methods,
+		NeededImports: needed,
+	}, true
+}
+
+// typedInterfaceMethods renders the COMPLETE method set of a type-checked
+// interface into stub-ready InterfaceMethods, naming each package a
+// signature references through qualifier.
+//
+// go/types flattens embedding at every depth and from every package, so an
+// interface that embeds another package's interface — which may embed a third
+// — arrives here with all of its methods. That is what the AST walk in
+// ParseLocalInterfaces cannot do on its own, and why it hands cross-package
+// embeds to this function.
+//
+// ok=false means no stub declared outside the interface's package can
+// satisfy it: a method is unexported (only the declaring package can
+// implement it), or a signature names a type the stub cannot spell — another
+// package's unexported type, or an invalid type from a partial type-check. A
+// stub that silently drops or misspells a method does not compile, so the
+// caller leaves the field to the test instead.
+func typedInterfaceMethods(iface *types.Interface, qualifier types.Qualifier) ([]InterfaceMethod, bool) {
+	// iface.Method(i) is the full method set in go/types' stable (sorted)
+	// order: deterministic, which is what generated code needs.
 	var methods []InterfaceMethod
-	qualifier := makeQualifier(needed)
 	for i := 0; i < iface.NumMethods(); i++ {
 		fn := iface.Method(i)
 		sig, ok := fn.Type().(*types.Signature)
 		if !ok {
 			continue
+		}
+		if !fn.Exported() || !signatureSpellable(sig) {
+			return nil, false
 		}
 		m := InterfaceMethod{Name: fn.Name()}
 
@@ -218,13 +240,124 @@ func ResolveCrossPkgInterface(handlerDir, pkgAlias, typeName string) (CrossPkgIn
 		}
 		methods = append(methods, m)
 	}
+	return methods, true
+}
 
-	return CrossPkgInterfaceResult{
-		PackagePath:   importPath,
-		PackageName:   loaded.Types.Name(),
-		Methods:       methods,
-		NeededImports: needed,
-	}, true
+// signatureSpellable reports whether every type sig mentions can be written
+// in another package: no invalid type, and no unexported named type of any
+// package (types.TypeString would render `pkg.hidden`, which only pkg itself
+// may name).
+func signatureSpellable(sig *types.Signature) bool {
+	ok := true
+	var walk func(t types.Type, depth int)
+	walk = func(t types.Type, depth int) {
+		if !ok || t == nil || depth > 32 {
+			return
+		}
+		switch x := t.(type) {
+		case *types.Basic:
+			if x.Kind() == types.Invalid {
+				ok = false
+			}
+		case *types.Alias:
+			if obj := x.Obj(); obj.Pkg() != nil && !obj.Exported() {
+				ok = false
+				return
+			}
+			walk(types.Unalias(x), depth+1)
+		case *types.Named:
+			// A named type of no package is a universe type (error).
+			if obj := x.Obj(); obj.Pkg() != nil && !obj.Exported() {
+				ok = false
+				return
+			}
+			for i := 0; i < x.TypeArgs().Len(); i++ {
+				walk(x.TypeArgs().At(i), depth+1)
+			}
+		case *types.Pointer:
+			walk(x.Elem(), depth+1)
+		case *types.Slice:
+			walk(x.Elem(), depth+1)
+		case *types.Array:
+			walk(x.Elem(), depth+1)
+		case *types.Map:
+			walk(x.Key(), depth+1)
+			walk(x.Elem(), depth+1)
+		case *types.Chan:
+			walk(x.Elem(), depth+1)
+		case *types.Signature:
+			for i := 0; i < x.Params().Len(); i++ {
+				walk(x.Params().At(i).Type(), depth+1)
+			}
+			for i := 0; i < x.Results().Len(); i++ {
+				walk(x.Results().At(i).Type(), depth+1)
+			}
+		case *types.Struct:
+			for i := 0; i < x.NumFields(); i++ {
+				walk(x.Field(i).Type(), depth+1)
+			}
+		case *types.Interface:
+			for i := 0; i < x.NumMethods(); i++ {
+				walk(x.Method(i).Type(), depth+1)
+			}
+		}
+	}
+	walk(sig, 0)
+	return ok
+}
+
+// embedResolver type-checks the packages a directory's cross-package
+// interface embeds come from, in ONE go/packages load, and answers each
+// `<importPath>.<TypeName>` with the type-checked interface.
+//
+// The load reads export data (NeedTypes without syntax), which is what makes
+// it cheap: the embedded package and its dependencies are compiled once into
+// the build cache, never re-parsed here. A package that loads with errors is
+// treated as absent — its partial types could hand back a method set with a
+// hole in it, and a stub missing a method does not compile.
+type embedResolver struct {
+	dir  string
+	pkgs map[string]*types.Package
+}
+
+// newEmbedResolver loads importPaths from dir's module. An empty list loads
+// nothing, so a directory with no cross-package embeds never invokes the
+// toolchain.
+func newEmbedResolver(dir string, importPaths []string) *embedResolver {
+	r := &embedResolver{dir: dir, pkgs: map[string]*types.Package{}}
+	if len(importPaths) == 0 {
+		return r
+	}
+	cfg := &packages.Config{
+		Mode: packages.NeedName | packages.NeedTypes,
+		Dir:  dir,
+		Env:  goexec.Env(),
+	}
+	pkgs, err := packages.Load(cfg, importPaths...)
+	if err != nil {
+		return r
+	}
+	for _, p := range pkgs {
+		if p.Types == nil || p.PkgPath == "" || len(p.Errors) > 0 {
+			continue
+		}
+		r.pkgs[p.PkgPath] = p.Types
+	}
+	return r
+}
+
+// lookup returns the interface importPath declares as typeName.
+func (r *embedResolver) lookup(importPath, typeName string) (*types.Interface, bool) {
+	pkg := r.pkgs[importPath]
+	if pkg == nil {
+		return nil, false
+	}
+	tn, ok := pkg.Scope().Lookup(typeName).(*types.TypeName)
+	if !ok {
+		return nil, false
+	}
+	iface, ok := tn.Type().Underlying().(*types.Interface)
+	return iface, ok
 }
 
 // collectImports parses every non-test, non-_gen.go .go file in dir

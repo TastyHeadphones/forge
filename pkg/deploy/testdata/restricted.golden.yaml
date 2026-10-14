@@ -10,10 +10,16 @@ metadata:
   name: web
   namespace: demo-prod
 spec:
+  progressDeadlineSeconds: 600
   replicas: 3
   selector:
     matchLabels:
       app.kubernetes.io/name: web
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
   template:
     metadata:
       labels:
@@ -207,6 +213,7 @@ metadata:
   name: store
   namespace: demo-prod
 spec:
+  progressDeadlineSeconds: 600
   replicas: 1
   selector:
     matchLabels:
@@ -389,10 +396,16 @@ metadata:
   name: jobs
   namespace: demo-prod
 spec:
+  progressDeadlineSeconds: 600
   replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: jobs
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
   template:
     metadata:
       labels:

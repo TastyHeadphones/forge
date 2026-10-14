@@ -224,6 +224,8 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 		Provenance:    doc.Provenance,
 		Shape:         bundleShapeInputOf(doc),
 		CreatedAt:     createdAt,
+		Units:         doc.units,
+		Reconciled:    doc.reconciled(),
 		Observability: observability,
 	})
 	if err != nil {

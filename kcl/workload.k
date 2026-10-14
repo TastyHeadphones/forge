@@ -297,6 +297,12 @@ schema Workload:
     # it (`wl.x | {runtime = ...}`), since the base declaration in
     # workloads.k is runtime-independent.
     runtime?: Runtime
+    # The DELIVERY UNIT this workload's objects belong to. A bundle splits each
+    # real cluster into trees by unit and phase; a reconciler applies a unit's
+    # trees after the units it is `after` (Bundle.delivery_units). Unset: the
+    # default unit, `base`. Authoring-only: it places objects, it is not on
+    # the wire.
+    delivery_unit?: str
     # The SENSITIVE config fields this workload reads, by ENV_VAR name.
     # Pass it to the generated `config_gen.<x>ConfigEnvMap(cfg,
     # config_secrets)`, which projects a secret for exactly these names:
@@ -397,6 +403,8 @@ schema Workload:
     activeDeadlineSeconds?: int
 
     check:
+        not delivery_unit or regex.match(delivery_unit, r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$"), \
+            "Workload.delivery_unit '${delivery_unit}' must be letters, digits, '.', '_' and '-' (it is a path segment in the bundle)"
         regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$") and len(name) <= 63, \
             "Workload.name '${name}' must be an RFC-1123 label of at most 63 characters (it becomes every object's name)"
         kind in caps.WORKLOAD_KINDS, \

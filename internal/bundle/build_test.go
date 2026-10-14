@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -231,8 +232,8 @@ func TestBuildManifestLayerLayout(t *testing.T) {
 		if !strings.HasSuffix(name, ".yaml") {
 			t.Errorf("%s is not a .yaml entry", name)
 		}
-		if parts := strings.Split(name, "/"); len(parts) != 3 {
-			t.Errorf("%s is not manifests/<cluster>/<NNN>-<kind>-<name>.yaml", name)
+		if parts := strings.Split(name, "/"); len(parts) != 5 {
+			t.Errorf("%s is not manifests/<cluster>/<unit>/<phase>/<NNN>-<kind>-<name>.yaml", name)
 		}
 	}
 	// The apply order is checked over a render big enough to catch it —
@@ -268,7 +269,7 @@ func TestBuildSanitizesClusterSegments(t *testing.T) {
 	built := mustBuild(t, in)
 	layer, _ := built.Layer(release.BundleManifestsLayer)
 	for name := range unpackLayer(t, layer) {
-		if parts := strings.Split(name, "/"); len(parts) != 3 {
+		if parts := strings.Split(name, "/"); len(parts) != 5 {
 			t.Errorf("a cluster name with a separator escaped its segment: %s", name)
 		}
 	}
@@ -486,7 +487,7 @@ func TestBuildManifestOrderSurvivesTenDocuments(t *testing.T) {
 	// names is sorted, i.e. in the order an apply would walk the
 	// directory. Entry k must be render document k.
 	for k, name := range names {
-		idx, err := strconv.Atoi(strings.SplitN(strings.Split(name, "/")[2], "-", 2)[0])
+		idx, err := strconv.Atoi(strings.SplitN(path.Base(name), "-", 2)[0])
 		if err != nil {
 			t.Fatalf("%s carries no render index: %v", name, err)
 		}

@@ -9,12 +9,19 @@ The full rules for the package-level contract markers. `contracts` has the one-t
 
 ## Packages forge should not manage: `//forge:exclude-contract: <why>`
 
-There is ONE header directive for "forge does not manage this package". It takes a **reason**, on the same line:
+There is ONE header directive for "forge does not manage this package". It takes a **reason**, on the same line. Put it in the package's `doc.go`:
 
 ```go
+// doc.go
+
 // Package algos is a strategy registry.
 //
 //forge:exclude-contract: strategy registry — one constructor per algorithm, no single New(Deps) to bind
+package algos
+```
+
+```go
+// algos.go
 package algos
 
 type Strategy interface {
@@ -58,6 +65,12 @@ package db
 
 A marker that draws both refusals needs one allowance per rule, stacked. Each covers the marker.
 
+### One declaration per package, in `doc.go`
+
+A package directive is a property of the **package**, like its package clause: it applies to the whole package from whichever file declares it. Declare it once, in `doc.go`, with its allowances in the same comment block — a file that holds the package's code can move to another package and take the declaration with it, and `doc.go` never does.
+
+A package may repeat a marker only **identically**: the same reason, and the same allowances in its comment block. Two that disagree — different reasons, a bare marker beside a reasoned one, or an allowance on one and not the other — are refused (`forge-exclude-contract-conflict`, `forge-not-a-component-conflict`), naming both `file:line`s; the gate's other checks wait until the package gives one answer. The fix is to keep one declaration, in `doc.go`, and delete the rest.
+
 `forge lint --show-suppressed` lists every suppression in the project with its file:line, what it covers and its stated reason: each `//forge:exclude-contract` marker, each allowance like the one above, every other `forge:lint-disable*` and `//nolint:` directive, `forge.yaml`'s `lint.rules` downgrades and `contracts.exclude` paths, and the migration (`forge:allow-destructive`, `forge:allow-unsafe-not-null`) and `forge:optional-checked` pragmas. It is read-only and lints nothing; add `--json` for a machine-readable list, or `--scope <path>` for one slice.
 
 ## Packages the server does not have: `//forge:not-a-component: <why>`
@@ -99,6 +112,7 @@ The three package markers answer different questions — pick by what is true:
 The marker is checked from both sides, so it cannot quietly go stale:
 
 - **A server component that requires it by type fails `forge generate`**, naming the marker and its reason. The way out is whichever is true: delete the marker (the server needs it and forge can build it), switch to `//forge:external-component` (the server needs it and you build it), or remove the `Deps` field (`//forge:optional-dep` if the consumer copes with nil — an optional consumer is allowed, it just gets nil).
+- **Declare it once, in `doc.go`.** Repetitions must be identical (see "One declaration per package" above; `forge-not-a-component-conflict`).
 - **`forge lint` refuses a bare marker** (`forge-not-a-component-reason`) and **a marker where composition does not read it** (`forge-not-a-component-scope`): on a service handler, worker or operator (server components by definition), beside `//forge:external-component` (a contradiction), or on a package without `contract.go`, outside `internal/`, or already `//forge:exclude-contract` (no effect). A contract package *nested below* a handler is an ordinary internal package and may carry it.
 
 **When generate suggests it.** If a package's `Deps` have no provider and no service, worker or operator reaches the package through a chain of `Deps`, the missing-provider error adds the marker as a second remedy. It is a hint, not a decision: a server package whose consumer you have not written yet looks the same, and for that one the answer is to write the consumer (or wire `Infra`).

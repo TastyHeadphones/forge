@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 var ctx = Context{Namespace: "acme-prod", PartOf: "proj"}
@@ -296,7 +297,7 @@ func TestStorage(t *testing.T) {
 	}
 	// Stateless: no fsGroup, no Recreate.
 	o = objects(t, render(t, v1alpha1.ProfileFull, svc("api")))
-	if get(podOf(o["Deployment/api"]), "securityContext", "fsGroup") != nil || get(o["Deployment/api"], "spec", "strategy") != nil {
+	if get(podOf(o["Deployment/api"]), "securityContext", "fsGroup") != nil || get(o["Deployment/api"], "spec", "strategy", "type") != "RollingUpdate" {
 		t.Error("a stateless workload gets neither fsGroup nor a Recreate strategy")
 	}
 }
@@ -1617,8 +1618,9 @@ func TestTerminationGraceOverride(t *testing.T) {
 }
 
 // TestDeploymentStrategy: an explicit strategy wins, Recreate carries no
-// rollingUpdate parameters, and unset keeps Kubernetes' default (which the
-// storage rule still overrides).
+// rollingUpdate parameters, and unset renders Kubernetes' default STATED (the
+// storage rule still overrides it). A reconciler must not see fields the API
+// server filled in under another manager.
 func TestDeploymentStrategy(t *testing.T) {
 	recreate := wl("workers", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindWorker, Strategy: v1alpha1.StrategyRecreate})
 	dep := objects(t, render(t, v1alpha1.ProfileFull, recreate))["Deployment/workers"]
@@ -1633,8 +1635,18 @@ func TestDeploymentStrategy(t *testing.T) {
 		t.Errorf("strategy type = %v, want RollingUpdate", got)
 	}
 	bare := objects(t, render(t, v1alpha1.ProfileFull, svc("plain")))["Deployment/plain"]
-	if got := get(bare, "spec", "strategy", "type"); got != nil {
-		t.Errorf("unset strategy rendered %v; the cluster default must apply", got)
+	if got := get(bare, "spec", "strategy", "type"); got != "RollingUpdate" {
+		t.Errorf("unset strategy rendered %v, want the default RollingUpdate stated", got)
+	}
+	for _, field := range []string{"maxSurge", "maxUnavailable"} {
+		if got := get(bare, "spec", "strategy", "rollingUpdate", field); got != "25%" {
+			t.Errorf("rollingUpdate.%s = %v, want Kubernetes' 25%% stated", field, got)
+		}
+	}
+	for name, dep := range map[string]any{"plain": bare, "workers": dep, "store": objects(t, render(t, v1alpha1.ProfileFull, wl("store", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindService, StorageGiB: 10})))["Deployment/store"]} {
+		if got := get(dep, "spec", "progressDeadlineSeconds"); got != float64(DefaultProgressDeadlineSeconds) {
+			t.Errorf("%s: progressDeadlineSeconds = %v, want %d stated", name, got, DefaultProgressDeadlineSeconds)
+		}
 	}
 	// The storage rule still forces Recreate on its own.
 	store := wl("store", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindService, StorageGiB: 10})
@@ -1742,5 +1754,17 @@ func TestSecretVolumeOptional(t *testing.T) {
 	certs, _ := byName["certs"].(map[string]any)
 	if _, set := certs["optional"]; set {
 		t.Errorf("a volume that did not ask for optional rendered optional = %v", certs["optional"])
+	}
+}
+
+// TestRolloutDefaultsAgree: pkg/deploy renders a Deployment's rollout settings
+// and pkg/release writes the same ones into a hand-written Deployment, and they
+// cannot import each other. This is the one place that says they are equal.
+func TestRolloutDefaultsAgree(t *testing.T) {
+	if DefaultProgressDeadlineSeconds != release.DefaultProgressDeadlineSeconds {
+		t.Errorf("progressDeadlineSeconds: render %d, release %d", DefaultProgressDeadlineSeconds, release.DefaultProgressDeadlineSeconds)
+	}
+	if defaultRolloutPercent != release.DefaultRolloutPercent {
+		t.Errorf("rollout percent: render %q, release %q", defaultRolloutPercent, release.DefaultRolloutPercent)
 	}
 }

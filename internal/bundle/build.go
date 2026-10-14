@@ -125,6 +125,19 @@ type BuildInput struct {
 	// CreatedAt is the bundle's creation time. Required, and the caller's:
 	// see the determinism note at the top of this file.
 	CreatedAt time.Time
+	// Reconciled says a reconciler (Flux) may apply this bundle, so it must be
+	// safe to apply repeatedly: a Job with a TTL or without a spec hash is then
+	// REFUSED rather than built. False for an env forge applies itself (a
+	// local or ephemeral lifecycle, or a declared applier of forge): a
+	// one-shot apply neither re-runs a TTL'd Job on a timer nor re-reconciles
+	// an unhashed one, and refusing there would break builds that work today.
+	// The fixes that change nothing at runtime are made either way.
+	Reconciled bool
+	// Units declares the delivery units' order (see release.DeliveryUnit).
+	// An object's unit is its forge.dev/delivery-unit label; a unit nobody
+	// declares waits for the default unit. Every real cluster is split into
+	// trees by it; see release.PlanTrees.
+	Units []release.DeliveryUnit
 	// Observability is the dashboards and the metrics schema the bundle
 	// carries beside its manifests (see [release.BundleObservabilityPrefix]).
 	// Nothing applies them, so they neither enter the shape nor the config
@@ -270,6 +283,18 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 	// does not carry — and drift detection compares the live object
 	// against that hash, so each one would read as permanently drifted.
 	// See prune_guard.go.
+	// FLUX-SAFETY, before anything hashes or serializes these bodies, for the
+	// same reason as the guard below: a fix applied afterwards would make every
+	// fixed object's recorded hash describe bytes the layer does not carry.
+	//
+	// Two things are fixed here because the fix does not change what an object
+	// means: a Deployment's implicit strategy and progressDeadlineSeconds are
+	// written down, and an object that needs Flux's recreate policy gets its
+	// force annotation. What only the author can fix (a Job's TTL, an unhashed
+	// Job name) is refused instead. See pkg/release/fluxsafe.go.
+	if err := makeFluxSafe(docs, in.Reconciled); err != nil {
+		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)
+	}
 	guarded := guardStatefulObjects(docs, in.Shape.StatefulWorkloads)
 	objects, err := shapeObjects(docs, in.Shape.Images, in.Shape.StatefulWorkloads)
 	if err != nil {
@@ -297,7 +322,7 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 	if err != nil {
 		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)
 	}
-	manifestsLayer, trees, err := packManifests(docs, extra...)
+	manifestsLayer, clusterTrees, trees, err := packManifests(docs, in.Units, extra...)
 	if err != nil {
 		return Bundle{}, fmt.Errorf("bundle %s/%s: pack manifests: %w", in.Project, in.Env, err)
 	}
@@ -321,7 +346,8 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 		Pins:         in.Pins,
 		Provenance:   in.Provenance,
 		Shape:        shape,
-		ClusterPaths: trees,
+		ClusterPaths: clusterTrees,
+		Trees:        trees,
 		Secrets:      secretRefs,
 		CreatedAt:    in.CreatedAt.UTC(),
 	}
@@ -402,22 +428,26 @@ func annotationsFor(doc release.BundleDoc) map[string]string {
 
 // ─── The manifest layer ─────────────────────────────────────────────────────
 
-// manifestEntryName is `<cluster path>/<NNN>-<kind>-<name>.yaml` (doc §4.1),
-// where the cluster path is [release.BundleClusterPath]'s — the same string
-// the reconciler sets as Kustomization.spec.path.
+// manifestEntryName is the layer path of one document on one cluster.
+//
+// A flat cluster (the unclustered and hosted trees) keeps the v1 shape,
+// `manifests/<cluster>/<NNN>-<kind>-<name>.yaml`. Every other cluster is split
+// by delivery unit and phase,
+// `manifests/<cluster>/<unit>/<phase>/<NNN>-<kind>-<name>.yaml`. The tree path
+// is [release.BundleTreePath]'s, the same string the reconciler sets as
+// Kustomization.spec.path.
 //
 // The NNN is the document's position in the render, zero-padded, because the
-// apply ORDER is part of the stream's meaning — a Namespace must land before
-// the objects in it — and an unpacked directory listing is sorted
-// lexicographically. Padding is what keeps entry 10 after entry 9.
-//
-// kustomize applies a path's resources in the order it reads them, and a
-// generated kustomization.yaml lists them in that lexicographic order, so the
-// padding carries the render's ordering through Flux as well as through a
-// local unpack.
+// apply ORDER within a tree is part of the stream's meaning — a Namespace must
+// land before the objects in it — and kustomize applies a generated
+// kustomization's resources in lexicographic order. The index is global to the
+// render, so it is unique across trees and stable when objects move.
 func manifestEntryName(doc parsedDoc, cluster string) string {
-	return fmt.Sprintf("%s/%03d-%s-%s.yaml",
-		release.BundleClusterPath(cluster), doc.index,
+	dir := release.BundleClusterPath(cluster)
+	if !release.FlatCluster(cluster) {
+		dir = release.BundleTreePath(cluster, docUnit(doc), doc.phase)
+	}
+	return fmt.Sprintf("%s/%03d-%s-%s.yaml", dir, doc.index,
 		pathSegment(strings.ToLower(doc.meta.kind)), pathSegment(doc.meta.name))
 }
 
@@ -440,17 +470,18 @@ func pathSegment(s string) string { return release.BundlePathSegment(s) }
 // than from the env's declared cluster list: a declared cluster with no
 // documents routed to it must not get a Kustomization, because an empty path
 // reconciles green over an env nothing applied.
-func packManifests(docs []parsedDoc, extra ...tarEntry) ([]byte, []release.BundleClusterTree, error) {
+func packManifests(docs []parsedDoc, units []release.DeliveryUnit, extra ...tarEntry) ([]byte, []release.BundleClusterTree, []release.BundleTree, error) {
 	type entry struct {
 		name    string
 		cluster string
 		data    []byte
+		object  release.TreeObject
 	}
 	var entries []entry
 	for _, doc := range docs {
 		encoded, err := encodeDocument(doc.body)
 		if err != nil {
-			return nil, nil, fmt.Errorf("encode %s %s: %w", doc.meta.kind, doc.meta.name, err)
+			return nil, nil, nil, fmt.Errorf("encode %s %s: %w", doc.meta.kind, doc.meta.name, err)
 		}
 		clusters := doc.clusters
 		if len(clusters) == 0 {
@@ -459,6 +490,11 @@ func packManifests(docs []parsedDoc, extra ...tarEntry) ([]byte, []release.Bundl
 		for _, cluster := range clusters {
 			entries = append(entries, entry{
 				name: manifestEntryName(doc, cluster), cluster: cluster, data: encoded,
+				object: release.TreeObject{
+					Cluster: cluster, Unit: docUnit(doc), Phase: doc.phase,
+					Kind: doc.meta.kind, Namespace: doc.meta.namespace, Name: doc.meta.name,
+					DeadlineSeconds: docDeadlineSeconds(doc),
+				},
 			})
 		}
 	}
@@ -466,21 +502,29 @@ func packManifests(docs []parsedDoc, extra ...tarEntry) ([]byte, []release.Bundl
 	files := make([]tarEntry, 0, len(entries))
 	counts := map[string]int{}
 	var order []string
+	var treeObjects []release.TreeObject
 	for i, e := range entries {
-		// Two documents that render to the same (cluster, index, kind,
+		// Two documents that render to the same (cluster, tree, index, kind,
 		// name) would silently collapse into one entry, and the layer
 		// would carry fewer objects than the shape claims. The shape's
 		// own duplicate check would not catch it: these are per-cluster
 		// pairs, and the names are sanitized, so two different cluster
 		// contexts can sanitize to the same segment.
 		if i > 0 && entries[i-1].name == e.name {
-			return nil, nil, fmt.Errorf("two rendered documents both map to %s", e.name)
+			return nil, nil, nil, fmt.Errorf("two rendered documents both map to %s", e.name)
 		}
 		files = append(files, tarEntry{name: e.name, data: e.data})
 		if _, seen := counts[e.cluster]; !seen {
 			order = append(order, e.cluster)
 		}
 		counts[e.cluster]++
+		if !release.FlatCluster(e.cluster) {
+			treeObjects = append(treeObjects, e.object)
+		}
+	}
+	trees, err := release.PlanTrees(treeObjects, units)
+	if err != nil {
+		return nil, nil, nil, err
 	}
 	// The observability files ride in the same layer but are not documents:
 	// they are not counted in any cluster tree and no Kustomization path
@@ -488,18 +532,18 @@ func packManifests(docs []parsedDoc, extra ...tarEntry) ([]byte, []release.Bundl
 	files = append(files, extra...)
 	layer, err := writeTarGz(files)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	sort.Strings(order)
-	trees := make([]release.BundleClusterTree, 0, len(order))
+	clusterTrees := make([]release.BundleClusterTree, 0, len(order))
 	for _, cluster := range order {
-		trees = append(trees, release.BundleClusterTree{
+		clusterTrees = append(clusterTrees, release.BundleClusterTree{
 			Cluster:   cluster,
 			Path:      release.BundleClusterPath(cluster),
 			Documents: counts[cluster],
 		})
 	}
-	return layer, trees, nil
+	return layer, clusterTrees, trees, nil
 }
 
 // encodeDocument serializes one document back to YAML, deterministically.
@@ -590,4 +634,28 @@ func parentDirs(name string) []string {
 		out = append(out, strings.Join(parts[:i], "/"))
 	}
 	return out
+}
+
+// docDeadlineSeconds is the time allowance an object states for itself: a
+// Deployment's progressDeadlineSeconds, a Job's activeDeadlineSeconds. 0 means
+// it states none and the default for its kind applies (release.TreeBudget).
+func docDeadlineSeconds(doc parsedDoc) int {
+	body, ok := doc.body.(map[string]any)
+	if !ok {
+		return 0
+	}
+	spec, _ := body["spec"].(map[string]any)
+	field := "progressDeadlineSeconds"
+	if doc.meta.kind == "Job" {
+		field = "activeDeadlineSeconds"
+	}
+	switch n := spec[field].(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	}
+	return 0
 }

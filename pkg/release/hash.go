@@ -67,6 +67,10 @@ func ConfigDigest(shape Shape) (string, error) {
 	type entry struct {
 		Key        ObjectKey `json:"key"`
 		ConfigHash string    `json:"config_hash"`
+		// Tree is part of the object's identity in a reconciler: moving
+		// it is a change even when its bytes are not. Omitted when empty,
+		// so a flat bundle's digest is what it always was.
+		Tree string `json:"tree,omitempty"`
 	}
 	entries := make([]entry, 0, len(canonical.Objects))
 	for _, o := range canonical.Objects {
@@ -81,7 +85,7 @@ func ConfigDigest(shape Shape) (string, error) {
 		if configHash == "" {
 			return "", fmt.Errorf("%w: shape object %s has no hash, so the render has no config digest", ErrInvalid, o.Key())
 		}
-		entries = append(entries, entry{Key: o.Key(), ConfigHash: configHash})
+		entries = append(entries, entry{Key: o.Key(), ConfigHash: configHash, Tree: o.Tree})
 	}
 	return HashDocument(entries)
 }

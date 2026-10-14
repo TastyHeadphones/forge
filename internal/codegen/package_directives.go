@@ -40,7 +40,10 @@
 // All are recognized as either a package doc comment (above the `package`
 // clause) or a free-standing comment anywhere in the package's .go files —
 // the latter so a package can carry the marker without disturbing its
-// existing package doc.
+// existing package doc. Like the package clause, a directive is a property of
+// the PACKAGE, whichever file spells it: the conventional home is doc.go, and
+// a package that repeats one must repeat it identically (reason and
+// allowances), which `forge lint` checks.
 
 package codegen
 
@@ -363,14 +366,46 @@ func ParseNotAComponentComment(raw string) (reason string, ok bool) {
 	return parseReasonedDirective(raw, directiveNotAComponent)
 }
 
+// FindExcludeContractMarkers returns EVERY `//forge:exclude-contract` marker
+// in the package, in file-name then line order. A package directive is a
+// property of the package, like its package clause: it applies from whichever
+// file declares it, and a package that declares it twice must say the same
+// thing both times — the lint gate (internal/linter/contract) refuses two
+// declarations that disagree.
+func FindExcludeContractMarkers(dir string) []ReasonedMarker {
+	return findReasonedDirectives(dir, directiveExcludeContract)
+}
+
+// FindNotAComponentMarkers returns every `//forge:not-a-component` marker in
+// the package (see FindExcludeContractMarkers).
+func FindNotAComponentMarkers(dir string) []ReasonedMarker {
+	return findReasonedDirectives(dir, directiveNotAComponent)
+}
+
 // findReasonedDirective returns the first occurrence of a reasoned package
 // directive (`//<directive>: <why>` or the bare `//<directive>`) in dir's
 // non-test, non-generated files, scanned in name order. A reasoned
 // occurrence anywhere wins over a bare one.
 func findReasonedDirective(dir, directive string) (ReasonedMarker, bool) {
+	all := findReasonedDirectives(dir, directive)
+	for _, m := range all {
+		if m.Reason != "" {
+			return m, true
+		}
+	}
+	if len(all) > 0 {
+		return all[0], true
+	}
+	return ReasonedMarker{}, false
+}
+
+// findReasonedDirectives returns every occurrence of a reasoned package
+// directive in dir's non-test, non-generated files, in file-name then line
+// order.
+func findReasonedDirectives(dir, directive string) []ReasonedMarker {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return ReasonedMarker{}, false
+		return nil
 	}
 	var names []string
 	for _, e := range entries {
@@ -383,8 +418,7 @@ func findReasonedDirective(dir, directive string) (ReasonedMarker, bool) {
 	}
 	sort.Strings(names)
 
-	var first ReasonedMarker
-	found := false
+	var out []ReasonedMarker
 	fset := token.NewFileSet()
 	for _, n := range names {
 		path := filepath.Join(dir, n)
@@ -398,17 +432,11 @@ func findReasonedDirective(dir, directive string) (ReasonedMarker, bool) {
 				if !ok {
 					continue
 				}
-				m := ReasonedMarker{File: path, Line: fset.Position(c.Pos()).Line, Reason: reason}
-				if reason != "" {
-					return m, true
-				}
-				if !found {
-					first, found = m, true
-				}
+				out = append(out, ReasonedMarker{File: path, Line: fset.Position(c.Pos()).Line, Reason: reason})
 			}
 		}
 	}
-	return first, found
+	return out
 }
 
 // ParseExcludeContractComment reports whether one raw comment IS the

@@ -304,8 +304,14 @@ func CheckExcludeDirectives(pkgs []*packages.Package, opts ExcludeGateOptions) [
 		if dir == "" {
 			continue
 		}
-		marker, ok := codegen.FindExcludeContractMarker(dir)
-		if !ok {
+		markers := codegen.FindExcludeContractMarkers(dir)
+		if len(markers) == 0 {
+			continue
+		}
+		marker, conflict := packageDeclaration(p.PkgPath, "forge:exclude-contract", markers,
+			[]string{RuleExcludeReasonRequired, RuleExcludeOutboundIO, RuleExcludeMultiImpl}, RuleExcludeConflict)
+		if conflict != nil {
+			out = append(out, *conflict)
 			continue
 		}
 		out = append(out, checkOnePackage(p, marker, candidates)...)
@@ -334,8 +340,8 @@ func checkOnePackage(p *packages.Package, marker codegen.ReasonedMarker, candida
 			Line:     marker.Line,
 			Message: fmt.Sprintf("package %s is excluded from the contract rules with a bare `//forge:exclude-contract` — "+
 				"the marker requires a reason", p.PkgPath),
-			FixHint: "write why forge should not manage this package: `//forge:exclude-contract: <why>` " +
-				"(pure functions, test-only support, API/CRD types, a strategy registry). If none of those is true, " +
+			FixHint: "write why forge should not manage this package: `//forge:exclude-contract: <why>`, once, in the " +
+				"package's doc.go (pure functions, test-only support, API/CRD types, a strategy registry). If none of those is true, " +
 				"the package wants a contract.go instead — see `forge skill load contracts/package-markers`",
 		})
 	}

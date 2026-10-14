@@ -915,7 +915,8 @@ _lower = lambda w: any, bundle: Bundle -> any {
         "build": _render_build(w.build)
         "runtime": _render_runtime(w, _rt)
         "spec": _spec_json(w, _rt, bundle)
-    } | ({"flow_checks": [{"path": c.path, "description": c.description or None, "name": c.name or None} for c in w.flow_checks]} if w.flow_checks else {})
+    } | ({"flow_checks": [{"path": c.path, "description": c.description or None, "name": c.name or None} for c in w.flow_checks]} if w.flow_checks else {}) \
+      | ({"delivery_unit": w.delivery_unit} if w.delivery_unit else {})
 }
 
 # `before` names a workload the env declares, on the same runtime set that
@@ -1042,7 +1043,8 @@ _workload_record = lambda entity: any, part_of: str -> any {
         metadata = {
             name = entity.name
             namespace = entity.runtime.namespace
-            labels = labels_lib.managed_labels(entity.name, part_of) | {"forge.dev/cluster" = entity.runtime.cluster}
+            labels = labels_lib.managed_labels(entity.name, part_of) | {"forge.dev/cluster" = entity.runtime.cluster} \
+                | ({"forge.dev/delivery-unit" = entity.delivery_unit} if entity.delivery_unit else {})
         }
         spec = entity.spec
     }
@@ -1058,9 +1060,17 @@ _workload_record = lambda entity: any, part_of: str -> any {
 _raw_manifests = lambda g: any, primary: any, part_of: str -> [any] {
     _cluster = g.cluster if g.cluster else (primary.cluster if primary else "")
     _ns = g.namespace if g.namespace else (primary.namespace if primary else "")
-    [_stamp_cluster(_default_namespace(_stamp_owner(m, g.name, part_of) if g.name else m, _ns), _cluster) \
-        if _cluster else _default_namespace(_stamp_owner(m, g.name, part_of) if g.name else m, _ns) \
+    [_stamp_unit(_stamp_cluster(_default_namespace(_stamp_owner(m, g.name, part_of) if g.name else m, _ns), _cluster) \
+        if _cluster else _default_namespace(_stamp_owner(m, g.name, part_of) if g.name else m, _ns), g.delivery_unit) \
         for m in g.objects]
+}
+
+# Place an object in a delivery unit (forge.DeliveryUnit). A label the author
+# set on the object itself wins, like every other stamp here.
+_stamp_unit = lambda manifest: any, unit: any -> any {
+    _meta = manifest.metadata if manifest.metadata else {}
+    _labels = _meta.labels if _meta.labels else {}
+    manifest if not unit or _labels["forge.dev/delivery-unit"] else manifest | {metadata = _meta | {labels = _labels | {"forge.dev/delivery-unit" = unit}}}
 }
 
 # Cluster-scoped kinds a namespace must never be written onto.
@@ -1406,6 +1416,10 @@ render = lambda bundle: Bundle -> any {
         # grammar and hand the patches on; `internal/cluster` resolves each key
         # against the EXPANDED stream and merges.
         "overrides": bundle.overrides
+        # The delivery units and their order, for the bundle's trees. Keys
+        # appear only when declared, so an env without units renders as before.
+        if bundle.delivery_units:
+            "delivery_units": [{"name": u.name, "after": u.after if u.after != Undefined else None} for u in bundle.delivery_units]
         "manifests": _manifests(bundle, _entities)
     }
 }
