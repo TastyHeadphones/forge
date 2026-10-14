@@ -58,7 +58,7 @@ func TestGenerateCRUDTests_SecondStringFieldIsLintCleanVarName(t *testing.T) {
 		},
 	}}
 
-	if err := GenerateCRUDTests(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDTests(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("GenerateCRUDTests: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(handlerDir, "handlers_crud_test.go"))

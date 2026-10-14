@@ -339,26 +339,40 @@ func generateCRUDHandlers(services []codegen.ServiceDef, modulePath string, proj
 		}
 
 		pkg := naming.ServicePackage(svc.Name)
-		if err := codegen.GenerateCRUDHandlers(svc, crudMethods, modulePath, projectDir, cs); err != nil {
+		// Each line reports what the call DID (codegen.CRUDResult), never
+		// what was asked of it: these used to print "✅ Generated" after
+		// calls that wrote nothing, naming files that did not exist.
+		wired, err := codegen.GenerateCRUDHandlers(svc, crudMethods, modulePath, projectDir, cs)
+		if err != nil {
 			// Hard failure by design: the CRUD generator only errors on
 			// real wiring problems (e.g. a list filter field that maps to
 			// no declared entity column). Shipping a phantom-column query
 			// that silently returns nothing is the worse outcome.
 			return fmt.Errorf("CRUD generation for %s: %w", svc.Name, err)
 		}
-		fmt.Printf("  ✅ Generated handlers/%s CRUD wiring (%d methods; ops in handlers_crud_ops_gen.go, shims in user-owned handlers_crud.go)\n", pkg, len(crudMethods))
+		if wired.Wrote {
+			fmt.Printf("  ✅ Generated handlers/%s CRUD wiring (%d methods; ops in handlers_crud_ops_gen.go, shims in user-owned handlers_crud.go)\n", pkg, len(crudMethods))
+			generated++
+		} else {
+			fmt.Printf("  ⏭️  handlers/%s: no CRUD wiring written — %s\n", pkg, wired.Skipped)
+		}
 
-		if err := codegen.GenerateCRUDTests(svc, crudMethods, modulePath, projectDir, cs); err != nil {
+		lifecycle, err := codegen.GenerateCRUDTests(svc, crudMethods, modulePath, projectDir, cs)
+		switch {
+		case err != nil:
 			// A scaffold problem is a warning: a project without a lifecycle
 			// test still generates. The lifecycle test carries no fixture data
 			// to get wrong — its rows come from the regenerated
 			// create-request factories, which report a fixture the schema
 			// rejects themselves (see codegen.GenerateEntityFactories).
 			fmt.Fprintf(os.Stderr, "  ⚠️  CRUD test generation for %s failed: %v\n", svc.Name, err)
-		} else {
+		case lifecycle.Wrote:
 			fmt.Printf("  ✅ Generated handlers/%s/handlers_crud_test.go (CRUD lifecycle against real postgres — scaffolded once, yours from line one)\n", pkg)
+		case lifecycle.Routine:
+			routinef("  ⏭️  handlers/%s/handlers_crud_test.go not written — %s\n", pkg, lifecycle.Skipped)
+		default:
+			fmt.Printf("  ⏭️  handlers/%s/handlers_crud_test.go not written — %s\n", pkg, lifecycle.Skipped)
 		}
-		generated++
 	}
 
 	if generated == 0 {

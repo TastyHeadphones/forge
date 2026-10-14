@@ -232,5 +232,6 @@ func (ctx *pipelineContext) warnOrFail(stepName string, err error) error {
 		return fmt.Errorf("%s failed: %w (--strict)", stepName, err)
 	}
 	fmt.Fprintf(os.Stderr, "⚠️  Warning: %s failed: %v — pass --strict to fail the pipeline on this\n", stepName, err)
+	ctx.SoftFailures = append(ctx.SoftFailures, stepName)
 	return nil
 }

@@ -53,7 +53,7 @@ type Service struct { deps Deps }
 		Columns: []EntityColumn{{Name: "id", Type: "string", NotNull: true, IsPK: true, DeclType: "TEXT"}},
 	}}
 	crudMethods := MatchCRUDMethods(svc, entities)
-	if err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("GenerateCRUDHandlers: %v", err)
 	}
 	b, err := os.ReadFile(filepath.Join(handlerDir, "handlers_crud_ops_gen.go"))

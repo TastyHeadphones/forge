@@ -808,7 +808,7 @@ CREATE TABLE products (
 	}
 	_, methods := productSvcAndMethods()
 
-	if err := GenerateCRUDTests(svc, methods, "example.com/test", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDTests(svc, methods, "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("GenerateCRUDTests: %v", err)
 	}
 	raw, err := os.ReadFile(filepath.Join(handlerDir, "handlers_crud_test.go"))

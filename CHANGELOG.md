@@ -272,6 +272,21 @@ FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
 
 ### Fixed
 
+- **`forge generate` reports what it wrote, and a failed step's dependents
+  say they were skipped.** On reliant main a run printed "⚠️ Warning: ORM
+  generation failed", then "✅ Generated internal/db/ (2 entity ORM files)",
+  "✅ Generated handlers/message CRUD wiring" and "✅ Generated
+  …/handlers_crud_test.go" — none of which existed. The ORM line printed after
+  the swallowed failure; the CRUD lines printed after calls that returned early
+  having written nothing (every CRUD rpc hand-written, or the scaffold-once test
+  already born). Now: a failed ORM step prints no success line; the CRUD step
+  after it reports itself skipped, with the reason, and writes nothing; each
+  CRUD line reports what its call did (`⏭️ handlers/<svc>: no CRUD wiring
+  written — every CRUD rpc (GetMessage) is implemented by hand`); and the
+  completion line is followed by the steps that failed as warnings. (The ORM
+  failure itself is correct there: reliant's `internal/db` declares `Message`
+  and `ModelEndpoint`, which forge's ORM would redeclare.)
+
 - **`forgeconv-no-handler-error-mapping` fires only on sentinels mapped to
   connect errors.** The body-shape signal counted every `errors.Is` /
   `errors.As` in a function and fired when the function also built a

@@ -131,7 +131,7 @@ func TestGenerateCRUDHandlers_ShimMovedToSiblingFileKeepsItsOp(t *testing.T) {
 	checksums.ResetSkipWrite()
 	cs := &checksums.FileChecksums{}
 
-	if err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, cs); err != nil {
+	if _, err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, cs); err != nil {
 		t.Fatalf("first GenerateCRUDHandlers() error = %v", err)
 	}
 	shimPath := filepath.Join(handlerDir, "handlers_crud.go")
@@ -155,7 +155,7 @@ func TestGenerateCRUDHandlers_ShimMovedToSiblingFileKeepsItsOp(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, cs); err != nil {
+	if _, err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, cs); err != nil {
 		t.Fatalf("second GenerateCRUDHandlers() error = %v", err)
 	}
 
@@ -178,7 +178,7 @@ func TestGenerateCRUDHandlers_AllShimsMovedNoShimFileRebirth(t *testing.T) {
 	projectDir, handlerDir, svc, entities := opDemandFixture(t)
 	checksums.ResetSkipWrite()
 	cs := &checksums.FileChecksums{}
-	if err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, cs); err != nil {
+	if _, err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, cs); err != nil {
 		t.Fatalf("first GenerateCRUDHandlers() error = %v", err)
 	}
 	shimPath := filepath.Join(handlerDir, "handlers_crud.go")
@@ -193,7 +193,7 @@ func TestGenerateCRUDHandlers_AllShimsMovedNoShimFileRebirth(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, cs); err != nil {
+	if _, err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, cs); err != nil {
 		t.Fatalf("second GenerateCRUDHandlers() error = %v", err)
 	}
 	ops := readOps(t, handlerDir)
@@ -240,7 +240,7 @@ func (s *Service) ListPatients(ctx context.Context, req *connect.Request[pb.List
 	}
 
 	checksums.ResetSkipWrite()
-	if err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, &checksums.FileChecksums{}); err != nil {
+	if _, err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, &checksums.FileChecksums{}); err != nil {
 		t.Fatalf("GenerateCRUDHandlers() error = %v — ListPatients is implemented by hand in handlers_crud.go, so its op's filter validation must not apply", err)
 	}
 	ops := readOps(t, handlerDir)
@@ -291,7 +291,7 @@ func (s *Service) GetPatient(ctx context.Context, req *connect.Request[pb.GetPat
 	}
 
 	checksums.ResetSkipWrite()
-	if err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, &checksums.FileChecksums{}); err != nil {
+	if _, err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, &checksums.FileChecksums{}); err != nil {
 		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
 	}
 	ops := readOps(t, handlerDir)
@@ -340,7 +340,7 @@ func (s *Service) GetPatient(ctx context.Context, req *connect.Request[pb.GetPat
 	opsPath := filepath.Join(handlerDir, "handlers_crud_ops_gen.go")
 
 	checksums.ResetSkipWrite()
-	if err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, &checksums.FileChecksums{}); err != nil {
+	if _, err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, &checksums.FileChecksums{}); err != nil {
 		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
 	}
 	if ops, err := os.ReadFile(opsPath); err == nil && strings.Contains(string(ops), "func patientToProto(") {
@@ -364,7 +364,7 @@ func TestGenerateCRUDHandlers_CustomReadShapeKeepsHelperOnRegenerate(t *testing.
 	checksums.ResetSkipWrite()
 	cs := &checksums.FileChecksums{}
 	for run := 1; run <= 2; run++ {
-		if err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, cs); err != nil {
+		if _, err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, cs); err != nil {
 			t.Fatalf("run %d: GenerateCRUDHandlers() error = %v", run, err)
 		}
 		shim, err := os.ReadFile(filepath.Join(handlerDir, "handlers_crud.go"))

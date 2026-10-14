@@ -137,6 +137,16 @@ type pipelineContext struct {
 	// per-commit port 8050178.
 	SkipValidate bool
 
+	// SoftFailures names each step that failed as a warning (warnOrFail
+	// without --strict), for the closing summary.
+	SoftFailures []string
+
+	// ORMFailure is set when the ORM step failed, including when it was a
+	// warning (no --strict) and the run went on. Steps that consume the ORM
+	// read it to report themselves skipped, with the reason, rather than
+	// emit or claim output built on an ORM that was never written.
+	ORMFailure error
+
 	// SkipPreChecks bypasses the pre-codegen Step 0c contract-shape
 	// check (LintInternalContracts). Same motivation as SkipValidate:
 	// during parallel-lane work an unrelated `internal/<other-lane>/
@@ -1935,6 +1945,7 @@ func stepServiceStubs(ctx *pipelineContext) error {
 func stepInternalDBORM(ctx *pipelineContext) error {
 	entities, entErr := codegen.ParseEntityProtos(ctx.ProjectDir)
 	if entErr != nil {
+		ctx.ORMFailure = entErr
 		return ctx.warnOrFail("entity parsing for ORM generation", entErr)
 	}
 	if len(entities) == 0 {
@@ -1948,9 +1959,12 @@ func stepInternalDBORM(ctx *pipelineContext) error {
 		}
 	}
 	planEntities := codegen.EntityDefsToPlanEntities(entities)
-	if err := ctx.warnOrFail("ORM generation",
-		generator.GeneratePlanORM(ctx.ProjectDir, ctx.ModulePath, svcName, planEntities, ctx.Checksums)); err != nil {
-		return err
+	if err := generator.GeneratePlanORM(ctx.ProjectDir, ctx.ModulePath, svcName, planEntities, ctx.Checksums); err != nil {
+		// Recorded whether or not --strict makes it fatal: without --strict
+		// the run continues, and every step that consumes the ORM must say
+		// it was skipped instead of reporting output it never wrote.
+		ctx.ORMFailure = err
+		return ctx.warnOrFail("ORM generation", err)
 	}
 	// GeneratePlanORM retires a forge-written internal/db/types.go (the
 	// proto-entity era's alias file) itself — and only a forge-written one.
@@ -1977,6 +1991,17 @@ func stepInternalDBORM(ctx *pipelineContext) error {
 // nothing `go test ./...` runs. TestStepCRUDHandlers_IsFatalOnADefaultGenerate
 // now pins the fatality with no build tag.
 func stepCRUDHandlers(ctx *pipelineContext) error {
+	// CRUD wiring is written against the ORM the step above emits. When
+	// that step failed (a warning without --strict), generating wiring for
+	// an ORM that does not exist would either break the build or claim
+	// files nothing wrote; say it was skipped, and why, instead.
+	if ctx.ORMFailure != nil {
+		fmt.Println("\n🔧 Generating CRUD handlers...")
+		fmt.Println("  ⏭️  Skipped: the ORM step above failed, and CRUD wiring is written against the ORM it would have " +
+			"generated. Nothing under internal/handlers/*/handlers_crud*.go was written or changed; resolve the ORM " +
+			"failure and re-run `forge generate`.")
+		return nil
+	}
 	rows, err := ctx.rowServiceDefs()
 	if err != nil {
 		return err

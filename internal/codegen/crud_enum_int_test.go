@@ -118,7 +118,7 @@ func TestGenerateCRUDHandlers_IntegerEnumFilter(t *testing.T) {
 	entity.Fields = append([]EntityField{{Name: "id", GoName: "Id", ProtoType: "string", GoType: "string", Kind: FieldKindScalar}}, entity.Fields...)
 	entity.Columns = append([]EntityColumn{{Name: "id", Type: "string", NotNull: true, IsPK: true, DeclType: "TEXT"}}, entity.Columns...)
 
-	if err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, []EntityDef{entity}), "example.com/test", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, []EntityDef{entity}), "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
 	}
 	opsPath := filepath.Join(handlerDir, "handlers_crud_ops_gen.go")

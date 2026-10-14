@@ -77,7 +77,7 @@ func generateReadOnlyOps(t *testing.T, entity EntityDef) string {
 			},
 		},
 	}
-	if err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, []EntityDef{entity}), "example.com/test", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, []EntityDef{entity}), "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(handlerDir, "handlers_crud_ops_gen.go"))

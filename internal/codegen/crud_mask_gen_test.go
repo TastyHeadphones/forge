@@ -88,7 +88,7 @@ func TestGenerateCRUDHandlers_UpdateMaskWired(t *testing.T) {
 
 	svc := maskTestService(true)
 	entities := maskTestEntities()
-	if err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
 	}
 
@@ -142,7 +142,7 @@ func TestGenerateCRUDHandlers_NoMaskField_LegacyFullReplace(t *testing.T) {
 
 	svc := maskTestService(false)
 	entities := maskTestEntities()
-	if err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
 	}
 
@@ -179,7 +179,7 @@ func TestGenerateCRUDTests_MaskedAndUnmaskedExercised(t *testing.T) {
 
 	svc := maskTestService(true)
 	entities := maskTestEntities()
-	if err := GenerateCRUDTests(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDTests(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("GenerateCRUDTests() error = %v", err)
 	}
 
@@ -231,7 +231,7 @@ func TestGenerateCRUDTests_NoMask_NoFieldMaskImport(t *testing.T) {
 
 	svc := maskTestService(false)
 	entities := maskTestEntities()
-	if err := GenerateCRUDTests(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, nil); err != nil {
+	if _, err := GenerateCRUDTests(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("GenerateCRUDTests() error = %v", err)
 	}
 

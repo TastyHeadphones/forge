@@ -375,7 +375,7 @@ type Service struct {
 
 	checksums.ResetSkipWrite()
 	cs := &checksums.FileChecksums{}
-	if err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, cs); err != nil {
+	if _, err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, cs); err != nil {
 		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
 	}
 
