@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/contractcheck"
@@ -112,7 +113,19 @@ Additional maintainer/debug flags exist (pipeline narrowing, drift
 forensics, parallel-lane and migration escape hatches); run
 'forge generate --help-dev' to list them.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Generate is heavy (buf, the schema projection's postgres,
+			// a validating compile of every package), so it takes a host
+			// heavy slot (pkg/hostslot) BEFORE the project lock: a run
+			// holding the project lock must never wait for a slot, or a
+			// slot holder waiting for that lock (a gate's verify-generated)
+			// deadlocks with it. --plan does no work and takes none; --watch
+			// holds it for the first generate only, not the whole session.
 			if checkOnly {
+				release, err := cmdutil.HoldHeavySlot(cmd.Context(), cmd.ErrOrStderr())
+				if err != nil {
+					return err
+				}
+				defer release()
 				return runGenerateCheck()
 			}
 			if planOnly {
@@ -128,10 +141,14 @@ forensics, parallel-lane and migration escape hatches); run
 					Steps:           steps,
 				})
 			}
+			releaseSlot, err := cmdutil.HoldHeavySlot(cmd.Context(), cmd.ErrOrStderr())
+			if err != nil {
+				return err
+			}
 			// The explain scans run inside the lock too: a concurrent run
 			// finishing between the pre-scan and this run's pipeline would
 			// otherwise be labeled as this run's rewrites.
-			err := withGenerateLock(".", func() error {
+			err = withGenerateLock(".", func() error {
 				// Capture pre-pipeline body hashes (from the embedded
 				// markers) so --explain can diff against post-pipeline
 				// state to label rewritten vs idempotent.
@@ -177,6 +194,7 @@ forensics, parallel-lane and migration escape hatches); run
 				}
 				return pipeErr
 			})
+			releaseSlot()
 			if err != nil {
 				return err
 			}

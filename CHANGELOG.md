@@ -31,6 +31,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Host-wide heavy slots: `pkg/hostslot` and `forge slot`.** On a shared
+  machine every heavy job slows the others down — on a 16 vCPU / 32 GiB VM
+  `go build ./...` went from 36–50 s beside 0–3 other heavy jobs to 101–155 s
+  beside 8 or more, from memory-cgroup reclaim — so heavy work now queues for
+  one of N host slots instead of piling up. A slot is an OS file lock (a
+  crashed holder releases it); N defaults to min(CPUs / 4, memory GiB / 8),
+  read from the cgroup v2 limit when there is one, and `FORGE_HEAVY_SLOTS`
+  overrides it (`off` disables). `forge slot run --class heavy -- <cmd>` runs a
+  command in a slot and `forge slot status` names the holders and the queue.
+  `forge generate` and `forge lint` take a slot on their own, and the
+  scaffolded Taskfile runs `test` and `test:integration` under a `SLOT` prefix.
+  Anything already inside a slot (`FORGE_SLOT_HELD`, or an ancestor holding
+  one) never waits again, so nested heavy commands cannot deadlock. See
+  `migrations/v0.1.46`.
+
 - **`//forge:resolves-caller` declares a project's own caller resolver.** The
   `unscoped_auth` audit counted a handler as resolving the caller only when it
   reached forge's scaffolded seam, `middleware.GetUser` / `ClaimsFromContext`.
