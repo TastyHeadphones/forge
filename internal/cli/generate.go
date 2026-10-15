@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
+	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/contractcheck"
@@ -200,7 +202,7 @@ forensics, parallel-lane and migration escape hatches); run
 				}
 				return pipeErr
 			})
-			if err != nil {
+			if generateRunEndsCommand(err, watch) {
 				return err
 			}
 
@@ -225,7 +227,7 @@ forensics, parallel-lane and migration escape hatches); run
 	cmd.Flags().StringVar(&steps, "steps", "", "Narrow the pipeline to a named step preset. Valid values: \"bootstrap-only\" (used internally by 'forge scaffold worker'), \"mocks\" (regen both kinds of mock_gen.go — contract-derived and service-derived — after a contract.go or proto change; skips the Tier-1 drift guard since mocks cannot stomp Tier-1 files), \"harness\" (regen only each component's helpers_gen_test.go — NewTest<Svc>, With<Svc>Deps, the Stub<Field> doubles — after a Deps edit; a proto or migration change needs the full run), \"env-config\" (write only the config modules every env's KCL imports — config_gen.k, frontend_config_gen.k, each env's config.k — so the envs render; used internally by 'forge project rescaffold').")
 	// Loud-by-default architecture flags. See the per-flag fields on
 	// pipelineFlags for the rationale; runGeneratePlan + warnOrFail consume them.
-	cmd.Flags().BoolVar(&strict, "strict", false, "Promote pipeline warnings to fatal errors. Every 'Warning: ... failed' site that today logs and continues will abort the pipeline instead.")
+	cmd.Flags().BoolVar(&strict, "strict", false, "Stop at the first failed step and roll the tree back, instead of running the steps that do not depend on it. Either way a failed step makes generate exit non-zero.")
 	// -v works here. It used to be swallowed by a root PersistentFlag bound
 	// to a variable nobody read, so `forge generate -v` parsed cleanly and
 	// changed nothing — the long form was declared without a shorthand
@@ -264,6 +266,19 @@ forensics, parallel-lane and migration escape hatches); run
 	)
 
 	return cmd
+}
+
+// generateRunEndsCommand reports whether the first run's error ends
+// `forge generate`. Every failure does, except under --watch after a run
+// that reached the end with failed steps: its summary named them, the next
+// change re-runs everything, and a failed re-run inside the watch keeps
+// watching too. A run that aborted still ends the command, watch or not.
+func generateRunEndsCommand(err error, watch bool) bool {
+	if err == nil {
+		return false
+	}
+	var stepsFailed *factory.StepsFailedError
+	return !watch || !errors.As(err, &stepsFailed)
 }
 
 // runGeneratePipeline executes the unified generation pipeline.
@@ -362,13 +377,11 @@ type pipelineFlags struct {
 	// templatesOnlyStepAllow (generate_pipeline.go).
 	TemplatesOnly bool
 
-	// Strict promotes the historically-silent "Warning: ... failed"
-	// sites into hard pipeline-abort errors. Used by the warnOrFail
-	// helper on pipelineContext — steps that opt into the helper get
-	// strict semantics for free without per-site code changes once they
-	// adopt it. The default (false) preserves the historical lenient
-	// behavior so existing CI / local-iteration scripts don't suddenly
-	// fail on a goimports glitch or a missing protoc-gen-connect-openapi.
+	// Strict makes a step that fails through the warnOrFail helper stop
+	// the run (and roll the tree back) at that step. Without it the run
+	// continues with the steps that do not depend on the failed one,
+	// keeps their writes, and still fails at the end with a
+	// *factory.StepsFailedError — a failed step never exits 0 either way.
 	Strict bool
 
 	// Verbose toggles per-step skip messages. The generate pipeline runs
@@ -594,19 +607,24 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	fmt.Println()
 	printGenerateOutcome(os.Stdout, summary, outside, flags, len(steps), totalSteps)
 	printSoftFailures(os.Stdout, ctx.SoftFailures)
+	// A failed step fails the run, even though the run went on past it and
+	// its other writes stand: exit 0 is read as success by every agent,
+	// script and CI gate, and this run did not produce everything it should.
+	if len(ctx.SoftFailures) > 0 {
+		return &factory.StepsFailedError{Steps: slices.Clone(ctx.SoftFailures)}
+	}
 	return nil
 }
 
 // printSoftFailures closes a run that continued past failed steps by naming
-// them under the completion line. Each was printed as a warning where it
-// happened, often hundreds of lines up; a completion line alone reads as a
-// clean run.
+// them under the completion line. Each was printed where it happened, often
+// hundreds of lines up; a completion line alone reads as a clean run.
 func printSoftFailures(w io.Writer, failed []string) {
 	if len(failed) == 0 {
 		return
 	}
-	fmt.Fprintf(w, "⚠️  %d step(s) FAILED and the run continued without their output: %s. Their warnings are above; "+
-		"steps that depend on them said they were skipped. `--strict` makes a step failure fatal.\n",
+	fmt.Fprintf(w, "❌ %d step(s) FAILED and the run continued without their output: %s. Their errors are above; "+
+		"steps that depend on them said they were skipped. The run exits non-zero; `--strict` stops it at the first failed step instead.\n",
 		len(failed), strings.Join(failed, ", "))
 }
 
