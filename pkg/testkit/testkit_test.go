@@ -2,6 +2,7 @@ package testkit_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"io"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/reliant-labs/forge/pkg/auth"
+	"github.com/reliant-labs/forge/pkg/orm"
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
@@ -453,5 +455,35 @@ func TestNewConnectClient_ServesTheRegisteredMuxAndBuildsAClient(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if string(body) != "ok" {
 		t.Fatalf("registered handler did not serve; body = %q", body)
+	}
+}
+
+// Two tests over the same migrations get independent databases, and the second
+// does not replay the chain (it is cloned from the first's template).
+func TestNewMigratedPostgresDB_ClonesAreIsolated(t *testing.T) {
+	mfs := fstest.MapFS{
+		"migrations/0001_t.up.sql": {Data: []byte(`CREATE TABLE clone_probe (v int); INSERT INTO clone_probe VALUES (1);`)},
+	}
+	a := testkit.NewMigratedPostgresDB(t, mfs)
+	b := testkit.NewMigratedPostgresDB(t, mfs)
+	for name, db := range map[string]orm.Context{"a": a, "b": b} {
+		if _, err := db.(interface{ DB() *sql.DB }).DB().Exec(`INSERT INTO clone_probe VALUES (2)`); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	var n int
+	if err := b.(interface{ DB() *sql.DB }).DB().QueryRow(`SELECT count(*) FROM clone_probe`).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("clone b saw %d rows (err=%v), want its own 2", n, err)
+	}
+}
+
+// An edited migration must not be served from the template of the old one.
+func TestNewMigratedPostgresDB_ChangedMigrationsGetANewTemplate(t *testing.T) {
+	v1 := fstest.MapFS{"migrations/0001_t.up.sql": {Data: []byte(`CREATE TABLE evolve (a int);`)}}
+	v2 := fstest.MapFS{"migrations/0001_t.up.sql": {Data: []byte(`CREATE TABLE evolve (a int, b int);`)}}
+	testkit.NewMigratedPostgresDB(t, v1)
+	db := testkit.NewMigratedPostgresDB(t, v2).(interface{ DB() *sql.DB }).DB()
+	if _, err := db.Exec(`INSERT INTO evolve (a, b) VALUES (1, 2)`); err != nil {
+		t.Fatalf("the edited migration was not applied (stale template served): %v", err)
 	}
 }

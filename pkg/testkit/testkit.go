@@ -48,7 +48,11 @@ package testkit
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -128,13 +132,24 @@ func NewPostgresDB(t *testing.T) orm.Context {
 // file).
 func NewMigratedPostgresDB(t *testing.T, migrations fs.FS) orm.Context {
 	t.Helper()
-	db, cleanup, err := pgtest.New()
+	key, err := migrationsKey(migrations)
 	if err != nil {
-		t.Fatalf("open test postgres: %v", err)
+		t.Fatalf("hash embedded migrations: %v", err)
 	}
-	if err := applyUpMigrations(db, migrations); err != nil {
-		cleanup()
-		t.Fatalf("apply embedded migrations: %v", err)
+	// The migrations are applied ONCE per server (pgtest.NewFromTemplate) and each
+	// test gets a clone, so N tests cost one replay of the chain instead of N.
+	db, cleanup, err := pgtest.NewFromTemplate(key, func(db *sql.DB) error {
+		if err := applyUpMigrations(db, migrations); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		var me *migrationError
+		if errors.As(err, &me) {
+			t.Fatalf("apply embedded migrations: %v", err)
+		}
+		t.Fatalf("open test postgres: %v", err)
 	}
 	client, err := orm.NewClientWithDB(db, "postgres")
 	if err != nil {
@@ -146,6 +161,29 @@ func NewMigratedPostgresDB(t *testing.T, migrations fs.FS) orm.Context {
 		cleanup()
 	})
 	return client
+}
+
+// migrationsKey names a migration set for pgtest.NewFromTemplate: the file names
+// and bytes of every *.up.sql, so any edit, addition or rename builds a new
+// template and a stale one is never served.
+func migrationsKey(migrations fs.FS) (string, error) {
+	h := sha256.New()
+	err := fs.WalkDir(migrations, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".up.sql") {
+			return err
+		}
+		b, err := fs.ReadFile(migrations, p)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(h, "%s\x00%d\x00", p, len(b))
+		h.Write(b)
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil))[:20], nil
 }
 
 // applyUpMigrations runs every *.up.sql file in migrations against db in
