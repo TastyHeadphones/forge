@@ -342,7 +342,7 @@ func newDeployCmd() *cobra.Command {
 // how they are applied — and a 229-line constructor made that invisible.
 func registerDeployApplyFlags(cmd *cobra.Command, f *deployCmdFlags) {
 	flags := cmd.Flags()
-	flags.StringArrayVarP(&f.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim — forge does not interpret the value. List an env's options with `forge env options <env>`.")
+	flags.StringArrayVarP(&f.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim — forge does not interpret the value. List an env's options with 'forge env options <env>'.")
 	flags.StringVar(&f.tag, "tag", "", "Override the image tag (priority: --tag > .forge/state/build-<env>.json > git describe --tags --always --dirty)")
 	flags.BoolVar(&f.dryRun, "dry-run", false, "Print manifests without applying (env-cluster guard still runs)")
 	flags.StringVar(&f.namespace, "namespace", "", "Override namespace from environment config")
@@ -469,7 +469,7 @@ func registerPromoteFlags(cmd *cobra.Command, f *promoteCmdFlags) {
 
 	// The health gate, opt-OUT.
 	flags.BoolVar(&f.noWait, "no-wait", false,
-		"Record and apply, but do NOT wait for health. Gate on it later with `forge env status <env> --wait`")
+		"Record and apply, but do NOT wait for health. Gate on it later with 'forge env status <env> --wait'")
 	flags.DurationVar(&f.timeout, "timeout", 0, "Whole health-gate budget (default 15m hosted, 5m per resource self-managed)")
 	flags.BoolVar(&f.failFast, "fail-fast", false, "Exit 1 on the first DEGRADED observation instead of waiting out --timeout")
 	flags.BoolVar(&f.wait, "wait", false,

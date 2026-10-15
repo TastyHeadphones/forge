@@ -220,7 +220,7 @@ func newEnvStatusCmd() *cobra.Command {
 	// cannot declare both. The help names both numbers so the default
 	// shown as "0s" is not mistaken for "no timeout".
 	flags.DurationVar(&timeout, "timeout", 0,
-		fmt.Sprintf("Maximum time to spend reading the cluster (default %s). With --wait this is the whole wait budget instead (default %s); `--wait --timeout 0` reads the phase ONCE and never blocks",
+		fmt.Sprintf("Maximum time to spend reading the cluster (default %s). With --wait this is the whole wait budget instead (default %s); '--wait --timeout 0' reads the phase ONCE and never blocks",
 			defaultEnvStatusReleaseTimeout, envWaitDefaultTimeout))
 	flags.BoolVar(&verifyClusters, "verify", false,
 		"All-environments view only: also read each environment's cluster and reconcile it against the ledger (slow, needs credentials)")

@@ -233,3 +233,39 @@ func pkgGoVersion(t *testing.T, forgeRoot string) string {
 	t.Fatal("forge's go.mod has no go directive")
 	return ""
 }
+
+// TestWithPlaceholderDepsSaysAConfigMessageIsNotInert: WithPlaceholderDeps
+// was documented as filling each field with a "never-initialised stand-in",
+// but for a generated config message new(T) is a valid, empty config the
+// service runs on — reliant's model endpoints read it as self-hosted, the
+// permissive network policy. The generated doc says so.
+func TestWithPlaceholderDepsSaysAConfigMessageIsNotInert(t *testing.T) {
+	root := writeHarnessFixture(t, map[string]string{
+		"internal/handlers/api/service.go": `package api
+
+import (
+	"database/sql"
+	"log/slog"
+)
+
+type Deps struct {
+	Logger *slog.Logger
+	SQL    *sql.DB
+}
+
+type Service struct{ deps Deps }
+
+func New(deps Deps) (*Service, error) { return &Service{deps: deps}, nil }
+`,
+	})
+	got := readHarness(t, root, "internal/handlers/api",
+		[]ServiceDef{{Name: "APIService", ModulePath: "example.com/proj"}}, nil)
+	if !strings.Contains(got, "func WithPlaceholderDeps()") {
+		t.Fatalf("no WithPlaceholderDeps in the harness:\n%s", got)
+	}
+	for _, want := range []string{"generated config message", "valid, EMPTY config"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("WithPlaceholderDeps' doc does not say %q:\n%s", want, got)
+		}
+	}
+}
