@@ -492,13 +492,13 @@ func TestHostedOnlyDashboardsAreNotWrittenLocally(t *testing.T) {
 		}
 	}
 	// ...but they are in the spec, and so in the bundle.
-	raw, err := os.ReadFile(filepath.Join(dir, SpecFile))
+	raw, err := os.ReadFile(filepath.Join(dir, ProjectSpecFile))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range []string{`"id": "workloads"`, `"id": "releases"`} {
 		if !strings.Contains(string(raw), id) {
-			t.Errorf("%s is not in dashboard-spec_gen.json", id)
+			t.Errorf("%s is not in %s", id, ProjectSpecFile)
 		}
 	}
 }

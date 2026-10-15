@@ -264,6 +264,6 @@ without forwarding. Re-enabling takes effect on the next deploy.
 
 - Run `forge env status dev` after `forge env up dev` to verify observability before investigating issues.
 - The HyperDX port is declared in `deploy/kcl/dev/main.k` and listed by `forge env up dev` / `forge env status dev`.
-- `deploy/observability/otel-collector.yaml` is yours: forge scaffolds it once and never rewrites it. In `deploy/observability/dashboards/` only `*_gen.json` (and `saved-searches_gen.ndjson`) are forge's; everything else there is yours.
+- `deploy/observability/otel-collector.yaml` is yours: forge scaffolds it once and never rewrites it. In `deploy/observability/dashboards/` only `*_gen.json` and `*_gen.ndjson` are forge's; everything else there is yours.
 - Use the `logevents.go` helpers for structured log events — do not create ad-hoc attribute keys.
 - Trace IDs propagate automatically via OpenTelemetry context — no manual instrumentation needed.

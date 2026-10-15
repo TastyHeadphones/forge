@@ -2,18 +2,24 @@ package obsdash
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 )
 
 // AlertDefaultsVersion identifies the serialized shape of AlertDefaultsFile.
-const AlertDefaultsVersion = "forge.alert-defaults/v1"
+// v2 dropped input.services: each service's entry is its ServicePart's Alert
+// (see ServicePart for why), and ReadAlertInput puts them back.
+const AlertDefaultsVersion = "forge.alert-defaults/v2"
 
 // AlertDefaultsFile is the project-relative file `forge generate` writes: the
-// service metadata the default alert rules are derived from, plus the catalog
-// of defaults with their tunable parameters. `forge env shape` reads it back to
+// project metadata the default alert rules are derived from, plus the catalog
+// of defaults with their tunable parameters. The per-service metadata is in
+// each ServicePart. `forge env shape` reads both back (ReadAlertInput) to
 // resolve the defaults for one env (the SQL names the env, so a default is
 // rendered per env, not once per project). It sits beside the dashboard spec,
 // not in the dashboards directory the HyperDX provisioner scans.
@@ -37,8 +43,9 @@ type AlertService struct {
 // AlertInput is what the defaults are derived from.
 type AlertInput struct {
 	Project string `json:"project"`
-	// Services are the project's services that have at least one rpc.
-	Services []AlertService `json:"services"`
+	// Services are the project's services that have at least one rpc. The
+	// generated file leaves them out (each is in its ServicePart).
+	Services []AlertService `json:"services,omitempty"`
 	// FrontendService is the browser SDK's service.name ("<project>-frontend"),
 	// empty when the project has no web frontend.
 	FrontendService string `json:"frontend_service,omitempty"`
@@ -368,16 +375,20 @@ func AlertDefaults(in AlertInput) AlertDefaultsDoc {
 	return doc
 }
 
-// MarshalAlertDefaults is the file's bytes.
+// MarshalAlertDefaults is the file's bytes: the catalog for in, with the
+// services left to their ServiceParts.
 func MarshalAlertDefaults(in AlertInput) ([]byte, error) {
-	b, err := json.MarshalIndent(AlertDefaults(in), "", "  ")
+	doc := AlertDefaults(in)
+	doc.Input.Services = nil
+	b, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return nil, err
 	}
 	return append(b, '\n'), nil
 }
 
-// ParseAlertDefaults reads the generated file.
+// ParseAlertDefaults reads the generated file: the input without its
+// services (ReadAlertInput adds them).
 func ParseAlertDefaults(b []byte) (AlertInput, error) {
 	var doc AlertDefaultsDoc
 	if err := json.Unmarshal(b, &doc); err != nil {
@@ -387,6 +398,34 @@ func ParseAlertDefaults(b []byte) (AlertInput, error) {
 		return AlertInput{}, fmt.Errorf("%s: version %q, this forge reads %q: run `forge generate`", AlertDefaultsFile, doc.Version, AlertDefaultsVersion)
 	}
 	return doc.Input, nil
+}
+
+// ReadAlertInput reads the alert defaults' input forge generate last wrote
+// under projectDir: AlertDefaultsFile, with each ServicePart's Alert as its
+// services. ok is false when there is no AlertDefaultsFile — a project that
+// has not run `forge generate` since alerting landed has no defaults, which
+// is not an error.
+func ReadAlertInput(projectDir string) (in AlertInput, ok bool, err error) {
+	b, err := os.ReadFile(filepath.Join(projectDir, filepath.FromSlash(AlertDefaultsFile)))
+	if errors.Is(err, os.ErrNotExist) {
+		return AlertInput{}, false, nil
+	}
+	if err != nil {
+		return AlertInput{}, false, err
+	}
+	if in, err = ParseAlertDefaults(b); err != nil {
+		return AlertInput{}, false, err
+	}
+	_, parts, _, err := readParts(projectDir)
+	if err != nil {
+		return AlertInput{}, false, err
+	}
+	in.Services = []AlertService{}
+	for _, p := range parts {
+		in.Services = append(in.Services, p.Alert)
+	}
+	sort.Slice(in.Services, func(i, j int) bool { return in.Services[i].Name < in.Services[j].Name })
+	return in, true, nil
 }
 
 // AlertSkip is a default left out of an env's rules, and why.

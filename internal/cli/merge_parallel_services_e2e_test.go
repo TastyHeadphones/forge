@@ -16,13 +16,19 @@ import (
 // service through `forge generate`, then merged with `git merge`.
 //
 // Every file forge generates or keeps state in merges without a person —
-// the birth ledger, the JSON outputs' hashes, the descriptor, the aggregated
-// dashboards, alerts and saved searches, the generated service mounts. The
-// one file left conflicting is internal/app/compose.go, which is the
-// PROJECT's (forge reconciles its component set but never owns it): taking
-// either side and running `forge generate` re-injects the other side's
-// component. The test pins that set exactly, so a new generated file that
-// starts conflicting fails here.
+// the birth ledger, the JSON outputs' hashes, the descriptor, the
+// observability outputs, the generated service mounts. The one file left
+// conflicting is internal/app/compose.go, which is the PROJECT's (forge
+// reconciles its component set but never owns it): taking either side and
+// running `forge generate` re-injects the other side's component. The test
+// pins that set exactly, so a new generated file that starts conflicting
+// fails here.
+//
+// The observability outputs are one file per service, so the merge alone
+// is their render: the generate after it must not touch deploy/observability.
+// When they were whole-project aggregates the merge kept one side, and every
+// rebase of a reliant lane was followed by a ~1,500-line regenerate and an
+// amend (F16).
 func TestE2EParallelServiceBranchesMerge(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
@@ -120,21 +126,24 @@ message Ping%[2]sResponse {
 	mustGit("add", "-A")
 	mustGit("commit", "-q", "--no-verify", "--no-edit")
 
-	// forge generate renders both sides' inputs over the merged tree.
+	// forge generate renders both sides' inputs over the merged tree, and
+	// finds the observability outputs already rendered.
 	runCmd(t, projectDir, forgeBin, "generate")
+	if st := strings.TrimSpace(mustGit("status", "--porcelain", "--", "deploy/observability")); st != "" {
+		t.Errorf("generate after the merge rewrote observability outputs the merge should already have rendered:\n%s", st)
+	}
 	compose := readFileE2E(t, filepath.Join(projectDir, "internal", "app", "compose.go"))
 	for _, want := range []string{"alpha.New(", "beta.New("} {
 		if !strings.Contains(compose, want) {
 			t.Errorf("compose.go after generate lacks %s", want)
 		}
 	}
-	for _, rel := range []string{"deploy/observability/alert-defaults_gen.json", "deploy/observability/dashboard-spec_gen.json", "internal/app/mounts_services_gen.go"} {
-		body := readFileE2E(t, filepath.Join(projectDir, rel))
-		for _, svc := range []string{"alpha", "beta"} {
-			if !strings.Contains(strings.ToLower(body), svc) {
-				t.Errorf("%s after generate does not carry %s", rel, svc)
-			}
+	body := readFileE2E(t, filepath.Join(projectDir, "internal", "app", "mounts_services_gen.go"))
+	for _, svc := range []string{"alpha", "beta"} {
+		if !strings.Contains(strings.ToLower(body), svc) {
+			t.Errorf("mounts_services_gen.go after generate does not carry %s", svc)
 		}
+		readFileE2E(t, filepath.Join(projectDir, "deploy", "observability", "spec", "service-"+svc+"_gen.json"))
 	}
 	commit("regenerate")
 

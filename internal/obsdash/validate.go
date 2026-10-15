@@ -77,7 +77,7 @@ var idPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 
 // ParseDashboard decodes and validates one dashboard file: a single Dashboard
 // object in the renderer-neutral spec vocabulary (the objects of
-// dashboard-spec_gen.json's "dashboards" array). name is only used in errors.
+// the spec's dashboards). name is only used in errors.
 //
 // Every problem found is reported, each with the line and column of the
 // offending value (or, for an unknown field, of its key). Validation covers

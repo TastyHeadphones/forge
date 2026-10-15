@@ -2,8 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 
 	"github.com/reliant-labs/forge/internal/obsdash"
@@ -44,19 +42,11 @@ type AlertRouteEntity struct {
 	Continue bool              `json:"continue"`
 }
 
-// alertDefaultsInput reads the project's generated alert-defaults file. A
+// alertDefaultsInput reads the project's generated alert defaults. A
 // project that has not run `forge generate` since alerting landed has none:
 // that is no defaults, not an error, because the env's own rules still stand.
 func alertDefaultsInput(projectDir string) (obsdash.AlertInput, bool, error) {
-	b, err := os.ReadFile(filepath.Join(projectDir, filepath.FromSlash(obsdash.AlertDefaultsFile)))
-	if os.IsNotExist(err) {
-		return obsdash.AlertInput{}, false, nil
-	}
-	if err != nil {
-		return obsdash.AlertInput{}, false, err
-	}
-	in, err := obsdash.ParseAlertDefaults(b)
-	return in, err == nil, err
+	return obsdash.ReadAlertInput(projectDir)
 }
 
 // resolveShapeAlerts is the env's alert rules as the release shape records

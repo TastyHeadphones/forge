@@ -1,17 +1,7 @@
 {
-  "version": "forge.alert-defaults/v1",
+  "version": "forge.alert-defaults/v2",
   "input": {
     "project": "shop",
-    "services": [
-      {
-        "name": "billing",
-        "rpc_service": "billing.v1.BillingService"
-      },
-      {
-        "name": "orders",
-        "rpc_service": "orders.v1.OrdersService"
-      }
-    ],
     "frontend_service": "shop-frontend"
   },
   "defaults": [

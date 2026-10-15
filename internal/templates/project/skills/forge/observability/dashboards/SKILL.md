@@ -15,8 +15,12 @@ one service.
 | `deploy/observability/dashboards/<project>-overview_gen.json` | requests, server errors, p95/p99, request rate and error rate per service, RED table, top errors, DB latency, recent error logs                                                                  |
 | `.../<project>-service-<svc>_gen.json`                        | per service: a requests / error-rate / latency row for EVERY rpc, a RED-by-rpc table, DB calls, Go runtime (memory, GC goal, goroutines, allocation), error logs and logs scoped to that service |
 | `.../<project>-frontend_gen.json`                             | with a web frontend: JS errors, sessions, page views, failed API calls, LCP/INP/CLS p75, page-load percentiles, browser API latency and calls by URL                                             |
-| `.../saved-searches_gen.ndjson`                               | one error-log search per service                                                                                                                                                                 |
-| `deploy/observability/dashboard-spec_gen.json`                | the renderer-neutral model all of the above come from                                                                                                                                            |
+| `.../<project>-service-<svc>_gen.ndjson`                      | per service: its error-log saved search                                                                                                                                                          |
+| `deploy/observability/spec/*_gen.json`                        | the renderer-neutral model all of the above come from: `project_gen.json` and one `service-<svc>_gen.json` per service                                                                           |
+
+Every per-service output is its own file, so two branches that each add a
+service merge without a conflict, and the merge is already what `forge generate`
+writes.
 
 Every dashboard has `service.name` and `deployment.environment.name` filters.
 
@@ -52,13 +56,13 @@ exists forge stops writing (and removes a pristine) `x_gen.json`. Any other
 
 | In the bundle                                      | What                                                                                                                        |
 | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `observability/dashboards/<project>-<id>_gen.json` | each dashboard of `dashboard-spec_gen.json`, plus `<project>-custom-metrics_gen.json` drawn from the build's metrics schema |
+| `observability/dashboards/<project>-<id>_gen.json` | each dashboard of the spec, plus `<project>-custom-metrics_gen.json` drawn from the build's metrics schema                   |
 | `observability/dashboards/<name>.json`             | a dashboard you own                                                                                                         |
 | `observability/metrics-schema.json`                | the schema, `forge.metrics/v1`                                                                                              |
 
 They ride in the manifests layer, outside every `manifests/<cluster>/` tree, so nothing is applied from them.
 
-A file you own is one dashboard object in the spec vocabulary (an `id`, a `title`, `filters`, `annotations` and a `panels` array; the objects of `dashboard-spec_gen.json`'s `dashboards`). Name it like a generated dashboard to replace that one: `shop-overview.json` replaces `shop-overview_gen.json`. A file with `tiles` is HyperDX's format; it is for the local stack, ships nowhere and replaces nothing. Ad-hoc console edits are saved as code by writing the dashboard JSON here and committing it.
+A file you own is one dashboard object in the spec vocabulary (an `id`, a `title`, `filters`, `annotations` and a `panels` array; the shape of a `dashboard` in `spec/service-<svc>_gen.json`). Name it like a generated dashboard to replace that one: `shop-overview.json` replaces `shop-overview_gen.json`. A file with `tiles` is HyperDX's format; it is for the local stack, ships nowhere and replaces nothing. Ad-hoc console edits are saved as code by writing the dashboard JSON here and committing it.
 
 Every file is validated at the cut, and `forge observe dashboards check` runs the same checks and lists what would ship. Errors read `deploy/observability/dashboards/x.json:12:7: panels[2].kind: "cube" is not one of: number, line, table, search`.
 
@@ -68,7 +72,7 @@ The _Workloads_ dashboard (CPU/memory against requests and limits, restarts and 
 
 ## Alerts
 
-Dashboards embed no alerts (HyperDX 2.40 validates an alert declared in a provisioned file and never evaluates it, hyperdx PR #3233). Alerting is declared in KCL instead: `forge.AlertRule`, with generated defaults (telemetry, customer-metadata and platform) in `alert-defaults_gen.json`. Depth: `observability/alerts`.
+Dashboards embed no alerts (HyperDX 2.40 validates an alert declared in a provisioned file and never evaluates it, hyperdx PR #3233). Alerting is declared in KCL instead: `forge.AlertRule`, with generated defaults (telemetry, customer-metadata and platform) in `alert-defaults_gen.json`, and each service's entry in its `spec/service-<svc>_gen.json`. Depth: `observability/alerts`.
 
 ## The seam: spec, then renderer
 

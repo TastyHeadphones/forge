@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/checksums"
 )
 
 func TestAlertInputFollowsTheDashboardInput(t *testing.T) {
@@ -161,19 +163,34 @@ func TestDefaultsFollowTheProject(t *testing.T) {
 	}
 }
 
+// TestAlertDefaultsFileRoundTrips: what Write puts on disk — the defaults
+// file without its services, and each service's ServicePart — reads back as
+// the input it was written from. The file itself lists no service, so two
+// branches that each add one do not both change it.
 func TestAlertDefaultsFileRoundTrips(t *testing.T) {
 	b, err := MarshalAlertDefaults(AlertInputOf(fixture()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := ParseAlertDefaults(b)
-	if err != nil {
+	if strings.Contains(string(b), `"services"`) || strings.Contains(string(b), "OrdersService") {
+		t.Errorf("%s lists services; they belong in each ServicePart:\n%s", AlertDefaultsFile, b)
+	}
+
+	dir := t.TempDir()
+	if _, err := Write(dir, fixture(), &checksums.FileChecksums{}); err != nil {
 		t.Fatal(err)
+	}
+	got, ok, err := ReadAlertInput(dir)
+	if err != nil || !ok {
+		t.Fatalf("ReadAlertInput = ok %v, err %v", ok, err)
 	}
 	want, _ := json.Marshal(AlertInputOf(fixture()))
 	have, _ := json.Marshal(got)
 	if string(want) != string(have) {
 		t.Errorf("round trip changed the input:\n%s\n%s", want, have)
+	}
+	if _, ok, err := ReadAlertInput(t.TempDir()); ok || err != nil {
+		t.Errorf("a project with no defaults file: ok %v, err %v; want no defaults and no error", ok, err)
 	}
 	if _, err := ParseAlertDefaults([]byte(`{"version":"forge.alert-defaults/v0"}`)); err == nil {
 		t.Error("an unknown file version must be refused")

@@ -24,10 +24,10 @@ func newObserveDashboardsCmd() *cobra.Command {
 		Long: `Validate every dashboard the next release bundle would carry, exactly as a release
 cut does, and print what would ship.
 
-Generated dashboards come from deploy/observability/dashboard-spec_gen.json (and the
+Generated dashboards come from the spec in deploy/observability/spec/ (and the
 Custom metrics dashboard, when bin/observability/metrics-schema.json exists). A file
 you own in deploy/observability/dashboards/ is a renderer-neutral dashboard object
-(the objects of the spec's "dashboards" array, with a "panels" array); one named like a
+(the shape of the spec's dashboards, with a "panels" array); one named like a
 generated dashboard (shop-overview.json for shop-overview_gen.json) replaces it. A
 HyperDX-format file (with "tiles") is for the local HyperDX only and is not shipped.
 

@@ -2524,7 +2524,7 @@ func announceDerivedObservability(w io.Writer, ctx *pipelineContext) {
 // observabilityOutputsExist reports whether any generated observability file
 // is already on disk.
 func observabilityOutputsExist(root string) bool {
-	for _, rel := range []string{obsdash.SpecFile, obsdash.AlertDefaultsFile, obsdash.SavedSearchesFile} {
+	for _, rel := range []string{obsdash.ProjectSpecFile, obsdash.AlertDefaultsFile, obsdash.LegacySpecFile} {
 		if _, err := os.Stat(filepath.Join(root, rel)); err == nil {
 			return true
 		}
