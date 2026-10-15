@@ -33,8 +33,9 @@ it. `forge observe dashboards check` validates them and lists what would ship.
 Tiles name their source (`Logs`, `Traces`, `Metrics`); the local stack binds
 the names to this database's source ids for you.
 
-`saved-searches_gen.ndjson` is the generated saved searches. The renderer-neutral
-model they and the dashboards come from is `../dashboard-spec_gen.json`.
-Alerts are not provisioned here (HyperDX 2.40 never evaluates a file-declared
-alert); they are `forge.AlertRule`s in your env's KCL, with generated defaults
-in `../alert-defaults_gen.json`.
+Each `*_gen.ndjson` is one service's generated saved searches. The
+renderer-neutral model they and the dashboards come from is `../spec/`: one
+file for the project and one per service, so two branches that each add a
+service never change the same file. Alerts are not provisioned here (HyperDX
+2.40 never evaluates a file-declared alert); they are `forge.AlertRule`s in
+your env's KCL, with generated defaults in `../alert-defaults_gen.json`.

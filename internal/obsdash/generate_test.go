@@ -3,6 +3,7 @@ package obsdash
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/checksums"
@@ -28,7 +29,7 @@ func TestWriteIsIdempotentHonoursOverridesAndRetiresStaleFiles(t *testing.T) {
 	if want == "" {
 		t.Fatal("overview not written")
 	}
-	for _, rel := range []string{SpecFile, SavedSearchesFile} {
+	for _, rel := range []string{ProjectSpecFile, ServiceSpecFile("orders"), SavedSearchesFile("shop", "orders")} {
 		if read(rel) == "" {
 			t.Errorf("%s not written", rel)
 		}
@@ -86,4 +87,61 @@ func TestWriteIsIdempotentHonoursOverridesAndRetiresStaleFiles(t *testing.T) {
 		t.Error("custom.json was removed")
 	}
 	_ = first
+}
+
+// TestWriteRetiresTheWholeProjectAggregates: the spec and saved searches
+// used to be one file each for every service. Write now writes them per
+// service, and removes the old aggregates forge wrote — a pristine one only;
+// one the user edited stays.
+func TestWriteRetiresTheWholeProjectAggregates(t *testing.T) {
+	dir := t.TempDir()
+	cs := &checksums.FileChecksums{}
+	legacySearches := DashboardsDir + "/saved-searches_gen.ndjson"
+	for _, rel := range []string{LegacySpecFile, legacySearches} {
+		if _, err := checksums.WriteGeneratedFile(dir, rel, []byte("{}\n"), cs, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := Write(dir, fixture(), cs); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{LegacySpecFile, legacySearches} {
+		if _, err := os.Stat(filepath.Join(dir, rel)); !os.IsNotExist(err) {
+			t.Errorf("%s survived Write: %v", rel, err)
+		}
+	}
+
+	// A hand-edited aggregate is the user's.
+	if _, err := checksums.WriteGeneratedFile(dir, LegacySpecFile, []byte("{}\n"), cs, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, LegacySpecFile), []byte(`{"mine":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Write(dir, fixture(), cs); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, LegacySpecFile)); err != nil {
+		t.Errorf("a hand-edited %s was removed: %v", LegacySpecFile, err)
+	}
+}
+
+// TestReadSpecIsBuild: the parts Write puts on disk assemble into exactly
+// the Spec Build derives — the model the bundle and the console read.
+func TestReadSpecIsBuild(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Write(dir, fixture(), &checksums.FileChecksums{}); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := ReadSpec(dir)
+	if err != nil || !ok {
+		t.Fatalf("ReadSpec = ok %v, err %v", ok, err)
+	}
+	want := Build(fixture())
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ReadSpec differs from Build:\ngot  %+v\nwant %+v", got, want)
+	}
+	if _, ok, err := ReadSpec(t.TempDir()); ok || err != nil {
+		t.Errorf("no spec on disk: ok %v, err %v; want none and no error", ok, err)
+	}
 }

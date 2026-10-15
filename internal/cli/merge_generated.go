@@ -26,11 +26,14 @@ package cli
 //     disowned.json) merge key by key (checksums.MergeStateFile), so two
 //     lanes' births and hashes never conflict;
 //   - a forge render both sides changed whose line merge still conflicts —
-//     the aggregated dashboard spec, the service mount list — is not content
-//     a person resolves either. When both sides are forge's own renders, the
-//     driver keeps this side's (still a verifiable render) and the next
-//     `forge generate` renders the merged inputs over it. A side carrying a
-//     hand edit keeps the conflict, so nothing human is dropped.
+//     the service mount list — is not content a person resolves either.
+//     When both sides are forge's own renders, the driver keeps this side's
+//     (still a verifiable render) and the next `forge generate` renders the
+//     merged inputs over it. A side carrying a hand edit keeps the conflict,
+//     so nothing human is dropped. Outputs that need no such fallback are
+//     written one file per service instead (the observability spec, its
+//     saved searches and alert inputs: obsdash.ServicePart), which merges
+//     into the render itself.
 //
 // Wiring is per clone, like core.hooksPath, and needs nothing committed:
 //   - every forge command run in the project (re)writes the driver's command

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,8 @@ import (
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
+// writeAlertDefaults writes what generate writes for in: the defaults file,
+// and a ServicePart per service carrying its Alert.
 func writeAlertDefaults(t *testing.T, in obsdash.AlertInput) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -17,12 +20,27 @@ func writeAlertDefaults(t *testing.T, in obsdash.AlertInput) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, filepath.FromSlash(obsdash.AlertDefaultsFile))
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	files := map[string][]byte{obsdash.AlertDefaultsFile: b}
+	project, err := json.Marshal(obsdash.ProjectPart{Version: obsdash.PartsVersion, Project: in.Project})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, b, 0o644); err != nil {
-		t.Fatal(err)
+	files[obsdash.ProjectSpecFile] = project
+	for _, s := range in.Services {
+		part, err := json.Marshal(obsdash.ServicePart{Version: obsdash.PartsVersion, Service: s.Name, Alert: s})
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[obsdash.ServiceSpecFile(s.Name)] = part
+	}
+	for rel, body := range files {
+		path := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, body, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return dir
 }

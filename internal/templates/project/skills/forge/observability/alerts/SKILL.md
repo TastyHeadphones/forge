@@ -70,7 +70,7 @@ The expr check is syntactic. The evaluator re-checks it and runs it read-only wi
 
 ## The built-in alerts
 
-`forge generate` writes `deploy/observability/alert-defaults_gen.json` (the services and frontend the defaults are derived from, the same input as the dashboards). `forge env shape <env>` renders them per env and records them with `source: default`. Every built-in has an id; **one `forge.Alerts.defaults` map tunes or disables all of them**, whichever signal they read.
+`forge generate` writes `deploy/observability/alert-defaults_gen.json` (the project and frontend the defaults are derived from, and the catalog) and each service's entry in `deploy/observability/spec/service-<svc>_gen.json` — the same input as the dashboards, one file per service so parallel branches never conflict. `forge env shape <env>` renders them per env and records them with `source: default`. Every built-in has an id; **one `forge.Alerts.defaults` map tunes or disables all of them**, whichever signal they read.
 
 | id | alert | signal | fires when (default) | disable |
 |---|---|---|---|---|

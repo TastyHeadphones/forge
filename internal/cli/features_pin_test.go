@@ -51,7 +51,7 @@ func TestObservability_FirstDerivedEmissionIsAnnounced(t *testing.T) {
 	}
 
 	// Once its outputs exist, every later run is silent.
-	writeTreeFileT(t, filepath.Join(dir, filepath.FromSlash(obsdash.SpecFile)), "{}\n")
+	writeTreeFileT(t, filepath.Join(dir, filepath.FromSlash(obsdash.ProjectSpecFile)), "{}\n")
 	out.Reset()
 	announceDerivedObservability(&out, ctx)
 	if out.Len() != 0 {

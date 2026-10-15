@@ -12,13 +12,17 @@ import (
 )
 
 // Two branches that each add a service change the same forge files: the
-// birth ledger, the JSON outputs' hashes, the aggregated dashboard spec,
-// alert defaults and saved searches, and a stamped aggregate like the
+// birth ledger, the JSON outputs' hashes, and a stamped aggregate like the
 // service mount list. Before the driver understood them, every pair of
 // such branches conflicted in all of them (P3b friction F16). These tests
 // run a real `git merge` / `git rebase` with this test binary as the
 // driver (TestMain dispatches `merge-generated` to the production
 // command), over files rendered by forge's own writers.
+//
+// The observability outputs are written one file per service (see
+// obsdash.ServicePart), so the two branches' are disjoint: the merge must
+// produce exactly what a generate over both services writes, with no
+// generate in between.
 
 // renderServices writes what a generate over these services writes to the
 // shared files, through forge's own writers.
@@ -102,12 +106,35 @@ func twoServiceBranches(t *testing.T) string {
 	return dir
 }
 
-// assertConvergesToBothServices checks a merged tree carries no conflict,
-// and that the next generate renders both services over it without
-// refusing a single file as a hand edit.
+// observabilityFiles maps every file under deploy/observability in dir to
+// its content.
+func observabilityFiles(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	root := filepath.Join(dir, "deploy", "observability")
+	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, _ := filepath.Rel(dir, p)
+		data, rerr := os.ReadFile(p)
+		out[filepath.ToSlash(rel)] = string(data)
+		return rerr
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// assertConvergesToBothServices checks a merged tree carries no conflict;
+// that its observability outputs ARE what a generate over both services
+// writes, certified by the merged hashes.json, with no generate in between;
+// and that the next generate renders both services without refusing a
+// single file as a hand edit.
 func assertConvergesToBothServices(t *testing.T, dir string) {
 	t.Helper()
-	for _, rel := range []string{".forge/hashes.json", ".forge/scaffolded.json", obsdash.SpecFile, obsdash.AlertDefaultsFile, obsdash.SavedSearchesFile, "internal/app/mounts_gen.go"} {
+	for _, rel := range []string{".forge/hashes.json", ".forge/scaffolded.json", "internal/app/mounts_gen.go"} {
 		data, err := os.ReadFile(filepath.Join(dir, rel))
 		if err != nil {
 			t.Fatal(err)
@@ -123,31 +150,44 @@ func assertConvergesToBothServices(t *testing.T, dir string) {
 		}
 	}
 
-	// "generate": render the merged inputs. Every shared file must be one
-	// forge still certifies, so it is rewritten rather than refused.
+	fresh := t.TempDir()
+	writeTreeFileT(t, filepath.Join(fresh, "go.mod"), "module example.com/app\n\ngo 1.24\n")
+	renderServices(t, fresh, "question", "run", "system")
+
+	// The merge alone is the render: reliant's lanes regenerated ~1,500
+	// lines of aggregated spec, alerts and saved searches after every
+	// rebase, because the merge had kept one side of each.
+	merged, want := observabilityFiles(t, dir), observabilityFiles(t, fresh)
+	for rel, body := range want {
+		if merged[rel] != body {
+			t.Errorf("%s after the merge is not what a generate over both services writes; the lane would have to regenerate and amend", rel)
+		}
+	}
+	for rel := range merged {
+		if _, ok := want[rel]; !ok {
+			t.Errorf("%s survives the merge but a generate over both services does not write it", rel)
+		}
+	}
 	cs, err := checksums.Load(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, rel := range []string{obsdash.SpecFile, obsdash.AlertDefaultsFile, obsdash.SavedSearchesFile} {
-		data, _ := os.ReadFile(filepath.Join(dir, rel))
-		if cs.Unstampable[rel] != checksums.BodyHash(data) {
+	for rel, body := range merged {
+		if cs.Unstampable[rel] != checksums.BodyHash([]byte(body)) {
 			t.Errorf("%s is not certified by the merged hashes.json: generate would refuse it as a hand edit", rel)
 		}
 	}
+
+	// "generate": render the merged inputs. Every shared file must be one
+	// forge still certifies, so it is rewritten rather than refused.
 	if mounts, _ := os.ReadFile(filepath.Join(dir, "internal/app/mounts_gen.go")); checksums.Verify(mounts) != checksums.Pristine {
 		t.Errorf("mounts_gen.go must stay a pristine render:\n%s", mounts)
 	}
 	renderServices(t, dir, "question", "run", "system")
-	fresh := t.TempDir()
-	writeTreeFileT(t, filepath.Join(fresh, "go.mod"), "module example.com/app\n\ngo 1.24\n")
-	renderServices(t, fresh, "question", "run", "system")
-	for _, rel := range []string{obsdash.SpecFile, obsdash.AlertDefaultsFile, obsdash.SavedSearchesFile, "internal/app/mounts_gen.go"} {
-		got, _ := os.ReadFile(filepath.Join(dir, rel))
-		want, _ := os.ReadFile(filepath.Join(fresh, rel))
-		if string(got) != string(want) {
-			t.Errorf("%s after regenerating the merge differs from a fresh render of both services", rel)
-		}
+	got, _ := os.ReadFile(filepath.Join(dir, "internal/app/mounts_gen.go"))
+	wantMounts, _ := os.ReadFile(filepath.Join(fresh, "internal/app/mounts_gen.go"))
+	if string(got) != string(wantMounts) {
+		t.Errorf("mounts_gen.go after regenerating the merge differs from a fresh render of both services")
 	}
 }
 

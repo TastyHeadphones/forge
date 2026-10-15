@@ -113,6 +113,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The observability outputs are one file per service, so a rebase no longer
+  rewrites them.** Three files listed every service:
+  `deploy/observability/dashboard-spec_gen.json`, `alert-defaults_gen.json`
+  and `dashboards/saved-searches_gen.ndjson`. Two branches that each added a
+  service changed all three, at the same sorted position whenever the
+  services were neighbours, and in JSON so repetitive that git aligned even
+  distant insertions onto each other. The merge driver kept one side, so on
+  reliant every lane's rebase was followed by a generate that rewrote about
+  1,500 lines, and then an amend. The spec is now written as
+  `deploy/observability/spec/project_gen.json` plus one
+  `spec/service-<svc>_gen.json` per service. Each service file carries that
+  service's dashboard, its saved searches and its alert entry. The saved
+  searches are now one `dashboards/<project>-service-<svc>_gen.ndjson` per
+  service. `alert-defaults_gen.json` (now `forge.alert-defaults/v2`) no
+  longer lists services. Two such branches touch disjoint files, so git
+  merges them, with or without forge's driver, into exactly what a generate
+  over both writes. The assembled spec the release bundle and the console
+  read is unchanged (`forge.dashboards/v1`). `forge generate` removes the old
+  files if nobody edited them. The local stack's `docker-compose.yml` is
+  yours, so pick up its new saved-search loader, which reads every
+  `*_gen.ndjson`, with `forge project upgrade`. Until then the local HyperDX
+  loads no generated saved searches.
 - **A bundle now seals the env's `observability_policy`, so its digest changes
   for envs that set one.** The release shape recorded on the ledger carried
   `observability_policy` (what the env opted out of), but `forge env build`

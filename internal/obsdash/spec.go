@@ -8,9 +8,10 @@
 //     predicates on OpenTelemetry attribute names). It names no ClickHouse
 //     column, no HyperDX field and no chart library. Build derives it from the
 //     project's services, rpcs, frontends and database. It is also serialized
-//     (deploy/observability/dashboard-spec_gen.json) so a second renderer —
-//     the Reliant console, drawing with uPlot — can consume exactly the same
-//     model without parsing HyperDX JSON.
+//     (deploy/observability/spec/, one file for the project and one per
+//     service — see ServicePart) so a second renderer — the Reliant console,
+//     drawing with uPlot — can consume exactly the same model, through the
+//     release bundle, without parsing HyperDX JSON.
 //
 //   - RenderHyperDX (hyperdx.go) is one renderer over the Spec: it emits
 //     HyperDX v2 dashboard JSON for the file provisioner (local dev, operators)
@@ -30,6 +31,10 @@ import (
 // SpecVersion identifies the serialized shape of Spec. Bump it on a breaking
 // change so a consumer can refuse a spec it does not understand.
 const SpecVersion = "forge.dashboards/v1"
+
+// PartsVersion identifies the shape of the files the Spec is written to
+// disk as (ProjectPart, ServicePart).
+const PartsVersion = "forge.dashboard-parts/v1"
 
 // Signal is the telemetry table a panel reads.
 type Signal string
@@ -276,38 +281,95 @@ func FrontendServiceName(project string) string { return project + "-frontend" }
 
 // Build derives the project's Spec.
 func Build(in Input) Spec {
-	sp := Spec{Version: SpecVersion, Project: in.Project, SavedSearches: []SavedSearch{}}
+	return Assemble(BuildParts(in))
+}
+
+// ProjectPart is the part of the Spec that belongs to the project as a
+// whole: the overview, which leads, and the dashboards that follow the
+// services' (Workloads, Releases, the frontend's). See ServicePart.
+type ProjectPart struct {
+	Version    string      `json:"version"`
+	Project    string      `json:"project"`
+	Overview   Dashboard   `json:"overview"`
+	Dashboards []Dashboard `json:"dashboards"`
+}
+
+// ServicePart is everything forge derives for one service's observability:
+// its dashboard, its saved searches, and what the default alerts know of it.
+//
+// The Spec is written to disk as one ProjectPart and one ServicePart per
+// service (SpecDir) rather than as one file, because a file that lists every
+// service is one that two branches each adding a service both change — at
+// the same sorted position whenever the two services are neighbours, and in
+// JSON so repetitive that git aligns even distant insertions onto each
+// other. The merge then kept one side, and every rebase of a lane that
+// adopted a service was followed by a generate that rewrote ~1,500 lines and
+// an amend (reliant, P3b). One file per service is disjoint from every other
+// branch's, so git merges it — with or without forge's merge driver — into
+// exactly what a generate over both branches writes.
+type ServicePart struct {
+	Version       string        `json:"version"`
+	Service       string        `json:"service"`
+	Dashboard     Dashboard     `json:"dashboard"`
+	SavedSearches []SavedSearch `json:"savedSearches"`
+	Alert         AlertService  `json:"alert"`
+}
+
+// BuildParts derives the project's Spec as the parts it is written in. A
+// service with no rpc has no part. Parts are sorted by service name.
+func BuildParts(in Input) (ProjectPart, []ServicePart) {
+	project := ProjectPart{
+		Version:  PartsVersion,
+		Project:  in.Project,
+		Overview: withReleaseMarkers(buildOverview(in)),
+	}
 
 	services := append([]Service(nil), in.Services...)
 	sort.Slice(services, func(i, j int) bool { return services[i].Name < services[j].Name })
-
-	overview := buildOverview(in)
-	sp.Dashboards = append(sp.Dashboards, overview)
-
+	var parts []ServicePart
 	for _, s := range services {
 		if len(s.Methods) == 0 {
 			continue
 		}
-		sp.Dashboards = append(sp.Dashboards, buildService(in, s))
-		sp.SavedSearches = append(sp.SavedSearches, SavedSearch{
-			ID:      "errors-" + s.Name,
-			Title:   fmt.Sprintf("%s: error logs", s.Name),
-			Signal:  Logs,
-			Where:   append(serviceLogScope(s), errorLogs),
-			Columns: logColumns,
+		parts = append(parts, ServicePart{
+			Version:   PartsVersion,
+			Service:   s.Name,
+			Dashboard: withReleaseMarkers(buildService(in, s)),
+			SavedSearches: []SavedSearch{{
+				ID:      "errors-" + s.Name,
+				Title:   fmt.Sprintf("%s: error logs", s.Name),
+				Signal:  Logs,
+				Where:   append(serviceLogScope(s), errorLogs),
+				Columns: logColumns,
+			}},
+			Alert: AlertService{Name: s.Name, RPCService: s.Package + "." + s.ProtoService},
 		})
 	}
 
-	sp.Dashboards = append(sp.Dashboards, BuildWorkloads(in.Project), BuildReleases(in.Project))
+	project.Dashboards = append(project.Dashboards, BuildWorkloads(in.Project), BuildReleases(in.Project))
+	if len(in.Frontends) > 0 {
+		project.Dashboards = append(project.Dashboards, buildFrontend(in))
+	}
+	for i := range project.Dashboards {
+		project.Dashboards[i] = withReleaseMarkers(project.Dashboards[i])
+	}
+	return project, parts
+}
 
-	fes := append([]string(nil), in.Frontends...)
-	sort.Strings(fes)
-	if len(fes) > 0 {
-		sp.Dashboards = append(sp.Dashboards, buildFrontend(in))
+// Assemble is the Spec its parts make: the overview, then each service's
+// dashboard in service-name order, then the project's other dashboards; the
+// saved searches in the same service order.
+func Assemble(project ProjectPart, services []ServicePart) Spec {
+	sorted := append([]ServicePart(nil), services...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Service < sorted[j].Service })
+
+	sp := Spec{Version: SpecVersion, Project: project.Project, SavedSearches: []SavedSearch{}}
+	sp.Dashboards = append(sp.Dashboards, project.Overview)
+	for _, s := range sorted {
+		sp.Dashboards = append(sp.Dashboards, s.Dashboard)
+		sp.SavedSearches = append(sp.SavedSearches, s.SavedSearches...)
 	}
-	for i := range sp.Dashboards {
-		sp.Dashboards[i] = withReleaseMarkers(sp.Dashboards[i])
-	}
+	sp.Dashboards = append(sp.Dashboards, project.Dashboards...)
 	return sp
 }
 

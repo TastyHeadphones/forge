@@ -149,30 +149,22 @@ func CollectBundleSet(in BundleSetInput) (BundleSet, error) {
 	return set, nil
 }
 
-// generatedDashboards are the dashboards forge generates: the ones in
-// dashboard-spec_gen.json (written by forge generate) and the custom-metrics
+// generatedDashboards are the dashboards forge generates: the ones in the
+// spec forge generate wrote (ReadSpec) and the custom-metrics
 // dashboard, which needs the built binary's schema and so cannot be in it.
 func generatedDashboards(in BundleSetInput) ([]BundleDashboard, error) {
 	var dashboards []Dashboard
 	project := ""
 
-	raw, err := os.ReadFile(filepath.Join(in.ProjectDir, filepath.FromSlash(SpecFile)))
-	switch {
-	case err == nil:
-		var sp Spec
-		if err := json.Unmarshal(raw, &sp); err != nil {
-			return nil, fmt.Errorf("%s: %w", SpecFile, err)
-		}
-		if sp.Version != SpecVersion {
-			return nil, fmt.Errorf("%s: spec version %q is not %s; run forge generate", SpecFile, sp.Version, SpecVersion)
-		}
+	sp, ok, err := ReadSpec(in.ProjectDir)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
 		if sp.Project != "" {
 			project = sp.Project
 		}
 		dashboards = append(dashboards, sp.Dashboards...)
-	case errors.Is(err, os.ErrNotExist):
-	default:
-		return nil, err
 	}
 
 	if len(in.MetricsSchema) > 0 {

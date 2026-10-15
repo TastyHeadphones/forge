@@ -456,7 +456,10 @@ services:
           db.dashboards.updateOne({_id: d._id}, {$$set: {tiles: tiles, filters: filters}});
         });
         var raw = "";
-        try { raw = cat("/etc/forge/dashboards/saved-searches_gen.ndjson"); } catch (e) {}
+        listFiles("/etc/forge/dashboards").forEach(function (f) {
+          if (f.isDirectory || !/_gen\.ndjson$$/.test(f.name)) { return; }
+          try { raw += cat(f.name) + "\n"; } catch (e) {}
+        });
         raw.split("\n").forEach(function (line) {
           if (!line) { return; }
           var s = JSON.parse(line);

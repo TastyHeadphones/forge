@@ -16,7 +16,7 @@ import (
 // ledger and the hashes of its JSON outputs, so two such branches always
 // change the same small files. git merges them as lines, and adjacent
 // insertions — two services sorting between the same two existing entries,
-// or the two hashes of one aggregated dashboard file — conflict on every
+// or two outputs' hashes that sort side by side — conflict on every
 // merge and every rebase. The P3b pilot, 33 parallel lanes each adopting one
 // service, resolved them by hand in each lane (F16). The files are maps:
 // merged as maps, the only collision left is one key whose value both sides
@@ -27,7 +27,7 @@ import (
 //     alone. Both sides recording the same path keep this side's entry —
 //     the timestamp is provenance nobody branches on.
 //   - hashes.json: both sides re-rendered the same comment-incapable output
-//     (an aggregated dashboard). The merge driver keeps THIS side's bytes for
+//     (an aggregate of every service). The merge driver keeps THIS side's bytes for
 //     that output (see the cli merge driver), so this side's hash is the one
 //     that certifies them, and the next `forge generate` renders the merged
 //     inputs over a file it can still verify.

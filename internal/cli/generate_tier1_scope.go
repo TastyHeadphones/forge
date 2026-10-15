@@ -172,7 +172,10 @@ var tier1OwnerRegistry = []tier1OwnerEntry{
 	// when it is gated off (observability off, no services) absence from
 	// WrittenThisRun says nothing about staleness.
 	{glob: "deploy/observability/dashboards/*_gen.json", gate: gateObservabilityDashboardsEnabled},
-	{exact: "deploy/observability/dashboards/saved-searches_gen.ndjson", gate: gateObservabilityDashboardsEnabled},
+	{glob: "deploy/observability/dashboards/*_gen.ndjson", gate: gateObservabilityDashboardsEnabled},
+	{glob: "deploy/observability/spec/*_gen.json", gate: gateObservabilityDashboardsEnabled},
+	// The whole-project spec the per-service parts replaced: the step
+	// retires it, so it too waits for the step to run.
 	{exact: "deploy/observability/dashboard-spec_gen.json", gate: gateObservabilityDashboardsEnabled},
 	{exact: "deploy/observability/alert-defaults_gen.json", gate: gateObservabilityDashboardsEnabled},
 
