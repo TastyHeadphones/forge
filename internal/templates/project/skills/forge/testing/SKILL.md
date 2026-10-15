@@ -28,11 +28,19 @@ stays real at every tier.
 
 ## Forge-specific harness facts
 
-- **The DB harness is per-test, not per-suite.** `testkit.NewPostgresDB(t)`
-  applies every `db/migrations/*.up.sql` to a fresh ephemeral database, so a
-  test sees your real schema — including CHECK constraints, FKs and triggers
-  that a fixture struct would not reproduce. `FORGE_TEST_POSTGRES_URL` points it
-  at a server instead of the embedded binary.
+- **The DB harness is per-test, not per-suite.** `testkit.NewMigratedPostgresDB(t, fs)`
+  gives every test its own database with your real schema — including CHECK
+  constraints, FKs and triggers that a fixture struct would not reproduce. The
+  migrations are applied ONCE per server and each test gets a clone
+  (`pgtest.NewFromTemplate`, keyed by a hash of the migration files), so a
+  few hundred tests do not replay the chain a few hundred times.
+  `FORGE_TEST_POSTGRES_URL` points it at a server instead of the embedded binary.
+- **One server per run, not one per package.** Every `go test` binary of a
+  fan-out shares one Postgres (embedded, or the `FORGE_TEST_POSTGRES_URL` one).
+  Do not start a Postgres container per package with testcontainers: N containers
+  is what exhausts a sandbox's memory cap. For a non-Postgres server (ClickHouse,
+  a registry) that tests mutate server-wide, start ONE per run and lease it to a
+  test at a time, resetting it between leases.
 - **Test rows come from regenerated factories, never frozen literals.**
   `internal/handlers/<svc>/factories_gen_test.go` is rebuilt from the applied
   schema on every `forge generate`:
