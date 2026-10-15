@@ -45,19 +45,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was 72 of the preset's 74 seconds. It now reads export data for every
   service's interfaces in a single load. The preset takes 10 seconds on
   reliant, and its output is byte-identical to the full run's.
-- **`forge generate --steps harness` regenerates only the test harness, in
-  seconds.** After a `Deps` edit the next thing you need is each
-  `helpers_gen_test.go` (`NewTest<Svc>`, `With<Svc>Deps`, the `Stub<Field>`
-  doubles), and the only way to get it was a full run, which takes about 2
-  minutes on reliant. The new preset runs the harness step and the steps it
-  reads from: config, checksums, and the service list read from the descriptor
-  the last full run left. It skips the Tier-1 stomp guard, as `--steps mocks`
-  does. A proto or migration change still needs the full run. The harness step
-  itself is faster too, in every run: it used to type-check each cross-package
-  `Deps` interface's package from source, one load per field. On reliant that
-  was 72 of the preset's 74 seconds. It now reads export data for every
-  service's interfaces in a single load. The preset takes 10 seconds on
-  reliant, and its output is byte-identical to the full run's.
 - **The test harness stubs `// forge:optional-dep` interface fields too.**
   `helpers_gen_test.go` emitted a `Stub<Field>` for every required interface
   dep and nothing for an optional one. So the one test that exercises an
