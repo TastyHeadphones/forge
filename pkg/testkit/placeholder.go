@@ -16,7 +16,14 @@ import (
 // What it stores depends on the field's kind:
 //
 //   - a pointer gets new(T): the zero value, which for an infrastructure
-//     handle like *sql.DB panics on first use rather than doing anything;
+//     handle like *sql.DB panics on first use rather than doing anything.
+//     For a type that works at its zero value it is NOT inert: a generated
+//     config message (*configv1.FooConfig) becomes a valid, empty config —
+//     every getter answers its zero value — and the service runs on it
+//     (reliant's model endpoints read the empty control-plane URL as
+//     self-hosted, the permissive network policy). No config value is
+//     distinguishable from configuration, so a test whose behaviour turns
+//     on config supplies the config it means;
 //   - a map or slice gets an empty one, a channel an unbuffered one;
 //   - a func gets one that panics naming the field when it is called.
 //

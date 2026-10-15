@@ -309,7 +309,7 @@ mirror config inside k3d resolves that reference at pull time).`,
 
 	cmd.Flags().StringVarP(&opts.outputDir, "output", "o", "bin", "Output directory for binaries")
 	cmd.Flags().StringVarP(&opts.buildTarget, "target", "t", "all", "Build target (all | external | a specific service/frontend name). `external` builds only the KCL services declaring build_cmd; requires the environment argument.")
-	cmd.Flags().StringArrayVarP(&opts.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim — forge does not interpret the value. Requires the environment argument. List an env's options with `forge env options <env>`.")
+	cmd.Flags().StringArrayVarP(&opts.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim — forge does not interpret the value. Requires the environment argument. List an env's options with 'forge env options <env>'.")
 	cmd.Flags().BoolVar(&opts.parallel, "parallel", true, "Build services in parallel")
 	cmd.Flags().BoolVar(&opts.buildDocker, "docker", false, "Build Docker images for all services")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Build with debug symbols for Delve")
@@ -320,7 +320,7 @@ mirror config inside k3d resolves that reference at pull time).`,
 	// history nothing about where it went. Registered, the RunE answers with
 	// the exact replacement. Hidden so they do not advertise themselves in
 	// --help as things this command can do.
-	cmd.Flags().BoolVar(&opts.push, "push", false, "Moved to `forge env build <env> --push` — a push destination is declared per workload in an env's render, so publishing is an environment act")
+	cmd.Flags().BoolVar(&opts.push, "push", false, "Moved to 'forge env build <env> --push' — a push destination is declared per workload in an env's render, so publishing is an environment act")
 	_ = cmd.Flags().MarkHidden("push")
 	cmd.Flags().StringVar(&opts.targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64 for docker builds)")
 	cmd.Flags().StringVar(&opts.tag, "tag", "", "Override the image tag of every image this build writes (default: the tag a workload's image pins, else the env's image_tag, else git describe --tags --always --dirty). Refused when it differs from the tag a selected workload's image pins — the deploy pulls the pin. Recorded in .forge/state so forge env deploy uses the same value.")
@@ -330,7 +330,7 @@ mirror config inside k3d resolves that reference at pull time).`,
 	cmd.Flags().BoolVar(&opts.skipGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default forge build runs forge generate when gen/ is missing or proto sources are newer than the generated tree.")
 	cmd.Flags().BoolVar(&opts.plan, "plan", false, "Resolve the exact build set this invocation would build (same KCL discovery, same --target narrowing) and PREFLIGHT every step without running it: each go-build package exists and is a main package, each Dockerfile and frontend build script exists, each ShellBuild cwd exists, and with --release the ledger would cover everything the env declares. Builds, pushes, generates and writes nothing; exits non-zero on anything the real build would fail on. Pass it the release cut's exact arguments to gate a PR on the cut.")
 	cmd.Flags().StringVar(&opts.gateJSON, "gate-json", "", "Also write this build's result to `FILE` as a gate document, for `forge gate record` or `forge env deploy --gate`. A FILE, not a stdout mode: the build log and the exit code are unchanged.")
-	cmd.Flags().StringVar(&opts.release, "release", "", "Moved to `forge env build <env> --release <version>` — a release's artifact set is discovered from the env's render, so cutting one is an environment act")
+	cmd.Flags().StringVar(&opts.release, "release", "", "Moved to 'forge env build <env> --release <version>' — a release's artifact set is discovered from the env's render, so cutting one is an environment act")
 	_ = cmd.Flags().MarkHidden("release")
 
 	return cmd

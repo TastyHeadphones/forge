@@ -343,6 +343,32 @@ FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
 
 ### Fixed
 
+- **Flag synopses name a value, not a quoted example.** pflag treats the first
+  back-quoted span of a flag's usage as the name of its value. So
+  `forge db migration new --help` printed
+  `--backward-compatible -- forge:backward-compatible — <why>`. Twelve other
+  flags had the same problem, among them `--option`, `--release`, `--tag`,
+  `--timeout`, `--harness`, `--routes`, `--token` and `--from`. Boolean flags
+  showed a value they do not take: `--push`, `--no-wait`, `--no-build`,
+  `--background`, `--no-generate`, `--no-install`, `--no-seed` and
+  `--guarded-fields`. Those usages now quote with `'…'`. The two migration
+  flags name their value `why`. A test walks every command and fails on any
+  value name with a space, and on any value name for a flag that takes no
+  value.
+- **`forge lint --migration-safety` closes with advice for the findings it
+  printed.** After a `migration-compat-undeclared`, `-reason` or `-conflict`
+  finding, the closing line said to rewrite "the destructive migration" or add
+  `-- forge:allow-destructive`, and that settles none of them. Each
+  compatibility rule now has its own fix. A batch that spans rules names the
+  hatch of each rule present, and of no rule that is absent.
+- **`WithPlaceholderDeps` says when its stand-in is not inert.** It was
+  documented as a "never-initialised stand-in", but for a generated config
+  message `new(T)` is a valid, empty config that the service runs on. In
+  reliant's model endpoints, that means self-hosted, with the permissive
+  network policy. No value of a config message can be told apart from real
+  configuration. So the harness doc, `testkit.Placeholder` and the api skill
+  now say this, and tell you to supply the config a row means through
+  `With<Svc>Deps`.
 - **`forgeconv-deps-are-interfaces` accepts a map or slice of interfaces, and
   says where the seam goes when a dep is only handed on.** Reliant's trigger
   handler has two Deps fields, `map[string]IntegrationAccess` and

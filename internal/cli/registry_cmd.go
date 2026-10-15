@@ -225,7 +225,7 @@ skipped.`,
 	cmd.Flags().StringVarP(&username, "username", "u", "", "Registry user the credential belongs to, for a registry that is NOT the platform's (e.g. $GITHUB_ACTOR, _json_key, oauth2accesstoken, AWS)")
 	cmd.Flags().BoolVar(&passwordStdin, "password-stdin", false, "Read a foreign registry's credential from stdin (a credential never belongs on the command line)")
 	cmd.Flags().StringVar(&passwordEnv, "password-env", "", "Name of the environment variable holding a foreign registry's credential (the forge.ControlPlane token_env convention: the NAME is in git, the VALUE never is)")
-	cmd.Flags().StringVar(&token, "token", "", "Control-plane credential to present to the PLATFORM registry, overriding the env's token_env and the stored `forge login` (one-off / debugging)")
+	cmd.Flags().StringVar(&token, "token", "", "Control-plane credential to present to the PLATFORM registry, overriding the env's token_env and the stored 'forge login' (one-off / debugging)")
 	return cmd
 }
 

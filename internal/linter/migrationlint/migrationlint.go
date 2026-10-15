@@ -602,6 +602,12 @@ func RemediationFor(rule string) string {
 		return NonTransactionalStatementRemediation
 	case RuleEnumValueUsedBeforeCommit:
 		return EnumValueUsedBeforeCommitRemediation
+	case RuleCompatUndeclared:
+		return CompatUndeclaredRemediation
+	case RuleCompatReason:
+		return CompatReasonRemediation
+	case RuleCompatConflict:
+		return CompatConflictRemediation
 	default:
 		return DestructiveChangeRemediation
 	}
@@ -616,18 +622,19 @@ const VolatileDefaultRemediation = `add the column nullable, backfill it with an
 // and picking any single rule's text for a mixed batch is how the wrong
 // advice got attached in the first place.
 func PrimaryRemediation(findings []Finding) string {
+	rules := map[string]bool{}
 	rule := ""
 	for _, f := range findings {
 		if f.Severity != SeverityError {
 			continue
 		}
+		rules[f.Rule] = true
 		if rule == "" {
 			rule = f.Rule
-			continue
 		}
-		if rule != f.Rule {
-			return MixedRemediation
-		}
+	}
+	if len(rules) > 1 {
+		return mixedRemediation(rules)
 	}
 	if rule == "" {
 		return DestructiveChangeRemediation
@@ -635,10 +642,60 @@ func PrimaryRemediation(findings []Finding) string {
 	return RemediationFor(rule)
 }
 
-// MixedRemediation is what a batch spanning several rules gets: the fix
+// MixedRemediation leads what a batch spanning several rules gets: the fix
 // depends on which finding you are looking at, so say that rather than print
-// one rule's hatch over all of them.
-const MixedRemediation = `each finding above names the rule it violated; run with --json for the per-finding fix, or see the rule's remediation: destructive-change accepts "-- forge:allow-destructive", the NOT NULL rules accept "-- forge:allow-unsafe-not-null"`
+// one rule's hatch over all of them. mixedRemediation adds the hatches of
+// the rules actually present — and only those: naming
+// `-- forge:allow-destructive` under a batch of compatibility findings sends
+// the author after a hatch that silences none of them.
+const MixedRemediation = `each finding above names the rule it violated; run with --json for the per-finding fix`
+
+// ruleHatch is the one-line way to settle a rule in a mixed batch's closing
+// advice, for the rules that have one.
+var ruleHatch = map[string]string{
+	"destructive-change":            `destructive-change accepts "-- forge:allow-destructive"`,
+	"unsafe-add-not-null-column":    `the NOT NULL rules accept "-- forge:allow-unsafe-not-null"`,
+	"set-not-null-without-backfill": `the NOT NULL rules accept "-- forge:allow-unsafe-not-null"`,
+	RuleCompatUndeclared:            `the compatibility rules take "-- forge:backward-compatible — <why>" or "-- forge:breaks-rollback <why>"`,
+	RuleCompatReason:                `the compatibility rules take "-- forge:backward-compatible — <why>" or "-- forge:breaks-rollback <why>"`,
+	RuleCompatConflict:              `the compatibility rules take "-- forge:backward-compatible — <why>" or "-- forge:breaks-rollback <why>"`,
+}
+
+// mixedRemediation is MixedRemediation plus the hatches of the rules in
+// rules, each once, in a stable order.
+func mixedRemediation(rules map[string]bool) string {
+	seen := map[string]bool{}
+	var hatches []string
+	for _, rule := range sortedKeys(rules) {
+		if h, ok := ruleHatch[rule]; ok && !seen[h] {
+			seen[h] = true
+			hatches = append(hatches, h)
+		}
+	}
+	if len(hatches) == 0 {
+		return MixedRemediation
+	}
+	return MixedRemediation + "; " + strings.Join(hatches, "; ")
+}
+
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// CompatUndeclaredRemediation, CompatReasonRemediation and
+// CompatConflictRemediation are the fix text for the compatibility-
+// declaration rules (compat_declaration.go). None of them is settled by
+// rewriting the SQL or by `-- forge:allow-destructive`.
+const (
+	CompatUndeclaredRemediation = `declare whether the previous release keeps working on the schema this migration leaves: "-- forge:backward-compatible — <why>" if it does, "-- forge:breaks-rollback <why>" if it deliberately does not ('forge db migration new --backward-compatible <why>' / '--breaks-rollback <why>' writes the line)`
+	CompatReasonRemediation     = `write the reason on the declaration's own line: why the previous release keeps working on this schema, or — for "-- forge:breaks-rollback" — why it deliberately does not`
+	CompatConflictRemediation   = `keep one declaration: "-- forge:backward-compatible — <why>" if the previous release keeps working on this schema, "-- forge:breaks-rollback <why>" if it does not`
+)
 
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {

@@ -170,7 +170,7 @@ func newCIVerifyTestRunCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&from, "from", "", "Read the `go test -json` stream from this file instead of stdin")
+	cmd.Flags().StringVar(&from, "from", "", "Read the 'go test -json' stream from this file instead of stdin")
 	cmd.Flags().Float64Var(&maxRatio, "max-skip-ratio", testreport.DefaultPolicy().MaxSkipRatio,
 		"Share of a package's tests that may skip before it is reported")
 	cmd.Flags().IntVar(&minTests, "min-tests", testreport.DefaultPolicy().MinTests,

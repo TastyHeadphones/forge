@@ -548,10 +548,13 @@ Examples:
 	newCmd.Flags().StringVar(&dsn, "dsn", "", "Database connection string for live schema introspection (implies --context)")
 	newCmd.Flags().BoolVar(&withContext, "context", false,
 		"write the schema, the previous migration and the history into the file's header instead of a pointer to them")
+	// pflag renders the first `back-quoted` word of a usage string as the
+	// flag's value name, so the backticks go on the value and nowhere else
+	// (TestFlagValueNamesAreOneWord).
 	newCmd.Flags().StringVar(&backwardCompatible, "backward-compatible", "",
-		"declare that the previous release keeps working on this schema, and why (writes `-- forge:backward-compatible — <why>`)")
+		"declare that the previous release keeps working on this schema, and `why` (writes \"-- forge:backward-compatible — <why>\")")
 	newCmd.Flags().StringVar(&breaksRollback, "breaks-rollback", "",
-		"declare that the previous release deliberately does NOT keep working on this schema, and why (writes `-- forge:breaks-rollback <why>`)")
+		"declare that the previous release deliberately does NOT keep working on this schema, and `why` (writes \"-- forge:breaks-rollback <why>\")")
 	newCmd.MarkFlagsMutuallyExclusive("backward-compatible", "breaks-rollback")
 	migrationCmd.AddCommand(newCmd)
 	migrationCmd.AddCommand(newDBMigrationRebaseCommand())

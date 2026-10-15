@@ -271,8 +271,18 @@ func TestPrimaryRemediationRefusesToPickForAMixedBatch(t *testing.T) {
 		{Rule: "unsafe-add-not-null-column", Severity: SeverityError},
 		{Rule: "destructive-change", Severity: SeverityError},
 	}
-	if got := PrimaryRemediation(mixed); got != MixedRemediation {
+	got := PrimaryRemediation(mixed)
+	if !strings.HasPrefix(got, MixedRemediation) || got == DestructiveChangeRemediation || got == UnsafeNotNullRemediation {
 		t.Errorf("mixed batch should refuse to pick one rule's hatch, got %q", got)
+	}
+	// It names the hatch of each rule present, and of no other.
+	for _, want := range []string{"forge:allow-destructive", "forge:allow-unsafe-not-null"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("mixed batch advice lacks %q for a rule it holds: %q", want, got)
+		}
+	}
+	if strings.Contains(got, "backward-compatible") {
+		t.Errorf("mixed batch advice names a hatch for a rule it does not hold: %q", got)
 	}
 
 	// Warnings do not gate the build, so they must not steer the fix line
@@ -370,4 +380,33 @@ func TestDestructivePragmaDoesNotSilenceUnsafeNotNull(t *testing.T) {
 		t.Fatalf("LintMigrationsDir() error = %v", err)
 	}
 	assertFinding(t, result, "unsafe-add-not-null-column", SeverityError)
+}
+
+// TestCompatFindingsAreNotToldToRewriteTheDestructiveMigration: after a
+// migration-compat-undeclared or -reason finding, the closing line said to
+// rewrite "the destructive migration" or add "-- forge:allow-destructive" —
+// which settles neither (reliant, adopting #777). Each compatibility rule has
+// its own fix, alone and in a batch.
+func TestCompatFindingsAreNotToldToRewriteTheDestructiveMigration(t *testing.T) {
+	for _, rule := range []string{RuleCompatUndeclared, RuleCompatReason, RuleCompatConflict} {
+		for name, batch := range map[string][]Finding{
+			"alone": {{Rule: rule, Severity: SeverityError}},
+			"with another compat rule": {
+				{Rule: rule, Severity: SeverityError},
+				{Rule: RuleCompatReason, Severity: SeverityError},
+				{Rule: RuleCompatUndeclared, Severity: SeverityError},
+			},
+		} {
+			got := PrimaryRemediation(batch)
+			if strings.Contains(got, "allow-destructive") || strings.Contains(got, "destructive migration") {
+				t.Errorf("%s %s: the closing advice points at the destructive-change hatch: %q", rule, name, got)
+			}
+			if !strings.Contains(got, "forge:backward-compatible") && !strings.Contains(got, "reason") {
+				t.Errorf("%s %s: the closing advice does not say how to declare compatibility: %q", rule, name, got)
+			}
+		}
+		if got := RemediationFor(rule); strings.Contains(got, "allow-destructive") {
+			t.Errorf("RemediationFor(%s) = %q", rule, got)
+		}
+	}
 }

@@ -269,13 +269,13 @@ func newEnvUpCmd() *cobra.Command {
 	cmd.Flags().DurationVar(&opts.hostReadyTimeout, "host-ready-timeout", hostReadyTimeout, "Maximum wait for host services to bind their ports, including compilation; exited runners fail immediately")
 	cmd.Flags().BoolVar(&opts.noBuild, "no-build", false, "Skip the build phase (use already-built images / binaries)")
 	cmd.Flags().BoolVar(&opts.noDeploy, "no-deploy", false, "Skip the cluster apply phase (host services and frontends still launch)")
-	cmd.Flags().BoolVar(&opts.background, "background", false, "Detach long-running phases and return immediately (stop with `forge env down <env>`). Beats --watch and the TTY default.")
+	cmd.Flags().BoolVar(&opts.background, "background", false, "Detach long-running phases and return immediately (stop with 'forge env down <env>'). Beats --watch and the TTY default.")
 	cmd.Flags().BoolVar(&opts.watch, "watch", false, "Force the hold-and-teardown lifecycle (block until Ctrl-C, then cascade-stop) even without a TTY. Default without --watch/--background: hold when stdin is a TTY, otherwise return after start (non-TTY agent/CI path).")
-	cmd.Flags().BoolVar(&opts.noGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default `forge env up` runs `forge generate` when gen/ is missing or proto sources are newer than the generated tree.")
-	cmd.Flags().BoolVar(&opts.noInstall, "no-install", false, "Skip the pre-dev-serve frontend dependency install. By default `forge env up` installs a frontend's deps when node_modules is missing or older than its lockfile/manifest.")
-	cmd.Flags().BoolVar(&opts.noSeed, "no-seed", false, "Skip the first-boot dev auto-seed. By default `forge env up` seeds a dev database once when it is reachable and all seedable tables are empty.")
+	cmd.Flags().BoolVar(&opts.noGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default 'forge env up' runs 'forge generate' when gen/ is missing or proto sources are newer than the generated tree.")
+	cmd.Flags().BoolVar(&opts.noInstall, "no-install", false, "Skip the pre-dev-serve frontend dependency install. By default 'forge env up' installs a frontend's deps when node_modules is missing or older than its lockfile/manifest.")
+	cmd.Flags().BoolVar(&opts.noSeed, "no-seed", false, "Skip the first-boot dev auto-seed. By default 'forge env up' seeds a dev database once when it is reachable and all seedable tables are empty.")
 	cmd.Flags().StringArrayVar(&opts.targets, "target", nil, "Scope the whole run — build, deploy, host and frontend phases — to specific services/operators/frontends by name (repeatable). Targeting only host/frontend apps builds no images. An unknown name is an error listing the env's app names. Default: everything.")
-	cmd.Flags().StringArrayVarP(&opts.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim — forge does not interpret the value. List an env's options with `forge env options <env>`.")
+	cmd.Flags().StringArrayVarP(&opts.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim — forge does not interpret the value. List an env's options with 'forge env options <env>'.")
 
 	return cmd
 }

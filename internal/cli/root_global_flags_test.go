@@ -12,8 +12,10 @@ package cli
 
 import (
 	"sort"
+	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
 
@@ -70,4 +72,33 @@ func TestGenerateVerboseShorthandReachesItsConsumer(t *testing.T) {
 	if gen.Flags().Lookup("verbose").Value.String() != "true" {
 		t.Error("`forge generate -v` parsed but did not set --verbose")
 	}
+}
+
+// TestFlagValueNamesAreOneWord: pflag takes the first back-quoted span of a
+// usage string as the flag's VALUE NAME. `forge db migration new --help`
+// rendered `--backward-compatible -- forge:backward-compatible — <why>`,
+// because the usage quoted the directive it writes. A value name is one word
+// (`why`, `string`, `dir`); one with a space is a quoted example that leaked
+// into the synopsis. A flag that takes no value (a bool) has no value name.
+func TestFlagValueNamesAreOneWord(t *testing.T) {
+	var walk func(cmd *cobra.Command)
+	walk = func(cmd *cobra.Command) {
+		for _, fs := range []*pflag.FlagSet{cmd.LocalFlags(), cmd.PersistentFlags()} {
+			fs.VisitAll(func(f *pflag.Flag) {
+				name, _ := pflag.UnquoteUsage(f)
+				if strings.ContainsAny(name, " \t") {
+					t.Errorf("%s --%s: value name %q has a space; back-quote only the value's name in its usage", cmd.CommandPath(), f.Name, name)
+				}
+				// A flag that takes no value renders none, unless a
+				// back-quoted span in its usage invents one.
+				if f.NoOptDefVal != "" && name != "" {
+					t.Errorf("%s --%s takes no value but its usage names one (%q); drop the backticks", cmd.CommandPath(), f.Name, name)
+				}
+			})
+		}
+		for _, c := range cmd.Commands() {
+			walk(c)
+		}
+	}
+	walk(NewRootCmd())
 }

@@ -1075,7 +1075,7 @@ Example:
 
 	cmd.Flags().StringVar(&kind, "kind", "", "worker kind (use cron for scheduled workers)")
 	cmd.Flags().StringVar(&schedule, "schedule", "", "cron schedule for --kind cron workers")
-	cmd.Flags().BoolVar(&noGenerate, "no-generate", false, "skip the post-scaffold `forge generate` run (scaffold-only mode for parallel-agent rounds)")
+	cmd.Flags().BoolVar(&noGenerate, "no-generate", false, "skip the post-scaffold 'forge generate' run (scaffold-only mode for parallel-agent rounds)")
 
 	return cmd
 }
@@ -1515,7 +1515,7 @@ Example:
 	cmd.Flags().StringVar(&output, "output", "", "Next.js output shape: static (default — a static export into out/), standalone, or server. Only applies to --kind web.")
 	cmd.Flags().StringVar(&basePath, "base-path", "", `URL prefix the frontend is mounted under (e.g. "/admin"). Only applies to --kind web.`)
 	cmd.Flags().StringVar(&authMode, "auth-mode", "", "Sign-in flow for this frontend. Only `native` (the default) is scaffolded: your own form POSTs credentials to your own API and gets an HttpOnly session cookie; the server runs the OIDC flow (internal/app/login_broker.go) and the browser never contacts the IdP.")
-	cmd.Flags().StringSliceVar(&routes, "routes", nil, "Only generate CRUD pages for these entity route slugs (e.g. --routes users,usage-events), or `--routes none` for no generated pages at all. Default (unset) generates a page set for EVERY entity. Persisted as frontends[].routes and honored by every later generate run.")
+	cmd.Flags().StringSliceVar(&routes, "routes", nil, "Only generate CRUD pages for these entity route slugs (e.g. --routes users,usage-events), or '--routes none' for no generated pages at all. Default (unset) generates a page set for EVERY entity. Persisted as frontends[].routes and honored by every later generate run.")
 
 	return cmd
 }

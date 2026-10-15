@@ -166,6 +166,13 @@ func WithoutPrincipal() TestOption {
 // It is for a test whose rows never reach those dependencies — the scaffolded
 // tests, whose rows are answered before the handler touches one. Supply a
 // real one through With{{.FieldName}}Deps before adding a row that does.
+//
+// new(T) is inert only for a handle that does nothing at its zero value. For
+// a generated config message (a *configv1 type) it is a valid, EMPTY config —
+// every getter answers its zero value — and the service runs on it: an empty
+// control-plane URL, say, reads as self-hosted. No value of a config message
+// is distinguishable from configuration, so a row whose behaviour turns on
+// config supplies the config it means through With{{.FieldName}}Deps.
 func WithPlaceholderDeps() TestOption {
 	return func(c *testConfig) { c.placeholders = true }
 }

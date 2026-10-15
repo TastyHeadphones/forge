@@ -1797,7 +1797,8 @@ func computeFuncDefaults(handlerDir string) ([]DepsFuncDefault, []UnresolvedAuto
 //
 //   - a fill under WithPlaceholderDeps(): a never-initialised stand-in
 //     (testkit.Placeholder) for a test whose rows never reach it, which is
-//     what the scaffolded tests pass;
+//     what the scaffolded tests pass — inert for a handle, but a valid empty
+//     config for a generated config message;
 //   - a line in NewTest<Svc>'s construction failure naming the field, its
 //     type, and both ways to supply it.
 //
