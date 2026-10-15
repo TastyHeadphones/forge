@@ -18,11 +18,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"sigs.k8s.io/yaml"
 
@@ -1169,7 +1171,17 @@ var sensitiveEnvNames = []string{
 // it these were 68 of 89 findings on a real project — enough noise to
 // bury the genuine plaintext credentials in the same report, and a check
 // whose output is mostly false is one people learn to skip.
-var secretReferenceSuffixes = []string{"_NAME", "_PATH", "_FILE", "_KEY_REF", "_SECRET_REF"}
+//
+// _NAMESPACE belongs here for the same reason as _NAME: the namespace a Secret
+// lives in (ALERTING_SECRET_NAMESPACE) is half of its address.
+var secretReferenceSuffixes = []string{"_NAME", "_NAMESPACE", "_PATH", "_FILE", "_KEY_REF", "_SECRET_REF"}
+
+// credentialMetadataSuffixes name a fact ABOUT a credential that is not the
+// credential: a token's issuer and audience are claims every token carries
+// in the clear (REGISTRY_TOKEN_ISSUER), and which provider a credential comes
+// from is a choice, not a key (DEPLOY_PIPELINE_CREDENTIAL_SOURCE=google). The
+// same narrow, suffix-only exemption as secretReferenceSuffixes.
+var credentialMetadataSuffixes = []string{"_ISSUER", "_AUDIENCE", "_SOURCE"}
 
 // literalSecretEnvs are the environments allowed to carry a credential as
 // a literal. It MIRRORS the allowance in forge's kcl/schema.k
@@ -1193,9 +1205,11 @@ func isSensitiveEnvName(name string) bool {
 	if !matched {
 		return false
 	}
-	for _, suffix := range secretReferenceSuffixes {
-		if strings.HasSuffix(upper, suffix) {
-			return false
+	for _, suffixes := range [][]string{secretReferenceSuffixes, credentialMetadataSuffixes} {
+		for _, suffix := range suffixes {
+			if strings.HasSuffix(upper, suffix) {
+				return false
+			}
 		}
 	}
 	return true
@@ -1204,10 +1218,11 @@ func isSensitiveEnvName(name string) bool {
 // isNonSecretLiteral rules out the values a credential can never take.
 // It exists so a name-fragment match on a policy toggle
 // (CORS_ALLOW_CREDENTIALS=false) does not read as a leaked secret: a
-// boolean or a bare number is a switch, not a credential. An EMPTY
-// value is deliberately NOT excluded — an empty literal is the same
-// plaintext wiring, and it is precisely the slot an operator fills in
-// with a real password.
+// boolean or a bare number is a switch, not a credential, a duration
+// (REGISTRY_TOKEN_TTL=15m) is a lifetime, and a URL that carries no
+// credential (credentialFreeURL) is an address. An EMPTY value is
+// deliberately NOT excluded — an empty literal is the same plaintext wiring,
+// and it is precisely the slot an operator fills in with a real password.
 func isNonSecretLiteral(v any) bool {
 	s, ok := v.(string)
 	if !ok {
@@ -1221,8 +1236,66 @@ func isNonSecretLiteral(v any) bool {
 	if s == "" {
 		return false
 	}
+	if _, err := time.ParseDuration(s); err == nil {
+		return true
+	}
+	if credentialFreeURL(s) {
+		return true
+	}
 	for _, r := range s {
 		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// databaseURLSchemes are the schemes whose userinfo USERNAME is a database
+// role, not a credential. Anywhere else a bare username can be the token
+// itself (https://<token>@github.com/org/repo.git), so it is not exempt.
+var databaseURLSchemes = map[string]bool{
+	"postgres": true, "postgresql": true, "mysql": true, "mariadb": true,
+	"mongodb": true, "mongodb+srv": true, "redis": true, "rediss": true,
+	"amqp": true, "amqps": true, "nats": true, "clickhouse": true,
+	"sqlserver": true, "cockroachdb": true,
+}
+
+// credentialQueryParam matches a query parameter name that carries a
+// credential: ?password=, ?sslpassword=, ?token=, ?access_token=, ?key= (an
+// API key), ?sig= / X-Amz-Signature (a signed URL), ?auth=. Deliberately
+// broad: a parameter it wrongly matches (?sslkey=, a path) costs a finding,
+// one it missed would hide a leak.
+func credentialQueryParam(name string) bool {
+	upper := strings.ToUpper(name)
+	for _, frag := range []string{"PASS", "TOKEN", "SECRET", "KEY", "SIG", "AUTH", "CREDENTIAL"} {
+		if strings.Contains(upper, frag) {
+			return true
+		}
+	}
+	return false
+}
+
+// credentialFreeURL reports whether s is an absolute URL that carries no
+// credential: no password in its userinfo, no username except a database
+// role, and no credential-named query parameter. That is the shape of a DSN
+// whose password comes from elsewhere (a Secret, IAM) and of a token issuer
+// (https://admin.example.com/telemetry): the address of a service, not a key
+// to it.
+func credentialFreeURL(s string) bool {
+	u, err := url.Parse(strings.TrimSpace(s))
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return false
+	}
+	if u.User != nil {
+		if _, hasPassword := u.User.Password(); hasPassword {
+			return false
+		}
+		if !databaseURLSchemes[strings.ToLower(u.Scheme)] {
+			return false
+		}
+	}
+	for name := range u.Query() {
+		if credentialQueryParam(name) {
 			return false
 		}
 	}
